@@ -626,14 +626,11 @@ import {
     collectTreeKeys,
     filterGroupTree,
     findGroupNodeByKey,
-    getGroupNodeLabel,
     getHostDisplayName,
-    getHostGroupId,
 } from './utils/hostGroupTreeUtils'
 import {
     formatDateTimeWithTimezone,
     formatOsInfo,
-    formatPercent,
     formatSize,
     formatBytes,
 } from './utils/hostDisplayUtils'

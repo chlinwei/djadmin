@@ -215,6 +215,8 @@ Inventory 预检沿用 `automation:inventory:view` 权限，任务预检沿用�
 ### 关键决策
 
 - 部分更新在应用层合并（先 SELECT 现值再整体 UPDATE，`resolveInventoryUpdate` 纯函数，见 `runtime_inventory_test.go`），避免动态拼 SET 子句；`selected_host_ids` 以 JSON 数字数组列存储，合并时经 `decodeJSONInt64Array` 解析原值。
+- 列表装饰从 JSON 解码后的数字数组经 `intSlice` 提取主机 ID，再用
+  `CountAutomationInventoryHosts` 计算已存在/可用主机数及分组数；健康状态不按数组长度猜测。
 - name 语义：显式传空 name 与未传等价，均按"保留原值"处理；仅当现值 name 也为空（脏数据）且未提供 name 时报 400 `name is required`。
 - `update_cache_timeout` 在两侧方言里都是 NOT NULL（已对真库核实），所以"存量 NULL 回退 300"这条分支在实现上不可达：默认 300 只在新建或客户端省略该字段时生效，`0` 是合法值且必须原样保留（不能被当成"未设置"覆盖成 300）。
 

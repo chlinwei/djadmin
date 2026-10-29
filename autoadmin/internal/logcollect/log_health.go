@@ -170,7 +170,7 @@ func (handler *Handler) checkLogIndexTemplate(context *gin.Context, cluster elas
 	return logHealthLayerFromItems("index_template", "索引模板", items, "模板无字段定义")
 }
 
-// asStringMap / asAnySlice：gin.H 与 json 反序列化的 map[string]any 是不同动态类型，
+// asStringMap：gin.H 与 json 反序列化的 map[string]any 是不同动态类型，
 // 直接断言会失败，这里统一归一（gin.H 的底层类型就是 map[string]any）。
 func asStringMap(value any) map[string]any {
 	switch typed := value.(type) {
@@ -181,13 +181,6 @@ func asStringMap(value any) map[string]any {
 	default:
 		return nil
 	}
-}
-
-func asAnySlice(value any) []any {
-	if typed, ok := value.([]any); ok {
-		return typed
-	}
-	return nil
 }
 
 // ilmPolicySignature 只提取影响保留行为的字段：ES 会补 hot.min_age=0ms、delete_searchable_snapshot

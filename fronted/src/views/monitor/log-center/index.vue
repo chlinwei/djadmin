@@ -915,7 +915,7 @@
 
 <script setup>
 import { computed, onUnmounted, reactive, ref, watch } from 'vue'
-import { Empty, message } from 'ant-design-vue'
+import { message } from 'ant-design-vue'
 import { ReloadOutlined, SearchOutlined, CloseOutlined, CloudUploadOutlined } from '@ant-design/icons-vue'
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons-vue'
 import { tableLocale } from '@/util/tableStyle'
@@ -946,8 +946,6 @@ function resizeCharts() {
   queryPanelRef.value?.resize()
   storagePieRef.value?.resize()
 }
-
-const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE
 
 // 列标题与取值不能各说一套窗口。
 

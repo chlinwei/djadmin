@@ -50,7 +50,6 @@
 <script setup>
 import { reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { getBusinessEnvironment, saveBusinessEnvironment } from '@/api/assets/application'
 
 const props = defineProps({
@@ -58,7 +57,6 @@ const props = defineProps({
   environmentId: { type: Number, default: null },
 })
 const emit = defineEmits(['update:open', 'saved'])
-const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 const formRef = ref(null)
 const loading = ref(false)
 const saving = ref(false)

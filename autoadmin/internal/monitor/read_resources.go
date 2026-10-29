@@ -13,16 +13,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func queryCount(context *gin.Context, database *sql.DB, query string, arguments []any) (int64, error) {
-	var count int64
-	err := database.QueryRowContext(context, query, arguments...).Scan(&count)
-	return count, err
-}
-
-func paginated(context *gin.Context, items []gin.H, count int64, page, size int) {
-	response.Paginated(context, items, count, int32(page), int32(size))
-}
-
 // paginatedWith 在分页信封上追加页面级字段。
 func paginatedWith(context *gin.Context, items []gin.H, count int64, page, size int, extra gin.H) {
 	response.PaginatedWith(context, items, count, int32(page), int32(size), extra)

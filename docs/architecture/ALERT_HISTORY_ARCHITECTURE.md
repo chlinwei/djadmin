@@ -82,6 +82,9 @@ UPDATE + `IF()`（`IF(rule_group='',?,rule_group)`、`IF(IFNULL(JSON_LENGTH(rule
 
 ### 分发时序（最终逻辑）
 
+事件与投递记录的状态写入由 sqlc 的 `MarkAlertNotificationEvent*` /
+`MarkAlertNotificationDelivery*` 查询定义，Go 层调用对应状态操作并判断已成功记录以避免重复投递。
+
 1. **摄取**：`AlertWebhook` 解析 Prometheus webhook 载荷（含规则快照解析），事务内写入 `monitor_alert_history`。对新 created 的 firing 告警与 resolved 更新的告警收集"通知目标"（alert_id、alertname、severity、instance、labels、event_type）。
 2. **入队（事务提交后，响应前同步执行）**：对每个目标先做"有无可投递媒介"预判（策略树路由 + 事件开关 + 出口为空则不建事件）；有命中则建 `monitor_alert_notification_event`（`deduplication_key={alert_id}:{event_type}` 唯一键幂等去重，"已入队"即影响行数 0 / 不返回行），**事件 id 由插入语句直接取回**（MySQL 的 `LastInsertId` / PG 的 `RETURNING`，不再"插完再按去重键查一次"），webhook 响应不等待后续发送。
 3. **匹配（`matchedPolicyMedias`）**：加载策略树 → 合并 alertname/severity/instance 便捷键进 labels → `alertScopeNodes` 解析告警主机的服务树归属节点集合 → 策略树路由 → 事件开关判断 → 出口媒介按 `enabled=TRUE AND id IN (...)` 过滤，同时返回生效的接收组限制（nil=不限组）。

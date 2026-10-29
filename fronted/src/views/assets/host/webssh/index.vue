@@ -389,7 +389,6 @@ const fetchActiveUserCount = websshPresenceController.fetchActiveUserCount
 
 const startActiveUserPolling = websshPresenceController.startActiveUserPolling
 const stopActiveUserPolling = websshPresenceController.stopActiveUserPolling
-const startActiveSessionsPolling = websshPresenceController.startActiveSessionsPolling
 const stopActiveSessionsPolling = websshPresenceController.stopActiveSessionsPolling
 
 const formatDateTime = (value) => _formatDateTime(value, store.state.user?.timezone)
@@ -556,7 +555,6 @@ const openDirectory = websshFilePanelController.openDirectory
 const handlePathEnter = websshFilePanelController.handlePathEnter
 const goParentDir = websshFilePanelController.goParentDir
 const closeFileContextMenu = websshFilePanelController.closeFileContextMenu
-const openFileContextMenu = websshFilePanelController.openFileContextMenu
 const bindFileRowEvents = websshFilePanelController.bindFileRowEvents
 const triggerFileDownload = (blob, filename) => {
     const url = window.URL.createObjectURL(blob)
@@ -635,7 +633,6 @@ const websshDownloadController = createWebsshDownloadController(createWebsshDown
     },
 }))
 
-const resetDownloadProgress = websshDownloadController.resetDownloadProgress
 const enqueueDownloadTask = websshDownloadController.enqueueDownloadTask
 const cancelDownload = websshDownloadController.cancelDownload
 const cancelActiveDownload = websshDownloadController.cancelActiveDownload
@@ -670,7 +667,6 @@ const websshUploadController = createWebsshUploadController(createWebsshUploadSe
     },
 }))
 
-const enqueueUploadTask = websshUploadController.enqueueUploadTask
 const uploadRawFileToPath = websshUploadController.uploadRawFileToPath
 const uploadFile = websshUploadController.uploadFile
 const cancelUpload = websshUploadController.cancelUpload

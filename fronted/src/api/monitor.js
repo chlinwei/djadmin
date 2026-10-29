@@ -74,10 +74,6 @@ export function getAlertHistories(params) {
   return requestUtil.get(prefix + 'alert-histories/', params)
 }
 
-export function getAlertNotificationStatus(alertId) {
-  return requestUtil.get(prefix + `alert-histories/${alertId}/notification-status/`)
-}
-
 // 用户视角的通知链路诊断（P1）：userId 为空表示当前登录用户。
 export function getUserNotificationChain(userId) {
   return requestUtil.get(prefix + 'alert-notification/user-chain/', userId ? { user_id: userId } : {})
@@ -147,14 +143,6 @@ export function stopManagedTargetService(id) {
 
 export function getMonitorInstallHistoryList(params) {
   return requestUtil.get(prefix + 'install-histories/', params)
-}
-
-export function getMonitorInstallHistoryDetail(id) {
-  return requestUtil.get(prefix + `install-histories/${id}/`)
-}
-
-export function cancelMonitorInstallHistory(id) {
-  return requestUtil.post(prefix + `install-histories/${id}/cancel/`)
 }
 
 export function getElasticsearchClusterList(params) {
@@ -276,10 +264,6 @@ export function batchDeleteLogRetentionTiers(ids) {
   return requestUtil.post(prefix + 'log-retention-tiers/batch-delete/', { ids })
 }
 
-export function applyLogCollectionConfig(id) {
-  return requestUtil.post(prefix + `log-targets/${id}/apply/`, {})
-}
-
 export function checkLogCollectionStatus(id) {
   return requestUtil.post(prefix + `log-targets/${id}/check-status/`, {})
 }
@@ -334,11 +318,6 @@ export function getLogBatchJob(id) {
 // 页面上还在跑的批量作业（刷新页面后仍能接着看进度）；没有时 data 为 null。
 export function getActiveLogBatchJob(action) {
   return requestUtil.get(prefix + 'log-targets/batch-jobs/active/', { action })
-}
-
-// "N 台待下发"的全量口径。
-export function getLogPendingSummary() {
-  return requestUtil.get(prefix + 'log-targets/pending-summary/')
 }
 
 export function batchStartLogCollectionTargets(ids) {

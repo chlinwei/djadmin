@@ -105,6 +105,9 @@ BASELINE_SMOKE_DSN='postgres://user@host:5432/db?sslmode=disable&TimeZone=UTC' \
 
 ## 接口（/sys/security/baseline，权限 baseline:manage / baseline:scan）
 
+基线保存由 `SaveBaseline` 就地绑定可选字段；策略创建、更新及整组替换共用
+`baselineItemInput`，策略配置统一经过 `opapolicy.Validate` 校验。
+
 ```
 GET    /sys/security/baseline/          基线列表（search，含 item_count/scan_count；count 为真实总数，
                                         但行仍是固定首页 20 条——前端不传分页参数，见下方"数据访问"）

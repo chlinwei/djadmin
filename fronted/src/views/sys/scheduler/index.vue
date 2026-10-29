@@ -625,13 +625,6 @@ const reload = () => {
   loadTasks()
 }
 
-const resetFilters = () => {
-  filterText.value = ''
-  filterEnabled.value = undefined
-  filterRunning.value = undefined
-  reload()
-}
-
 const handleTableChange = (paginationInfo, _filters, sorter) => {
   pagination.current = paginationInfo.current
   pagination.pageSize = paginationInfo.pageSize

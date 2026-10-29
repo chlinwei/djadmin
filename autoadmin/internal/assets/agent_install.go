@@ -28,7 +28,6 @@ import (
 
 const (
 	agentInstallTimeoutSeconds = 300
-	agentAuthTypePassword      = 1
 	agentAuthTypeSSHKey        = 2
 )
 

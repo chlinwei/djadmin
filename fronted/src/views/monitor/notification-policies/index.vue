@@ -164,8 +164,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
-import { tableLocale } from '@/util/tableStyle'
+import { computed, onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import {
   batchDeleteNotificationPolicies,

@@ -96,12 +96,7 @@ func directionName(direction string) string {
 	return "保留"
 }
 
-// loadLogFilterRules 按 id 批量取规则（渲染前一次性取回，避免每台主机重复查）。
-func (handler *Handler) loadLogFilterRules(context context.Context, ids []int64) (map[int64]logFilterRuleRef, error) {
-	return loadLogFilterRulesPool(context, handler.db, ids)
-}
-
-// loadLogFilterRulesPool 同上，但取数走传入的 pool（保存校验在事务里跑，要读到未提交的规则变更）。
+// loadLogFilterRulesPool 按 id 取规则，使用调用方的 pool 以读取保存事务中未提交的变更。
 func loadLogFilterRulesPool(context context.Context, pool db.DBTX, ids []int64) (map[int64]logFilterRuleRef, error) {
 	rules := map[int64]logFilterRuleRef{}
 	queries := db.New(pool)

@@ -241,9 +241,6 @@ const saveItem = (id,name) => {
     menu_id.value = id
     menu_assign_title.value = "编辑" + "-" + name
 }
-const cancel = () => {
-}
-
 // 新增
 const HandleAdd = () => {
     itemAssignVisible.value = true

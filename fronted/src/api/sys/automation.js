@@ -103,10 +103,6 @@ export function getJobList(params) {
   return requestUtil.get(prefix + 'jobs/', params)
 }
 
-export function getJobDetail(id) {
-  return requestUtil.get(prefix + `jobs/${id}/`)
-}
-
 export function cancelJob(id) {
   return requestUtil.post(prefix + `jobs/${id}/cancel/`)
 }
@@ -114,4 +110,3 @@ export function cancelJob(id) {
 export function getJobLog(id) {
   return requestUtil.get(prefix + `jobs/${id}/log/`)
 }
-

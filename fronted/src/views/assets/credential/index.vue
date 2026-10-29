@@ -288,9 +288,6 @@ const onSearch = (keyword) => {
 const onSelectChange = selectedRowKeys => {
     state.selectedRowKeys = selectedRowKeys;
 };
-const cancel = () => {
-
-}
 // 删除
 import { batchDeleteCredential } from '@/api/assets/credential/index'
 const delconfirm = (id) => {

@@ -37,7 +37,6 @@
 </template>
 <script setup>
 import { reactive } from 'vue';
-import router from '@/router'
 import { useRoute } from 'vue-router';
 import {addDynamicRoutes} from '@/router/index.js';
 import { message } from 'ant-design-vue';

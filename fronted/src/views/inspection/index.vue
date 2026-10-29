@@ -933,11 +933,6 @@ const HOST_VARIABLES = [
   { name: '${HOST_IP}', desc: '主机 IP' },
   { name: '${HOST_NAME}', desc: '主机名称' },
 ]
-const scopeOptionsRemoved = [
-  { label: '逻辑服务·每个部署实例', value: 'per_deployment' },
-  { label: '逻辑服务·服务单次', value: 'service_once' },
-  { label: '主机组·每台主机', value: 'per_host' },
-]
 const statusFilterOptions = [
   { label: '等待中', value: 'pending' },
   { label: '执行中', value: 'running' },
@@ -952,60 +947,9 @@ const triggerFilterOptions = [
 const executionTargetLabel = computed(
   () => selectedExecution.value?.service_snapshot?.target_type === 'host_group' ? '主机组' : '逻辑服务',
 )
-const selectedTaskGroups = computed(() => (taskForm.groups || []).map((id) => groupOptions.value.find((group) => group.id === id)).filter(Boolean))
 // undefined 表示尚未选巡检组，此时两类目标输入都不展示。
 const groupTargetsHostGroup = computed(() => (groupForm.category || 'general') !== 'application')
 const availableVariables = computed(() => (groupTargetsHostGroup.value ? HOST_VARIABLES : DEPLOYMENT_VARIABLES))
-const serviceTreeData = computed(() => {
-  const serviceNodes = (records) => [...records]
-    .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
-    .map((service) => ({
-      title: service.name,
-      value: service.id,
-      // a-tree-select 要求 key 与 value 一致，否则会告警并影响选中态匹配
-      key: service.id,
-      isLeaf: true,
-    }))
-  const environmentsById = new Map(
-    businessEnvironments.value.map((environment) => [String(environment.id), environment]),
-  )
-  const environmentNodes = (records, systemId) => {
-    const servicesByEnvironment = new Map()
-    for (const service of records) {
-      const environmentKey = String(service.environment ?? 'unassigned')
-      if (!servicesByEnvironment.has(environmentKey)) servicesByEnvironment.set(environmentKey, [])
-      servicesByEnvironment.get(environmentKey).push(service)
-    }
-    return [...servicesByEnvironment.entries()]
-      .sort(([leftKey], [rightKey]) => {
-        const left = environmentsById.get(leftKey)
-        const right = environmentsById.get(rightKey)
-        return ((left?.order || 0) - (right?.order || 0))
-          || String(left?.name || '未指定环境').localeCompare(String(right?.name || '未指定环境'), 'zh-CN')
-      })
-      .map(([environmentKey, environmentServices]) => ({
-        title: environmentsById.get(environmentKey)?.name || '未指定环境',
-        value: `system:${systemId}:environment:${environmentKey}`,
-        key: `system:${systemId}:environment:${environmentKey}`,
-        disabled: true,
-        children: serviceNodes(environmentServices),
-      }))
-  }
-  const systemNodes = [...businessSystems.value]
-    .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
-    .map((system) => ({
-      title: system.name,
-      value: `system:${system.id}`,
-      key: `system:${system.id}`,
-      disabled: true,
-      children: environmentNodes(services.value.filter(
-        (service) => String(service.business_system) === String(system.id),
-      ), system.id),
-    }))
-  return systemNodes
-})
-
-
 const responseData = (response) => response?.data?.data || {}
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 const formatTime = (value) => value ? formatTimeWithTimezone(value, store.state.user?.timezone || 'Asia/Shanghai') : '-'
@@ -1013,7 +957,6 @@ const groupCategoryOptions = [
   { label: '通用', value: 'general' },
   { label: '应用类型', value: 'application' },
 ]
-const categoryLabel = (category) => (category === 'application' ? '应用类型' : '通用')
 const groupById = (id) => groupOptions.value.find((group) => group.id === id)
 // 巡检参数赋值：根据所选组的 params 声明生成编辑行（静态范围任务无参数）。
 const taskParamAssignments = reactive({})
@@ -1053,12 +996,6 @@ function buildParamValuesPayload() {
   }
   return result
 }
-function declaredParamsByKey(name) {
-  const binding = (taskForm.bindings || [])[0]
-  if (!binding) return false
-  const declarations = groupById(binding.group_id)?.params || []
-  return declarations.some((param) => param.name === name)
-}
 // 巡检对象摘要：完全由左侧树选中节点推导（新建），或由已有绑定还原（编辑）。
 const taskTargetSummary = computed(() => {
   const nameOf = (list, id) => list.value.find((item) => String(item.id) === String(id))?.name || `#${id}`
@@ -1086,8 +1023,8 @@ const taskTargetSummary = computed(() => {
   }
   return ''
 })
-// 任务导航树：项目 → 业务系统 → 环境 → 逻辑服务，结构与排序规则对齐服务树
-// （serviceTreeData）：业务按名称排序，环境按 order 排序且只显示真实存在服务的环境，
+// 任务导航树：项目 → 业务系统 → 环境 → 逻辑服务，业务按名称排序，
+// 环境按 order 排序且只显示真实存在服务的环境，
 // 逻辑服务为叶子节点。任务按挂载点归属到对应节点（可同时归属多个）。
 const taskNavSelected = ref(['all'])
 const taskNavNode = computed(() => taskNavSelected.value?.[0] || 'all')
@@ -1330,26 +1267,6 @@ const mountText = (group) => {
   }
   return ''
 }
-const projectOptions = computed(() => projects.value.map((item) => ({ label: item.name, value: item.id })))
-const businessOptions = computed(() => businessSystems.value.map((item) => ({ label: item.name, value: item.id })))
-const environmentOptions = computed(() => businessEnvironments.value.map((item) => ({ label: item.name, value: item.id })))
-const appMountOptions = [
-  { label: '业务系统（×环境，全部同类服务）', value: 'business' },
-  { label: '逻辑服务（精确到单个服务）', value: 'service' },
-]
-function handleAppMountChange(binding) {
-  binding.business_system_id = undefined
-  binding.environment_id = undefined
-  binding.service_id = undefined
-}
-const generalMountOptions = [
-  { label: '项目（全部实例主机）', value: 'project' },
-  { label: '环境（项目×环境实例主机）', value: 'environment' },
-]
-const instanceModeOptions = [
-  { label: '全部实例', value: 'all' },
-  { label: '主实例（HA 场景，选一台在线实例）', value: 'once' },
-]
 function defaultBinding(group, context = taskNavContext.value) {
   // 挂载点由树节点决定，与组类型无关：
   //   服务节点 → 该服务；业务/环境节点 → 业务×环境；项目节点 → 项目。
@@ -1421,11 +1338,6 @@ function handleTaskGroupsChange(value) {  // 单组模型：选择即替换，�
   // 换成新组：以当前巡检对象重新推导挂载；应用组遇项目/环境对象会自动适应（见 applyTaskTargetContext）
   applyTaskTargetContext(activeTargetContext.value, id)
 }
-const scopeLabel = (scope) => ({
-  per_deployment: '逻辑服务·每个部署实例',
-  service_once: '逻辑服务·服务单次',
-  per_host: '主机组·每台主机',
-}[scope] || scope)
 const severityLabel = (severity) => severity === 'warning' ? '警告' : '严重'
 const statusLabel = (status) => ({ pending: '等待中', running: '执行中', success: '成功', failed: '失败', canceled: '已取消', skipped: '已跳过' }[status] || status)
 const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red', canceled: 'default', skipped: 'default' }[status] || 'default')

@@ -30,7 +30,6 @@ import (
 // 找不到或被改坏时入口直接报错，无内嵌兜底。
 
 const (
-	agentUpdateRemoteDir  = "/var/lib/dj-agent/update"
 	agentUpdateRemoteFile = "dj-agent.new"
 	agentGrpcAdvertiseKey = "sys.assets.agent.grpc_advertise_addr"
 )

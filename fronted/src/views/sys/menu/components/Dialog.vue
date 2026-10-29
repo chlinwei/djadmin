@@ -161,18 +161,6 @@ const get_rules = (menu)=>{
 
 }
 
-const add_rules = {
-    name: [
-        { required: true, message: "必填字段" },
-    ],
-    
-}
-const edit_rules = {
-    name: [
-        { required: true, message: "必填字段" },
-    ]
-}
-
 const form = ref({
     id: -1,
     parent_id: '',

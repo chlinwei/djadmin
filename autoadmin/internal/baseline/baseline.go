@@ -49,14 +49,6 @@ type baselineItemInput struct {
 	Severity    string          `json:"severity"`
 }
 
-type baselineInput struct {
-	Name        *string              `json:"name"`
-	Version     *string              `json:"version"`
-	Description *string              `json:"description"`
-	Enabled     *bool                `json:"enabled"`
-	Items       *[]baselineItemInput `json:"items"`
-}
-
 func pathID(context *gin.Context) int64 {
 	return pathParamID(context, "id")
 }

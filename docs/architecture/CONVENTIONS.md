@@ -56,6 +56,15 @@
 
 禁止在页面里手写 `showTotal`、`pageSizeOptions` 等分页配置；新增页面一律 import `createPagination` / `tableLocale`。
 
+### 前端运行入口与动态引用边界
+
+- `fronted/src/main.js` 注册路由、Vuex、权限指令、Ant Design Vue、FontAwesome 和全局 `SvgIcon`。
+- 路由同时包含静态入口和菜单驱动入口；`src/router/index.js` 通过 `import.meta.glob("../views/**")`
+  按菜单的 `component` 字段解析页面，不能仅凭缺少显式 import 判定视图未使用。
+- SVG 图标由 Vite 的 `createSvgIconsPlugin` 扫描 `src/assets/icons/svg`，通过
+  `virtual:svg-icons-register` 注册；图标名属于运行时引用，不以单个 SVG 的 import 数量判定存活。
+- API 模块由调用页面/控制器显式导入；保留实际调用的请求封装，后端仍提供某个端点不代表前端需要为其保留未使用的封装。
+
 ## 三、懒挂载弹窗的数据加载
 
 父组件用 `v-if` + `open` 懒挂载的弹窗（关闭延迟卸载动画结束后 `v-if` 置 false 的模式），

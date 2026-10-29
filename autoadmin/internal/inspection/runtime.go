@@ -329,13 +329,6 @@ func (handler *Handler) execute(executionID int64, task runTask, targets []runTa
 	})
 }
 
-func targetType(scope string) string {
-	if scope == "per_host" {
-		return "host_group"
-	}
-	return "logical_service"
-}
-
 // mountTargetName 把首个挂载点绑定转成人类可读的目标名，如
 // "逻辑服务 artemis"、"业务 cdm @ test"、"项目 kul @ test"；查不到名称时回退 ID。
 // mountTargetName 把首个挂载点绑定转成带完整业务链路的目标名，如

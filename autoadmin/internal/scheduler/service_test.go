@@ -13,29 +13,6 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-func TestNextRun(t *testing.T) {
-	next, err := nextRun("*/5 * * * *", true)
-	if err != nil {
-		t.Fatalf("nextRun() error = %v", err)
-	}
-	if !next.Valid || next.Time.IsZero() {
-		t.Fatalf("expected next run, got %+v", next)
-	}
-}
-
-func TestNextRunRejectsInvalidCron(t *testing.T) {
-	if _, err := nextRun("invalid", true); err == nil {
-		t.Fatal("expected invalid cron to fail")
-	}
-}
-
-func TestNextRunDisabledTask(t *testing.T) {
-	next, err := nextRun("*/5 * * * *", false)
-	if err != nil || next.Valid {
-		t.Fatalf("disabled task next run = %+v, error = %v", next, err)
-	}
-}
-
 // 回归（2026-09-19 现场）：在"定时任务"页点「立即执行」，历史任务只会回一句
 // `任务提交失败: 任务 handler 尚未迁移到 Go`——不知道是谁的问题、要不要等、有没有替代。
 // 现在 ① 列表/详情带 supported 标记（页面据此把按钮置灰）；② 报错写明任务与"已实现的任务"。

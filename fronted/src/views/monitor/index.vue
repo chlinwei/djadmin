@@ -1502,13 +1502,6 @@ function openPackageDeleteConfirm(record) {
   })
 }
 
-function scrapeColor(status) {
-  const value = String(status || '').toLowerCase()
-  if (value === 'up') return 'green'
-  if (value === 'down') return 'red'
-  return 'default'
-}
-
 function parseApiData(resp) {
   return resp?.data?.data || {}
 }
@@ -2159,13 +2152,6 @@ async function handleCheckServiceStatus(record) {
 // 只传 target id 的轻量包装，批量启停/自动刷新后复用单台的查询逻辑。
 function refreshServiceStatus(targetId) {
   return handleCheckServiceStatus({ id: targetId })
-}
-
-// 自动刷新时只重查已经查过的目标，避免每 15 秒对整页主机发 N 次 agent 调用。
-function refreshCachedServiceStatuses() {
-  const ids = Object.keys(serviceStatusMap).map(Number)
-  if (!ids.length) return
-  ids.forEach((id) => refreshServiceStatus(id))
 }
 
 async function handleStartService(record) {

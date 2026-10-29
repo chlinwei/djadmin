@@ -55,7 +55,6 @@ const (
 	LogBatchStatusFailed  = "failed"
 
 	logBatchItemPending = "pending"
-	logBatchItemRunning = "running"
 	logBatchItemSuccess = "success"
 	logBatchItemFailed  = "failed"
 )

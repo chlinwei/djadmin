@@ -60,6 +60,11 @@ dj-agent (Go)
 Agent 自身不区分"注册/数据"两条通道：文件传输、WebSSH、任务执行复用同一条
 `AgentChannel.Session` 双向流（见 `proto/agent_channel.proto`）。
 
+协议源文件统一维护在 `proto/agent_channel.proto`；Go 生成代码分别位于
+`dj_agent/internal/grpcfile/pb/` 与 `autoadmin/internal/agent/pb/`，由各自 Go 模块编译。
+生成时应指定模块内输出目录，不在仓库根目录保留按导入路径展开的副本。
+Agent 构建元数据只通过 `buildinfo.Version` 注入，并在会话握手时上报版本。
+
 ---
 
 ## 2. 主机身份：实例名（instance_name）

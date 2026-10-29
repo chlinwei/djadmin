@@ -227,7 +227,6 @@ import store from '@/store'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { formatTimeWithTimezone } from '@/util/timezone'
-import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { asArray } from '@/util/normalize'
 import {
   batchDeleteApplication,
@@ -297,7 +296,6 @@ const selectedDeployment = ref(null)
 const runtimeRefreshing = ref(false)
 const deploymentControlLoading = reactive({})
 const paginationState = reactive({ current: 1, pageSize: 10, total: 0 })
-const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 
 const categoryLabels = { web_container: 'Web 容器', database: '数据库', middleware: '中间件', business: '业务应用', other: '其他' }
 const controlTypeLabels = { systemd: 'Systemd', command: '命令行', external_ha: '外部 HA', docker: 'Docker', docker_compose: 'Docker Compose' }
@@ -357,7 +355,6 @@ const currentColumns = computed(() => ({ projects: projectColumns, profiles: clu
 const currentTableScroll = computed(() => ({ x: ({ projects: 1240, profiles: 1220, applications: 1140, deployments: 1440 }[activeTab.value]) }))
 const createButtonLabel = computed(() => ({ projects: '新增项目', profiles: '新增自定义集群', applications: '新增应用', deployments: '登记实例' }[activeTab.value]))
 const searchPlaceholder = computed(() => ({ projects: '搜索项目、编码或业务系统', profiles: '搜索集群模型、编码或应用', applications: '搜索应用、编码或厂商', deployments: '搜索应用、版本、主机或实例' }[activeTab.value]))
-const filterOption = (input, option) => String(option?.label || '').toLowerCase().includes(String(input || '').toLowerCase())
 let runtimePollTimer = null
 let runtimePollInFlight = false
 let reloadSequence = 0

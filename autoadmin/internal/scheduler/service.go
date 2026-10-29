@@ -138,13 +138,6 @@ func (s *Service) GetLog(ctx context.Context, id int64) (db.GetScheduledTaskLogR
 
 const defaultScheduleTimezone = "UTC"
 
-func nextRun(expression string, enabled bool) (sql.NullTime, error) {
-	if !enabled {
-		return sql.NullTime{}, nil
-	}
-	return nextRunAt(expression, defaultScheduleTimezone, time.Now().UTC())
-}
-
 func nextRunAt(expression, timezone string, now time.Time) (sql.NullTime, error) {
 	location, err := time.LoadLocation(timezone)
 	if err != nil || timezone == "Local" || strings.TrimSpace(timezone) == "" {

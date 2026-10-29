@@ -173,13 +173,6 @@ func intSlice(value any) []int64 {
 	}
 	return result
 }
-func jsonArrayLength(value any) int {
-	items, ok := value.([]any)
-	if !ok {
-		return 0
-	}
-	return len(items)
-}
 func automationPaginated(context *gin.Context, items []gin.H, count int64, page, size int) {
 	total := int64(0)
 	if count > 0 {

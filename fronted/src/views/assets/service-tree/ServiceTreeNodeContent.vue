@@ -248,8 +248,6 @@ import { useRouter } from 'vue-router'
 import { Empty, message } from 'ant-design-vue'
 import { RightOutlined } from '@ant-design/icons-vue'
 import { tableLocale } from '@/util/tableStyle'
-import store from '@/store'
-import { formatTimeWithTimezone } from '@/util/timezone'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import {
   getApplicationService,
@@ -257,7 +255,6 @@ import {
   getApplicationDeployment,
   getApplicationDeploymentList,
   getApplicationServiceList,
-  getBusinessEnvironmentList,
   getBusinessSystem,
   getBusinessSystemList,
   getProjectList,
@@ -432,10 +429,6 @@ const summaryStatus = computed(() => {
   if (descendants.value.length > 0) return { label: '未发现异常', color: 'success' }
   return { label: '暂无实例', color: 'default' }
 })
-
-function formatDateTime(value) {
-  return value ? formatTimeWithTimezone(value, store.state.user?.timezone || 'Asia/Shanghai') : '-'
-}
 
 function childLabel(record) {
   if (props.scope.nodeType === 'service') return record.instance_name

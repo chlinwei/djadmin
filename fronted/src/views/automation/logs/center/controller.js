@@ -2,7 +2,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { createPagination } from '@/util/tableStyle'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import dayjs from 'dayjs'
 import { AnsiUp } from 'ansi_up'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISOStringByUserTimezone } from '@/util/timezoneRange'
@@ -35,7 +34,6 @@ import {
   canCancelWorkflowRunRecord,
   normalizeUtcTime,
 } from '../../utils/logsControllerHelpers'
-import ExecutionScopePreviewModal from '../../components/ExecutionScopePreviewModal.vue'
 
 const ansiRenderer = new AnsiUp()
 ansiRenderer.escape_for_html = true

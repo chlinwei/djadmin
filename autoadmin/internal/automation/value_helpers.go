@@ -85,25 +85,3 @@ func jsonID(value any) (int64, bool) {
 		return 0, false
 	}
 }
-
-func int64Slice(value any) []int64 {
-	items, ok := value.([]any)
-	if !ok {
-		return nil
-	}
-	result := make([]int64, 0, len(items))
-	for _, item := range items {
-		switch item := item.(type) {
-		case int64:
-			result = append(result, item)
-		case float64:
-			result = append(result, int64(item))
-		case string:
-			var number int64
-			if _, err := fmt.Sscan(strings.TrimSpace(item), &number); err == nil {
-				result = append(result, number)
-			}
-		}
-	}
-	return result
-}

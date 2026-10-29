@@ -17,10 +17,7 @@ import (
 // 范围路由由管理员维护的通知策略树（notification_policy.go）决定；用户绑定只是收件配置。
 
 const (
-	notificationEventPending = "pending"
-	notificationEventSending = "sending"
 	notificationEventSuccess = "success"
-	notificationEventFailed  = "failed"
 
 	// 与 Django send_alert_notification 的 max_retries=5 一致：首次尝试 + 最多 5 次重试。
 	notificationMaxAttempts = 6

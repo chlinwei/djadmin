@@ -369,29 +369,6 @@ func uniqueInt64s(values []int64) []int64 {
 	return result
 }
 
-func uniquePositiveInt64s(values []int64) []int64 {
-	filtered := make([]int64, 0, len(values))
-	for _, value := range values {
-		if value > 0 {
-			filtered = append(filtered, value)
-		}
-	}
-	return uniqueInt64s(filtered)
-}
-
-func uniqueStrings(values []string) []string {
-	result := make([]string, 0, len(values))
-	seen := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		if _, exists := seen[value]; exists {
-			continue
-		}
-		seen[value] = struct{}{}
-		result = append(result, value)
-	}
-	return result
-}
-
 // parseGroupBindings 解析 groups 输入（对象数组，须带 mount_type）。
 func parseGroupBindings(raw []byte) []groupBindingInput {
 	bindings := make([]groupBindingInput, 0)

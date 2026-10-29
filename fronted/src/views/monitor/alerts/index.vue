@@ -494,12 +494,6 @@ function stateColor(state) {
   return 'default'
 }
 
-function timelineColor(record) {
-  if (record.state === 'firing') return 'red'
-  if (record.severity === 'warning') return 'orange'
-  return 'green'
-}
-
 const currentAlertColumns = [
   { title: '时间', dataIndex: 'active_at', key: 'active_at', width: 190 },
   { title: '严重性', key: 'severity', width: 100 },

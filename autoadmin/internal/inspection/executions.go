@@ -314,10 +314,3 @@ func (handler *Handler) CancelExecution(context *gin.Context) {
 	handler.markCanceled(id)
 	response.Success(context, gin.H{"id": id, "status": "canceled"})
 }
-
-func nullableID(value any) any {
-	if fmt.Sprint(value) == "<nil>" {
-		return nil
-	}
-	return value
-}

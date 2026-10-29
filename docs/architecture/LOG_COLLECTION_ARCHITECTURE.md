@@ -1021,6 +1021,8 @@ dj-agent 的文件通道（`internal/agent/file.go` 的 `StatFile` + `ReadFileCh
 
 采集过滤由 Filebeat 的 `include_lines` / `exclude_lines` 执行，在多行合并之后按规则筛选事件。
 规则由模板默认值和服务覆盖共同决定，并随配置渲染下发。
+渲染器通过 `loadLogFilterRulesPool` 使用调用方的数据库/事务读取规则；
+保存校验因此能读取同一事务内尚未提交的变更，与实际下发共用解析逻辑。
 
 **两层 + 三态**（`internal/logcollect/log_collection_filter.go`）：
 

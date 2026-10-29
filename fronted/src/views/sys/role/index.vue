@@ -82,7 +82,7 @@ defineOptions({
 import { ref } from 'vue'
 import { getRoleList } from '@/api/role/index.js';
 import { usePagination } from 'vue-request';
-import { computed, reactive, onMounted } from 'vue';
+import { computed, reactive } from 'vue';
 import { createPagination, tableLocale } from '@/util/tableStyle'
 import { message } from 'ant-design-vue';
 import Dialog from '@/views/sys/role/components/Dialog.vue';
@@ -93,13 +93,6 @@ import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
 
 const menu_assign_title = ref("")
-
-// 取消删除
-const cancel = () => {
-
-}
-
-const roleassign_title = ref("权限分配")
 
 const SearchText = ref('')
 const columns = [
@@ -298,12 +291,6 @@ const delconfirm = (id) => {
         setRowLoading(id, false)
     })
 }
-const rowLoadingStates2 = reactive({
-});
-const setRowLoading2 = (id, isLoading) => {
-    rowLoadingStates2[id] = isLoading;
-};
-
 // 角色分配
 const menuAssignVisible = ref(false)
 

@@ -102,6 +102,5 @@ const check = (res) => {
     checkedKeys.value  = res.checked
 }
 
-const formRef = ref(null)
 
 </script>

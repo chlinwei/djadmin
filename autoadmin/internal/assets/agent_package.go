@@ -31,15 +31,6 @@ const (
 	agentPackageSlot = "default"
 )
 
-type agentPackage struct {
-	ID         int64
-	File       string
-	SHA256     string
-	SizeBytes  int64
-	IsActive   bool
-	CreateTime sql.NullTime
-}
-
 // validateAgentBinary 与构建产物加载共用同一组字节标记校验。
 func validateAgentBinary(data []byte) error {
 	if bytes.Contains(data, []byte("connect rabbitmq failed")) {

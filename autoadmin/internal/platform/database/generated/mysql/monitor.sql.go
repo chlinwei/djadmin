@@ -4442,6 +4442,57 @@ func (q *Queries) ListInstalledLogTargetRuntime(ctx context.Context) ([]ListInst
 	return items, nil
 }
 
+const listLiveTailHostTargets = `-- name: ListLiveTailHostTargets :many
+SELECT d.host_id, COALESCE(h.instance_name, '') AS host_instance_name
+FROM assets_application_service_deployment sd
+JOIN assets_application_deployment d ON d.id = sd.deployment_id
+JOIN assets_application_service s ON s.id = sd.service_id
+JOIN assets_host h ON h.id = d.host_id
+WHERE sd.service_id = ?
+  AND d.instance_name = ?
+  AND h.ip = ?
+  AND sd.enabled = TRUE AND d.enabled = TRUE AND s.enabled = TRUE AND s.log_collection_enabled = TRUE
+  AND h.is_deleted_in_cloud = FALSE
+  AND NOT EXISTS (SELECT 1 FROM assets_service_deletion deleted WHERE deleted.service_id=s.id)
+LIMIT 2
+`
+
+type ListLiveTailHostTargetsParams struct {
+	ServiceID    int64          `json:"service_id"`
+	InstanceName string         `json:"instance_name"`
+	HostIp       sql.NullString `json:"host_ip"`
+}
+
+type ListLiveTailHostTargetsRow struct {
+	HostID           int64  `json:"host_id"`
+	HostInstanceName string `json:"host_instance_name"`
+}
+
+// 应用实例名只在同一主机内唯一；按服务、实例与事件已有的主机 IP 联查，
+// 最多取两行以识别歧义，不从事件中读取冗余的主机 ID。
+func (q *Queries) ListLiveTailHostTargets(ctx context.Context, arg ListLiveTailHostTargetsParams) ([]ListLiveTailHostTargetsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listLiveTailHostTargets, arg.ServiceID, arg.InstanceName, arg.HostIp)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListLiveTailHostTargetsRow{}
+	for rows.Next() {
+		var i ListLiveTailHostTargetsRow
+		if err := rows.Scan(&i.HostID, &i.HostInstanceName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listLogBatchJobItems = `-- name: ListLogBatchJobItems :many
 SELECT id, target_id, host_id, host_name, host_ip, status, message, started_at, finished_at
 FROM monitor_log_batch_job_item WHERE batch_job_id=? ORDER BY id

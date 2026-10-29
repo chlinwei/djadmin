@@ -1,10 +1,16 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import Antd from 'ant-design-vue'
-import { describe, expect, it, vi } from 'vitest'
+import Antd, { message, Table, Tooltip } from 'ant-design-vue'
+import { defineComponent, h, KeepAlive, ref } from 'vue'
+import { routerKey } from 'vue-router'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import LogQueryPanel from './LogQueryPanel.vue'
+import store from '@/store'
 
-vi.mock('@/store', () => ({ default: { state: { user: { timezone: 'Asia/Shanghai' } } } }))
+vi.mock('@/store', async () => {
+  const { reactive } = await import('vue')
+  return { default: { state: reactive({ user: { timezone: 'Asia/Shanghai' }, perms: [], role_codes: [] }) } }
+})
 
 // echarts 在 jsdom 里没有真实 canvas 渲染能力，这里只关注统计面板的数据流转，图表渲染细节不测。
 vi.mock('echarts', () => ({
@@ -42,6 +48,11 @@ const LEVEL_BUCKETS = [
 
 const getElasticsearchClusterList = vi.fn(() => Promise.resolve({ data: { data: { results: [CLUSTER], count: 1 } } }))
 const searchElasticsearchLogs = vi.fn(() => Promise.resolve({ data: { data: { results: [LOG_DOC], count: 1, size: 100, offset: 0 } } }))
+const getHostList = vi.fn()
+const resolveWebSshRoute = vi.fn(() => ({ href: '/assets/hosts/webssh?host_id=11' }))
+vi.mock('@/api/assets/host', () => ({
+  getHostList: (...args) => getHostList(...args),
+}))
 // 日志级别下拉复用同一个分面统计接口，按 field 区分返回真实级别值还是统计 tab 的指纹分面。
 const searchElasticsearchLogFacetStats = vi.fn((id, params) => {
   if (params.field === 'log_level') {
@@ -62,12 +73,534 @@ function mountPanel(scope = { nodeType: 'all', nodeTitle: '全部业务' }) {
     global: {
       plugins: [Antd],
       stubs: { FontAwesomeIcon: true },
+      provide: { [routerKey]: { resolve: resolveWebSshRoute } },
     },
     attachTo: document.body,
   })
 }
 
 describe('LogQueryPanel（日志中心的日志查询面板）', () => {
+  describe('日志表格吸顶与吸底滚动', () => {
+    const scope = { nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' }
+    const isBody = (element) => element.classList.contains('ant-table-body')
+
+    function mountWithGeometry(geometry) {
+      // JSDOM has no layout: supply dimensions to exercise the real Ant Design
+      // scrollbar's visibility, dragging and synchronization, not a table stub.
+      const clientWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth').get
+      const scrollWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollWidth').get
+      const offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight').get
+      const getRect = Element.prototype.getBoundingClientRect
+      vi.spyOn(Element.prototype, 'clientWidth', 'get').mockImplementation(function () {
+        return isBody(this) ? geometry.clientWidth : clientWidth.call(this)
+      })
+      vi.spyOn(Element.prototype, 'scrollWidth', 'get').mockImplementation(function () {
+        return isBody(this) ? geometry.scrollWidth : scrollWidth.call(this)
+      })
+      vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function () {
+        return isBody(this) ? geometry.height : offsetHeight.call(this)
+      })
+      vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function () {
+        const rect = getRect.call(this)
+        if (!isBody(this)) return rect
+        return {
+          ...rect,
+          x: 0, y: geometry.top, top: geometry.top, left: 0,
+          width: geometry.clientWidth, height: geometry.height,
+          right: geometry.clientWidth, bottom: geometry.top + geometry.height,
+        }
+      })
+      vi.useFakeTimers()
+      searchElasticsearchLogs.mockResolvedValueOnce({
+        data: { data: {
+          results: Array.from({ length: 78 }, (_, index) => ({ ...LOG_DOC, id: `sticky-${index}` })),
+          count: 78,
+        } },
+      })
+      return mountPanel(scope)
+    }
+
+    async function settleScroll() {
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(100)
+      await flushPromises()
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks()
+      vi.useRealTimers()
+      searchElasticsearchLogs.mockClear()
+    })
+
+    it('仅明细表启用原生 sticky，不设置内部纵向滚动或改变固定列与分页', async () => {
+      const wrapper = mountPanel(scope)
+      try {
+        await flushPromises()
+        const tables = wrapper.findAllComponents(Table)
+        expect(tables[0].props('sticky')).toBe(true)
+        expect(tables[1].props('sticky')).toBeUndefined()
+        expect(tables[0].props('scroll')).toEqual({ x: wrapper.vm.tableScrollX })
+        expect(tables[0].props('pagination')).toMatchObject({ pageSize: 100, total: 1 })
+        const header = wrapper.get('.ant-table-sticky-holder')
+        expect(header.element.style.top).toBe('0px')
+        expect(window.getComputedStyle(header.element).position).toBe('sticky')
+        const body = wrapper.get('.ant-table-body')
+        expect(body.element.style.maxHeight).toBe('')
+        expect(body.element.style.height).toBe('')
+        expect(wrapper.vm.columns.find((column) => column.key === 'timestamp').fixed).toBe('left')
+        expect(wrapper.vm.columns.find((column) => column.key === 'action').fixed).toBe('right')
+      } finally {
+        wrapper.unmount()
+      }
+    })
+
+    it('长表在视口底部显示滚动条，拖动与正文横向滚动双向同步表头', async () => {
+      const geometry = { clientWidth: 800, scrollWidth: 1800, top: 100, height: 3500 }
+      const wrapper = mountWithGeometry(geometry)
+      try {
+        await settleScroll()
+        const scrollbar = wrapper.get('.ant-table-sticky-scroll')
+        expect(scrollbar.isVisible()).toBe(true)
+        expect(scrollbar.element.style.bottom).toBe('0px')
+        expect(window.getComputedStyle(scrollbar.element).position).toBe('sticky')
+        const thumb = wrapper.get('.ant-table-sticky-scroll-bar')
+        const body = wrapper.get('.ant-table-body')
+        const header = wrapper.get('.ant-table-sticky-holder')
+        await thumb.trigger('mousedown', { clientX: 10, buttons: 1 })
+        document.body.dispatchEvent(new MouseEvent('mousemove', { clientX: 110, buttons: 1 }))
+        document.body.dispatchEvent(new MouseEvent('mouseup'))
+        await settleScroll()
+        expect(body.element.scrollLeft).toBeGreaterThan(0)
+        expect(body.element.scrollLeft).toBeLessThanOrEqual(geometry.scrollWidth - geometry.clientWidth)
+        expect(header.element.scrollLeft).toBe(body.element.scrollLeft)
+
+        body.element.scrollLeft = 400
+        await body.trigger('scroll')
+        await settleScroll()
+        expect(header.element.scrollLeft).toBe(400)
+        const thumbOffset = parseFloat(thumb.element.style.transform.replace('translate3d(', ''))
+        expect(thumbOffset).toBeCloseTo(400 / geometry.scrollWidth * geometry.clientWidth)
+      } finally {
+        wrapper.unmount()
+      }
+    })
+
+    it('到表格底部或表格离开视口时隐藏吸底条，回到表格中段时恢复', async () => {
+      const geometry = { clientWidth: 800, scrollWidth: 1800, top: 100, height: 3500 }
+      const wrapper = mountWithGeometry(geometry)
+      try {
+        await settleScroll()
+        expect(wrapper.find('.ant-table-sticky-scroll').exists()).toBe(true)
+        geometry.height = 100
+        window.dispatchEvent(new Event('scroll'))
+        await settleScroll()
+        expect(wrapper.find('.ant-table-sticky-scroll').exists()).toBe(false)
+        expect(wrapper.get('.ant-table-body').element.style.overflowX).toBe('auto')
+
+        geometry.top = window.innerHeight + 100
+        geometry.height = 3500
+        window.dispatchEvent(new Event('scroll'))
+        await settleScroll()
+        expect(wrapper.find('.ant-table-sticky-scroll').exists()).toBe(false)
+
+        geometry.top = 100
+        window.dispatchEvent(new Event('resize'))
+        await settleScroll()
+        expect(wrapper.find('.ant-table-sticky-scroll').exists()).toBe(true)
+      } finally {
+        wrapper.unmount()
+      }
+    })
+
+    it('宽屏没有横向溢出时不显示吸底条', async () => {
+      const wrapper = mountWithGeometry({ clientWidth: 2000, scrollWidth: 2000, top: 100, height: 3500 })
+      try {
+        await settleScroll()
+        expect(wrapper.find('.ant-table-sticky-holder').exists()).toBe(true)
+        expect(wrapper.find('.ant-table-sticky-scroll').exists()).toBe(false)
+      } finally {
+        wrapper.unmount()
+      }
+    })
+  })
+
+  describe('日志操作列 Web SSH', () => {
+    const scope = { nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' }
+    const host = { id: 11, ip: LOG_DOC.host_ip, instance_name: 'agent-node-1', agent_online: true }
+    const hostResponse = (results) => ({ data: { code: 200, data: { results, count: results.length } } })
+    const getButton = (wrapper) => wrapper.get('tr[data-row-key="doc-1"]').findAll('button')
+      .find((button) => button.attributes('aria-label') === 'Web SSH')
+    const createTerminalWindow = () => {
+      const terminalWindow = {
+        opener: {},
+        closed: false,
+        location: { replace: vi.fn() },
+        close: vi.fn(),
+      }
+      terminalWindow.close.mockImplementation(() => { terminalWindow.closed = true })
+      return terminalWindow
+    }
+
+    afterEach(() => {
+      store.state.perms = []
+      store.state.role_codes = []
+      getHostList.mockReset()
+      resolveWebSshRoute.mockClear()
+      vi.restoreAllMocks()
+    })
+
+    it.each([
+      { perms: ['monitor:view'], roles: [], visible: false },
+      { perms: ['assets:hosts:view'], roles: [], visible: true },
+      { perms: [], roles: ['admin'], visible: true },
+    ])('按主机权限展示入口，独立于实时跟踪开关：$perms / $roles', async ({ perms, roles, visible }) => {
+      store.state.perms = perms
+      store.state.role_codes = roles
+      const wrapper = mountPanel(scope)
+      const open = vi.spyOn(window, 'open').mockReturnValue(null)
+      const warning = vi.spyOn(message, 'warning').mockImplementation(() => {})
+      try {
+        await flushPromises()
+        expect(Boolean(getButton(wrapper))).toBe(visible)
+        expect(wrapper.findComponent({ name: 'LiveTailDialog' }).exists()).toBe(false)
+        expect(wrapper.vm.columns.find((column) => column.key === 'action'))
+          .toMatchObject({ fixed: 'right', width: visible ? 160 : 100 })
+        if (!visible) {
+          await wrapper.vm.openWebSsh(LOG_DOC)
+          expect(warning).toHaveBeenCalledWith('缺少主机查看权限，无法打开 Web SSH')
+        }
+        expect(open).not.toHaveBeenCalled()
+        expect(getHostList).not.toHaveBeenCalled()
+      } finally {
+        wrapper.unmount()
+      }
+    })
+
+    it('点击时预留独立标签，精确匹配主机并使用主机而非应用的实例名', async () => {
+      store.state.perms = ['assets:hosts:view']
+      searchElasticsearchLogs.mockResolvedValueOnce({
+        data: { data: { results: [LOG_DOC], count: 1, live_tail_enabled: true } },
+      })
+      let resolveHosts
+      getHostList.mockImplementationOnce(() => new Promise((resolve) => { resolveHosts = resolve }))
+      const terminalWindow = createTerminalWindow()
+      const open = vi.spyOn(window, 'open').mockReturnValue(terminalWindow)
+      const wrapper = mountPanel(scope)
+      try {
+        await flushPromises()
+        expect(wrapper.vm.columns.find((column) => column.key === 'action'))
+          .toMatchObject({ fixed: 'right', width: 260 })
+        expect(wrapper.findComponent(Table).props('scroll')).toEqual({ x: 1830 })
+        const row = wrapper.get('tr[data-row-key="doc-1"]')
+        const tooltip = row.findAllComponents(Tooltip)
+          .find((item) => item.find('button[aria-label="Web SSH"]').exists())
+        expect(tooltip.props()).toMatchObject({ title: '打开WebSSH 终端', placement: 'top' })
+        const button = getButton(wrapper)
+        expect(button.isVisible()).toBe(true)
+        expect(button.text()).toBe('')
+        expect(button.classes()).not.toContain('ant-btn-default')
+        for (const action of row.findAll('button')) {
+          expect(action.classes()).toContain('ant-btn-link')
+        }
+        expect(button.classes()).not.toContain('ant-btn-sm')
+        expect(button.get('font-awesome-icon-stub').attributes('icon')).toBe('fas,terminal')
+        vi.useFakeTimers()
+        await button.trigger('mouseenter')
+        await vi.advanceTimersByTimeAsync(200)
+        expect(document.body.querySelector('.ant-tooltip-inner')?.textContent).toBe('打开WebSSH 终端')
+        await button.trigger('click')
+        expect(open).toHaveBeenCalledOnce()
+        expect(open).toHaveBeenCalledWith('about:blank', '_blank', 'width=1280,height=820')
+        expect(terminalWindow.opener).toBeNull()
+        expect(getHostList).toHaveBeenCalledWith({ search: LOG_DOC.host_ip, page: 1, page_size: 200 })
+        expect(terminalWindow.location.replace).not.toHaveBeenCalled()
+        expect(wrapper.vm.webSshOpeningLogId).toBe(LOG_DOC.id)
+        await button.trigger('click')
+        expect(open).toHaveBeenCalledTimes(1)
+        resolveHosts(hostResponse([{ ...host, id: 12, ip: '10.0.0.10' }, host]))
+        await flushPromises()
+        expect(resolveWebSshRoute).toHaveBeenCalledWith({
+          path: '/assets/hosts/webssh',
+          query: { host_id: '11', instance_name: 'agent-node-1', ip: LOG_DOC.host_ip },
+        })
+        expect(terminalWindow.location.replace).toHaveBeenCalledWith('/assets/hosts/webssh?host_id=11')
+        expect(wrapper.vm.webSshOpeningLogId).toBeNull()
+        expect(wrapper.vm.detailOpen).toBe(false)
+        wrapper.unmount()
+        expect(terminalWindow.close).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+        if (wrapper.exists()) wrapper.unmount()
+      }
+    })
+
+    it('搜索结果超过一页时继续定位，不把首屏近似 IP 当作目标', async () => {
+      store.state.perms = ['assets:hosts:view']
+      const firstPage = Array.from({ length: 200 }, (_, index) => ({
+        ...host, id: index + 100, ip: `10.1.0.${index + 1}`,
+      }))
+      getHostList
+        .mockResolvedValueOnce({ data: { code: 200, data: { results: firstPage, count: 201 } } })
+        .mockResolvedValueOnce({ data: { code: 200, data: { results: [host], count: 201 } } })
+      const terminalWindow = createTerminalWindow()
+      vi.spyOn(window, 'open').mockReturnValue(terminalWindow)
+      const wrapper = mountPanel(scope)
+      try {
+        await flushPromises()
+        await getButton(wrapper).trigger('click')
+        await flushPromises()
+        expect(getHostList).toHaveBeenCalledTimes(2)
+        expect(getHostList).toHaveBeenLastCalledWith({ search: LOG_DOC.host_ip, page: 2, page_size: 200 })
+        expect(terminalWindow.location.replace).toHaveBeenCalledOnce()
+      } finally {
+        wrapper.unmount()
+      }
+    })
+
+    it.each([
+      { label: '无主机', results: [], error: '未找到该日志对应的主机，请检查主机资产' },
+      { label: '仅模糊匹配', results: [{ ...host, ip: '10.0.0.10' }], error: '未找到该日志对应的主机，请检查主机资产' },
+      { label: '歧义', results: [host, { ...host, id: 12 }], error: '该 IP 匹配多个主机，请先修正主机资产' },
+      { label: '未绑定', results: [{ ...host, instance_name: '' }], error: '该主机未绑定 Agent 实例，无法打开 Web SSH' },
+      { label: '离线', results: [{ ...host, agent_online: false }], error: 'Agent 离线，无法打开 Web SSH' },
+      { label: '云端已删除', results: [{ ...host, is_deleted_in_cloud: true }], error: '该主机已在云端删除，无法打开 Web SSH' },
+      { label: '业务失败', response: { data: { code: 400, msg: '主机无权访问' } }, error: '主机无权访问' },
+      { label: '响应无效', response: { data: { code: 200, data: { results: null, count: 1 } } }, error: '主机查询响应无效，请刷新后重试' },
+    ])('定位失败明确提示并关闭预留标签：$label', async ({ results, response, error }) => {
+      store.state.perms = ['assets:hosts:view']
+      getHostList.mockResolvedValueOnce(response || hostResponse(results))
+      const terminalWindow = createTerminalWindow()
+      vi.spyOn(window, 'open').mockReturnValue(terminalWindow)
+      const notify = vi.spyOn(message, 'error').mockImplementation(() => {})
+      const wrapper = mountPanel(scope)
+      try {
+        await flushPromises()
+        await getButton(wrapper).trigger('click')
+        await flushPromises()
+        expect(notify).toHaveBeenCalledWith(error)
+        expect(terminalWindow.close).toHaveBeenCalledOnce()
+        expect(terminalWindow.location.replace).not.toHaveBeenCalled()
+        expect(resolveWebSshRoute).not.toHaveBeenCalled()
+        expect(wrapper.vm.webSshOpeningLogId).toBeNull()
+      } finally {
+        wrapper.unmount()
+      }
+    })
+
+    it('请求失败后可重新点击打开，不残留 loading 或空白窗口', async () => {
+      store.state.perms = ['assets:hosts:view']
+      getHostList.mockRejectedValueOnce(new Error('主机查询连接失败')).mockResolvedValueOnce(hostResponse([host]))
+      const failedWindow = createTerminalWindow()
+      const retryWindow = createTerminalWindow()
+      vi.spyOn(window, 'open').mockReturnValueOnce(failedWindow).mockReturnValueOnce(retryWindow)
+      const notify = vi.spyOn(message, 'error').mockImplementation(() => {})
+      const wrapper = mountPanel(scope)
+      try {
+        await flushPromises()
+        await getButton(wrapper).trigger('click')
+        await flushPromises()
+        expect(notify).toHaveBeenCalledWith('主机查询连接失败')
+        expect(failedWindow.close).toHaveBeenCalledOnce()
+        expect(wrapper.vm.webSshOpeningLogId).toBeNull()
+        await getButton(wrapper).trigger('click')
+        await flushPromises()
+        expect(retryWindow.location.replace).toHaveBeenCalledOnce()
+      } finally {
+        wrapper.unmount()
+      }
+    })
+
+    it.each(['缺少 IP', '弹窗被阻止'])('%s 时提示且不发主机查询', async (reason) => {
+      store.state.perms = ['assets:hosts:view']
+      if (reason === '缺少 IP') {
+        searchElasticsearchLogs.mockResolvedValueOnce({
+          data: { data: { results: [{ ...LOG_DOC, host_ip: '' }], count: 1 } },
+        })
+      }
+      const open = vi.spyOn(window, 'open').mockReturnValue(null)
+      const warning = vi.spyOn(message, 'warning').mockImplementation(() => {})
+      const wrapper = mountPanel(scope)
+      try {
+        await flushPromises()
+        await getButton(wrapper).trigger('click')
+        await flushPromises()
+        expect(warning).toHaveBeenCalledWith(reason === '缺少 IP'
+          ? '当前日志缺少主机 IP，无法打开 Web SSH'
+          : '浏览器阻止了新窗口，请允许弹出窗口后重试')
+        expect(open).toHaveBeenCalledTimes(reason === '缺少 IP' ? 0 : 1)
+        expect(getHostList).not.toHaveBeenCalled()
+        expect(wrapper.vm.webSshOpeningLogId).toBeNull()
+      } finally {
+        wrapper.unmount()
+      }
+    })
+
+    it.each(['卸载', 'KeepAlive 失活'])('%s 取消尚未完成的打开动作，迟到响应不导航', async (reason) => {
+      store.state.perms = ['assets:hosts:view']
+      let resolveHosts
+      getHostList.mockImplementationOnce(() => new Promise((resolve) => { resolveHosts = resolve }))
+      const terminalWindow = createTerminalWindow()
+      vi.spyOn(window, 'open').mockReturnValue(terminalWindow)
+      const visible = ref(true)
+      const harness = defineComponent({
+        setup: () => () => h(KeepAlive, null, {
+          default: () => visible.value ? h(LogQueryPanel, { scope }) : null,
+        }),
+      })
+      const wrapper = mount(harness, {
+        global: {
+          plugins: [Antd],
+          stubs: { FontAwesomeIcon: true },
+          provide: { [routerKey]: { resolve: resolveWebSshRoute } },
+        },
+      })
+      try {
+        await flushPromises()
+        const opening = wrapper.findComponent(LogQueryPanel).vm.openWebSsh(LOG_DOC)
+        if (reason === '卸载') wrapper.unmount()
+        else {
+          visible.value = false
+          await flushPromises()
+        }
+        expect(terminalWindow.close).toHaveBeenCalledOnce()
+        resolveHosts(hostResponse([host]))
+        await opening
+        expect(resolveWebSshRoute).not.toHaveBeenCalled()
+        expect(terminalWindow.location.replace).not.toHaveBeenCalled()
+      } finally {
+        if (wrapper.exists()) wrapper.unmount()
+      }
+    })
+  })
+
+  it.each([
+    { flag: true, visible: true },
+    { flag: false, visible: false },
+    { flag: undefined, visible: false },
+    { flag: 'true', visible: false },
+  ])('实时跟踪入口只在后端明确启用时显示：$flag', async ({ flag, visible }) => {
+    searchElasticsearchLogs.mockResolvedValueOnce({
+      data: { data: { results: [LOG_DOC], count: 1, live_tail_enabled: flag } },
+    })
+    const wrapper = mountPanel({ nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' })
+    try {
+      await flushPromises()
+      const row = wrapper.get('tr[data-row-key="doc-1"]')
+      expect(row.findAll('button').some((button) => button.text().replace(/\s/g, '') === '实时跟踪')).toBe(visible)
+      const actionColumn = wrapper.vm.columns.find((column) => column.key === 'action')
+      expect(actionColumn).toMatchObject({ fixed: 'right', width: visible ? 200 : 100 })
+      expect(wrapper.findComponent(Table).props('scroll')).toEqual({ x: visible ? 1770 : 1670 })
+      wrapper.vm.openDetail(LOG_DOC)
+      await flushPromises()
+      const button = [...document.querySelectorAll('.ant-drawer button')]
+        .find((item) => item.textContent.replace(/\s/g, '') === '实时跟踪')
+      expect(Boolean(button)).toBe(visible)
+      expect(wrapper.findComponent({ name: 'LiveTailDialog' }).exists()).toBe(visible)
+    } finally {
+      wrapper.unmount()
+      searchElasticsearchLogs.mockClear()
+    }
+  })
+
+  it.each([
+    { nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' },
+    { nodeType: 'all', nodeTitle: '全部业务' },
+  ])('日志操作列直接跟踪点击行的来源，不需要打开详情：$nodeType', async (scope) => {
+    const firstLog = { ...LOG_DOC, service_id: '42' }
+    const secondLog = {
+      ...LOG_DOC,
+      id: 'doc-2',
+      service_id: scope.nodeType === 'all' ? '43' : '42',
+      instance: 'second-tomcat',
+      host_ip: '10.0.0.2',
+      log_path: '/logs/second.log',
+    }
+    searchElasticsearchLogs.mockResolvedValueOnce({
+      data: { data: { results: [firstLog, secondLog], count: 2, live_tail_enabled: true } },
+    })
+    const wrapper = mountPanel(scope)
+    let start
+    try {
+      if (scope.nodeType === 'all') {
+        await wrapper.setProps({ candidateServices: [{ id: 42 }, { id: 43 }] })
+      }
+      await flushPromises()
+      start = vi.spyOn(wrapper.vm.liveTailDialog, 'start').mockImplementation(() => {})
+      const firstButton = wrapper.get('tr[data-row-key="doc-1"]').findAll('button')
+        .find((button) => button.text().replace(/\s/g, '') === '实时跟踪')
+      expect(firstButton.isVisible()).toBe(true)
+      await firstButton.trigger('click')
+      expect(start).toHaveBeenLastCalledWith(firstLog)
+
+      const row = wrapper.get('tr[data-row-key="doc-2"]')
+      const tooltip = row.findAllComponents(Tooltip)
+        .find((item) => item.text().replace(/\s/g, '') === '实时跟踪')
+      expect(tooltip.props()).toMatchObject({ title: '查看日志', placement: 'top' })
+      const button = tooltip.get('button')
+      expect(button.isVisible()).toBe(true)
+      vi.useFakeTimers()
+      await button.trigger('mouseenter')
+      await vi.advanceTimersByTimeAsync(200)
+      expect(document.body.querySelector('.ant-tooltip-inner')?.textContent).toBe('查看日志')
+      await button.trigger('click')
+      expect(start).toHaveBeenCalledTimes(2)
+      expect(start).toHaveBeenLastCalledWith(secondLog)
+      expect(wrapper.vm.detailOpen).toBe(false)
+      expect(wrapper.findComponent(Table).props('scroll').x).toBe(wrapper.vm.tableScrollX)
+      expect(wrapper.vm.tableScrollX).toBe(scope.nodeType === 'all' ? 2290 : 1770)
+    } finally {
+      start?.mockRestore()
+      wrapper.unmount()
+      vi.useRealTimers()
+      searchElasticsearchLogs.mockClear()
+    }
+  })
+
+  it('实时跟踪入口随重新查询的关闭状态隐藏并卸载窗口', async () => {
+    searchElasticsearchLogs.mockResolvedValueOnce({
+      data: { data: { results: [LOG_DOC], count: 1, live_tail_enabled: true } },
+    })
+    const wrapper = mountPanel({ nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' })
+    try {
+      await flushPromises()
+      wrapper.vm.openDetail(LOG_DOC)
+      await flushPromises()
+      expect(wrapper.findComponent({ name: 'LiveTailDialog' }).exists()).toBe(true)
+      searchElasticsearchLogs.mockResolvedValueOnce({
+        data: { data: { results: [LOG_DOC], count: 1, live_tail_enabled: false } },
+      })
+      await wrapper.vm.loadLogs()
+      await flushPromises()
+      expect(document.body.textContent).not.toContain('实时跟踪')
+      expect(wrapper.findComponent({ name: 'LiveTailDialog' }).exists()).toBe(false)
+      expect(wrapper.vm.columns.find((column) => column.key === 'action'))
+        .toMatchObject({ fixed: 'right', width: 100 })
+      expect(wrapper.findComponent(Table).props('scroll')).toEqual({ x: 1670 })
+    } finally {
+      wrapper.unmount()
+      searchElasticsearchLogs.mockClear()
+    }
+  })
+
+  it('实时跟踪入口也使用统计响应中的启用状态', async () => {
+    const wrapper = mountPanel({ nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' })
+    try {
+      await flushPromises()
+      expect(wrapper.findComponent({ name: 'LiveTailDialog' }).exists()).toBe(false)
+      searchElasticsearchLogFacetStats.mockResolvedValueOnce({
+        data: { data: { buckets: [FACET_BUCKET], interval_minutes: 5, live_tail_enabled: true } },
+      })
+      await wrapper.vm.loadStats()
+      wrapper.vm.openDetail(FACET_BUCKET.sample)
+      await flushPromises()
+      expect(document.body.textContent).toContain('实时跟踪')
+      expect(wrapper.findComponent({ name: 'LiveTailDialog' }).exists()).toBe(true)
+    } finally {
+      wrapper.unmount()
+      searchElasticsearchLogs.mockClear()
+    }
+  })
+
   it('范围内没有逻辑服务时展示空状态，不发起日志查询', async () => {
     // 跨服务模式下候选集为空（范围内没有服务）同样是"查不了"：文案要说清为什么。
     const wrapper = mountPanel()

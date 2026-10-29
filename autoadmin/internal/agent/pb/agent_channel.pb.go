@@ -42,6 +42,7 @@ type ServerFrame struct {
 	//	*ServerFrame_TerminalResizeRequest
 	//	*ServerFrame_TerminalCloseRequest
 	//	*ServerFrame_AutomationExecuteRequest
+	//	*ServerFrame_TailRequest
 	Payload       isServerFrame_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -228,6 +229,15 @@ func (x *ServerFrame) GetAutomationExecuteRequest() *AutomationExecuteRequest {
 	return nil
 }
 
+func (x *ServerFrame) GetTailRequest() *TailRequest {
+	if x != nil {
+		if x, ok := x.Payload.(*ServerFrame_TailRequest); ok {
+			return x.TailRequest
+		}
+	}
+	return nil
+}
+
 type isServerFrame_Payload interface {
 	isServerFrame_Payload()
 }
@@ -301,6 +311,10 @@ type ServerFrame_AutomationExecuteRequest struct {
 	AutomationExecuteRequest *AutomationExecuteRequest `protobuf:"bytes,16,opt,name=automation_execute_request,json=automationExecuteRequest,proto3,oneof"`
 }
 
+type ServerFrame_TailRequest struct {
+	TailRequest *TailRequest `protobuf:"bytes,17,opt,name=tail_request,json=tailRequest,proto3,oneof"`
+}
+
 func (*ServerFrame_HelloAck) isServerFrame_Payload() {}
 
 func (*ServerFrame_ListRequest) isServerFrame_Payload() {}
@@ -333,6 +347,8 @@ func (*ServerFrame_TerminalCloseRequest) isServerFrame_Payload() {}
 
 func (*ServerFrame_AutomationExecuteRequest) isServerFrame_Payload() {}
 
+func (*ServerFrame_TailRequest) isServerFrame_Payload() {}
+
 // agent -> backend
 type AgentFrame struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -353,6 +369,7 @@ type AgentFrame struct {
 	//	*AgentFrame_TerminalDataResponse
 	//	*AgentFrame_TerminalExitResponse
 	//	*AgentFrame_AutomationExecuteResponse
+	//	*AgentFrame_TailEvent
 	Payload       isAgentFrame_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -530,6 +547,15 @@ func (x *AgentFrame) GetAutomationExecuteResponse() *AutomationExecuteResponse {
 	return nil
 }
 
+func (x *AgentFrame) GetTailEvent() *TailEvent {
+	if x != nil {
+		if x, ok := x.Payload.(*AgentFrame_TailEvent); ok {
+			return x.TailEvent
+		}
+	}
+	return nil
+}
+
 type isAgentFrame_Payload interface {
 	isAgentFrame_Payload()
 }
@@ -594,6 +620,10 @@ type AgentFrame_AutomationExecuteResponse struct {
 	AutomationExecuteResponse *AutomationExecuteResponse `protobuf:"bytes,15,opt,name=automation_execute_response,json=automationExecuteResponse,proto3,oneof"` // 自动化/workflow 任务执行结果
 }
 
+type AgentFrame_TailEvent struct {
+	TailEvent *TailEvent `protobuf:"bytes,16,opt,name=tail_event,json=tailEvent,proto3,oneof"`
+}
+
 func (*AgentFrame_Hello) isAgentFrame_Payload() {}
 
 func (*AgentFrame_ListResponse) isAgentFrame_Payload() {}
@@ -624,6 +654,155 @@ func (*AgentFrame_TerminalExitResponse) isAgentFrame_Payload() {}
 
 func (*AgentFrame_AutomationExecuteResponse) isAgentFrame_Payload() {}
 
+func (*AgentFrame_TailEvent) isAgentFrame_Payload() {}
+
+// prepare opens without reading; start acknowledges admission of the physical file.
+// renew extends a 45s lease and replies with a lease event; stop is idempotent.
+// Rotation requires another start.
+type TailRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Action        string                 `protobuf:"bytes,2,opt,name=action,proto3" json:"action,omitempty"`
+	Path          string                 `protobuf:"bytes,3,opt,name=path,proto3" json:"path,omitempty"`
+	Identity      string                 `protobuf:"bytes,4,opt,name=identity,proto3" json:"identity,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TailRequest) Reset() {
+	*x = TailRequest{}
+	mi := &file_proto_agent_channel_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TailRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TailRequest) ProtoMessage() {}
+
+func (x *TailRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_channel_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TailRequest.ProtoReflect.Descriptor instead.
+func (*TailRequest) Descriptor() ([]byte, []int) {
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *TailRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *TailRequest) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *TailRequest) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *TailRequest) GetIdentity() string {
+	if x != nil {
+		return x.Identity
+	}
+	return ""
+}
+
+type TailEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Type          string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
+	Data          []byte                 `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
+	Identity      string                 `protobuf:"bytes,4,opt,name=identity,proto3" json:"identity,omitempty"`
+	Message       string                 `protobuf:"bytes,5,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TailEvent) Reset() {
+	*x = TailEvent{}
+	mi := &file_proto_agent_channel_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TailEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TailEvent) ProtoMessage() {}
+
+func (x *TailEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_channel_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TailEvent.ProtoReflect.Descriptor instead.
+func (*TailEvent) Descriptor() ([]byte, []int) {
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *TailEvent) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *TailEvent) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *TailEvent) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+func (x *TailEvent) GetIdentity() string {
+	if x != nil {
+		return x.Identity
+	}
+	return ""
+}
+
+func (x *TailEvent) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 // 会话建立后 agent 发送的第一帧：携带 instance_name 与共享密钥供 backend 校验注册，
 // 校验失败 backend 会直接关闭流，避免未授权 client 冒充 agent 下发文件操作。
 // instance_name 即 assets_host.instance_name（agent 侧来源 DJ_AGENT_INSTANCE_NAME），
@@ -642,7 +821,7 @@ type Hello struct {
 
 func (x *Hello) Reset() {
 	*x = Hello{}
-	mi := &file_proto_agent_channel_proto_msgTypes[2]
+	mi := &file_proto_agent_channel_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -654,7 +833,7 @@ func (x *Hello) String() string {
 func (*Hello) ProtoMessage() {}
 
 func (x *Hello) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[2]
+	mi := &file_proto_agent_channel_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -667,7 +846,7 @@ func (x *Hello) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Hello.ProtoReflect.Descriptor instead.
 func (*Hello) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{2}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *Hello) GetInstanceName() string {
@@ -701,7 +880,7 @@ type HelloAck struct {
 
 func (x *HelloAck) Reset() {
 	*x = HelloAck{}
-	mi := &file_proto_agent_channel_proto_msgTypes[3]
+	mi := &file_proto_agent_channel_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -713,7 +892,7 @@ func (x *HelloAck) String() string {
 func (*HelloAck) ProtoMessage() {}
 
 func (x *HelloAck) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[3]
+	mi := &file_proto_agent_channel_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -726,7 +905,7 @@ func (x *HelloAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HelloAck.ProtoReflect.Descriptor instead.
 func (*HelloAck) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{3}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *HelloAck) GetAccepted() bool {
@@ -756,7 +935,7 @@ type FileEntry struct {
 
 func (x *FileEntry) Reset() {
 	*x = FileEntry{}
-	mi := &file_proto_agent_channel_proto_msgTypes[4]
+	mi := &file_proto_agent_channel_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -768,7 +947,7 @@ func (x *FileEntry) String() string {
 func (*FileEntry) ProtoMessage() {}
 
 func (x *FileEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[4]
+	mi := &file_proto_agent_channel_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -781,7 +960,7 @@ func (x *FileEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FileEntry.ProtoReflect.Descriptor instead.
 func (*FileEntry) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{4}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *FileEntry) GetName() string {
@@ -829,7 +1008,7 @@ type ListRequest struct {
 
 func (x *ListRequest) Reset() {
 	*x = ListRequest{}
-	mi := &file_proto_agent_channel_proto_msgTypes[5]
+	mi := &file_proto_agent_channel_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -841,7 +1020,7 @@ func (x *ListRequest) String() string {
 func (*ListRequest) ProtoMessage() {}
 
 func (x *ListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[5]
+	mi := &file_proto_agent_channel_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -854,7 +1033,7 @@ func (x *ListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRequest.ProtoReflect.Descriptor instead.
 func (*ListRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{5}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ListRequest) GetRequestId() string {
@@ -883,7 +1062,7 @@ type ListResponse struct {
 
 func (x *ListResponse) Reset() {
 	*x = ListResponse{}
-	mi := &file_proto_agent_channel_proto_msgTypes[6]
+	mi := &file_proto_agent_channel_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -895,7 +1074,7 @@ func (x *ListResponse) String() string {
 func (*ListResponse) ProtoMessage() {}
 
 func (x *ListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[6]
+	mi := &file_proto_agent_channel_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -908,7 +1087,7 @@ func (x *ListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListResponse.ProtoReflect.Descriptor instead.
 func (*ListResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{6}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ListResponse) GetRequestId() string {
@@ -949,7 +1128,7 @@ type StatRequest struct {
 
 func (x *StatRequest) Reset() {
 	*x = StatRequest{}
-	mi := &file_proto_agent_channel_proto_msgTypes[7]
+	mi := &file_proto_agent_channel_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -961,7 +1140,7 @@ func (x *StatRequest) String() string {
 func (*StatRequest) ProtoMessage() {}
 
 func (x *StatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[7]
+	mi := &file_proto_agent_channel_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -974,7 +1153,7 @@ func (x *StatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatRequest.ProtoReflect.Descriptor instead.
 func (*StatRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{7}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *StatRequest) GetRequestId() string {
@@ -1006,7 +1185,7 @@ type StatResponse struct {
 
 func (x *StatResponse) Reset() {
 	*x = StatResponse{}
-	mi := &file_proto_agent_channel_proto_msgTypes[8]
+	mi := &file_proto_agent_channel_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1018,7 +1197,7 @@ func (x *StatResponse) String() string {
 func (*StatResponse) ProtoMessage() {}
 
 func (x *StatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[8]
+	mi := &file_proto_agent_channel_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1031,7 +1210,7 @@ func (x *StatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatResponse.ProtoReflect.Descriptor instead.
 func (*StatResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{8}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *StatResponse) GetRequestId() string {
@@ -1096,7 +1275,7 @@ type ReadRequest struct {
 
 func (x *ReadRequest) Reset() {
 	*x = ReadRequest{}
-	mi := &file_proto_agent_channel_proto_msgTypes[9]
+	mi := &file_proto_agent_channel_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1108,7 +1287,7 @@ func (x *ReadRequest) String() string {
 func (*ReadRequest) ProtoMessage() {}
 
 func (x *ReadRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[9]
+	mi := &file_proto_agent_channel_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1121,7 +1300,7 @@ func (x *ReadRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadRequest.ProtoReflect.Descriptor instead.
 func (*ReadRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{9}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ReadRequest) GetRequestId() string {
@@ -1165,7 +1344,7 @@ type ReadChunk struct {
 
 func (x *ReadChunk) Reset() {
 	*x = ReadChunk{}
-	mi := &file_proto_agent_channel_proto_msgTypes[10]
+	mi := &file_proto_agent_channel_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1177,7 +1356,7 @@ func (x *ReadChunk) String() string {
 func (*ReadChunk) ProtoMessage() {}
 
 func (x *ReadChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[10]
+	mi := &file_proto_agent_channel_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1190,7 +1369,7 @@ func (x *ReadChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadChunk.ProtoReflect.Descriptor instead.
 func (*ReadChunk) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{10}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ReadChunk) GetRequestId() string {
@@ -1239,7 +1418,7 @@ type WriteOpenRequest struct {
 
 func (x *WriteOpenRequest) Reset() {
 	*x = WriteOpenRequest{}
-	mi := &file_proto_agent_channel_proto_msgTypes[11]
+	mi := &file_proto_agent_channel_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1251,7 +1430,7 @@ func (x *WriteOpenRequest) String() string {
 func (*WriteOpenRequest) ProtoMessage() {}
 
 func (x *WriteOpenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[11]
+	mi := &file_proto_agent_channel_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1264,7 +1443,7 @@ func (x *WriteOpenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteOpenRequest.ProtoReflect.Descriptor instead.
 func (*WriteOpenRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{11}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *WriteOpenRequest) GetRequestId() string {
@@ -1298,7 +1477,7 @@ type WriteOpenResponse struct {
 
 func (x *WriteOpenResponse) Reset() {
 	*x = WriteOpenResponse{}
-	mi := &file_proto_agent_channel_proto_msgTypes[12]
+	mi := &file_proto_agent_channel_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1310,7 +1489,7 @@ func (x *WriteOpenResponse) String() string {
 func (*WriteOpenResponse) ProtoMessage() {}
 
 func (x *WriteOpenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[12]
+	mi := &file_proto_agent_channel_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1323,7 +1502,7 @@ func (x *WriteOpenResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteOpenResponse.ProtoReflect.Descriptor instead.
 func (*WriteOpenResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{12}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *WriteOpenResponse) GetRequestId() string {
@@ -1350,7 +1529,7 @@ type WriteChunkRequest struct {
 
 func (x *WriteChunkRequest) Reset() {
 	*x = WriteChunkRequest{}
-	mi := &file_proto_agent_channel_proto_msgTypes[13]
+	mi := &file_proto_agent_channel_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1362,7 +1541,7 @@ func (x *WriteChunkRequest) String() string {
 func (*WriteChunkRequest) ProtoMessage() {}
 
 func (x *WriteChunkRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[13]
+	mi := &file_proto_agent_channel_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1375,7 +1554,7 @@ func (x *WriteChunkRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteChunkRequest.ProtoReflect.Descriptor instead.
 func (*WriteChunkRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{13}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *WriteChunkRequest) GetRequestId() string {
@@ -1403,7 +1582,7 @@ type WriteChunkAck struct {
 
 func (x *WriteChunkAck) Reset() {
 	*x = WriteChunkAck{}
-	mi := &file_proto_agent_channel_proto_msgTypes[14]
+	mi := &file_proto_agent_channel_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1415,7 +1594,7 @@ func (x *WriteChunkAck) String() string {
 func (*WriteChunkAck) ProtoMessage() {}
 
 func (x *WriteChunkAck) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[14]
+	mi := &file_proto_agent_channel_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1428,7 +1607,7 @@ func (x *WriteChunkAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteChunkAck.ProtoReflect.Descriptor instead.
 func (*WriteChunkAck) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{14}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *WriteChunkAck) GetRequestId() string {
@@ -1463,7 +1642,7 @@ type WriteCloseRequest struct {
 
 func (x *WriteCloseRequest) Reset() {
 	*x = WriteCloseRequest{}
-	mi := &file_proto_agent_channel_proto_msgTypes[15]
+	mi := &file_proto_agent_channel_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1475,7 +1654,7 @@ func (x *WriteCloseRequest) String() string {
 func (*WriteCloseRequest) ProtoMessage() {}
 
 func (x *WriteCloseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[15]
+	mi := &file_proto_agent_channel_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1488,7 +1667,7 @@ func (x *WriteCloseRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteCloseRequest.ProtoReflect.Descriptor instead.
 func (*WriteCloseRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{15}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *WriteCloseRequest) GetRequestId() string {
@@ -1517,7 +1696,7 @@ type WriteCloseResponse struct {
 
 func (x *WriteCloseResponse) Reset() {
 	*x = WriteCloseResponse{}
-	mi := &file_proto_agent_channel_proto_msgTypes[16]
+	mi := &file_proto_agent_channel_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1529,7 +1708,7 @@ func (x *WriteCloseResponse) String() string {
 func (*WriteCloseResponse) ProtoMessage() {}
 
 func (x *WriteCloseResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[16]
+	mi := &file_proto_agent_channel_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1542,7 +1721,7 @@ func (x *WriteCloseResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteCloseResponse.ProtoReflect.Descriptor instead.
 func (*WriteCloseResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{16}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *WriteCloseResponse) GetRequestId() string {
@@ -1584,7 +1763,7 @@ type RenameRequest struct {
 
 func (x *RenameRequest) Reset() {
 	*x = RenameRequest{}
-	mi := &file_proto_agent_channel_proto_msgTypes[17]
+	mi := &file_proto_agent_channel_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1596,7 +1775,7 @@ func (x *RenameRequest) String() string {
 func (*RenameRequest) ProtoMessage() {}
 
 func (x *RenameRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[17]
+	mi := &file_proto_agent_channel_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1609,7 +1788,7 @@ func (x *RenameRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenameRequest.ProtoReflect.Descriptor instead.
 func (*RenameRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{17}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *RenameRequest) GetRequestId() string {
@@ -1645,7 +1824,7 @@ type RenameResponse struct {
 
 func (x *RenameResponse) Reset() {
 	*x = RenameResponse{}
-	mi := &file_proto_agent_channel_proto_msgTypes[18]
+	mi := &file_proto_agent_channel_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1657,7 +1836,7 @@ func (x *RenameResponse) String() string {
 func (*RenameResponse) ProtoMessage() {}
 
 func (x *RenameResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[18]
+	mi := &file_proto_agent_channel_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1670,7 +1849,7 @@ func (x *RenameResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenameResponse.ProtoReflect.Descriptor instead.
 func (*RenameResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{18}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *RenameResponse) GetRequestId() string {
@@ -1712,7 +1891,7 @@ type DeleteRequest struct {
 
 func (x *DeleteRequest) Reset() {
 	*x = DeleteRequest{}
-	mi := &file_proto_agent_channel_proto_msgTypes[19]
+	mi := &file_proto_agent_channel_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1724,7 +1903,7 @@ func (x *DeleteRequest) String() string {
 func (*DeleteRequest) ProtoMessage() {}
 
 func (x *DeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[19]
+	mi := &file_proto_agent_channel_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1737,7 +1916,7 @@ func (x *DeleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRequest.ProtoReflect.Descriptor instead.
 func (*DeleteRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{19}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *DeleteRequest) GetRequestId() string {
@@ -1772,7 +1951,7 @@ type DeleteResponse struct {
 
 func (x *DeleteResponse) Reset() {
 	*x = DeleteResponse{}
-	mi := &file_proto_agent_channel_proto_msgTypes[20]
+	mi := &file_proto_agent_channel_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1784,7 +1963,7 @@ func (x *DeleteResponse) String() string {
 func (*DeleteResponse) ProtoMessage() {}
 
 func (x *DeleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[20]
+	mi := &file_proto_agent_channel_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1797,7 +1976,7 @@ func (x *DeleteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteResponse.ProtoReflect.Descriptor instead.
 func (*DeleteResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{20}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *DeleteResponse) GetRequestId() string {
@@ -1832,7 +2011,7 @@ type MkdirRequest struct {
 
 func (x *MkdirRequest) Reset() {
 	*x = MkdirRequest{}
-	mi := &file_proto_agent_channel_proto_msgTypes[21]
+	mi := &file_proto_agent_channel_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1844,7 +2023,7 @@ func (x *MkdirRequest) String() string {
 func (*MkdirRequest) ProtoMessage() {}
 
 func (x *MkdirRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[21]
+	mi := &file_proto_agent_channel_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1857,7 +2036,7 @@ func (x *MkdirRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MkdirRequest.ProtoReflect.Descriptor instead.
 func (*MkdirRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{21}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *MkdirRequest) GetRequestId() string {
@@ -1893,7 +2072,7 @@ type MkdirResponse struct {
 
 func (x *MkdirResponse) Reset() {
 	*x = MkdirResponse{}
-	mi := &file_proto_agent_channel_proto_msgTypes[22]
+	mi := &file_proto_agent_channel_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1905,7 +2084,7 @@ func (x *MkdirResponse) String() string {
 func (*MkdirResponse) ProtoMessage() {}
 
 func (x *MkdirResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[22]
+	mi := &file_proto_agent_channel_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1918,7 +2097,7 @@ func (x *MkdirResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MkdirResponse.ProtoReflect.Descriptor instead.
 func (*MkdirResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{22}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *MkdirResponse) GetRequestId() string {
@@ -1960,7 +2139,7 @@ type CreateFileRequest struct {
 
 func (x *CreateFileRequest) Reset() {
 	*x = CreateFileRequest{}
-	mi := &file_proto_agent_channel_proto_msgTypes[23]
+	mi := &file_proto_agent_channel_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1972,7 +2151,7 @@ func (x *CreateFileRequest) String() string {
 func (*CreateFileRequest) ProtoMessage() {}
 
 func (x *CreateFileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[23]
+	mi := &file_proto_agent_channel_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1985,7 +2164,7 @@ func (x *CreateFileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateFileRequest.ProtoReflect.Descriptor instead.
 func (*CreateFileRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{23}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CreateFileRequest) GetRequestId() string {
@@ -2021,7 +2200,7 @@ type CreateFileResponse struct {
 
 func (x *CreateFileResponse) Reset() {
 	*x = CreateFileResponse{}
-	mi := &file_proto_agent_channel_proto_msgTypes[24]
+	mi := &file_proto_agent_channel_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2033,7 +2212,7 @@ func (x *CreateFileResponse) String() string {
 func (*CreateFileResponse) ProtoMessage() {}
 
 func (x *CreateFileResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[24]
+	mi := &file_proto_agent_channel_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2046,7 +2225,7 @@ func (x *CreateFileResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateFileResponse.ProtoReflect.Descriptor instead.
 func (*CreateFileResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{24}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *CreateFileResponse) GetRequestId() string {
@@ -2094,7 +2273,7 @@ type TerminalOpenRequest struct {
 
 func (x *TerminalOpenRequest) Reset() {
 	*x = TerminalOpenRequest{}
-	mi := &file_proto_agent_channel_proto_msgTypes[25]
+	mi := &file_proto_agent_channel_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2106,7 +2285,7 @@ func (x *TerminalOpenRequest) String() string {
 func (*TerminalOpenRequest) ProtoMessage() {}
 
 func (x *TerminalOpenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[25]
+	mi := &file_proto_agent_channel_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2119,7 +2298,7 @@ func (x *TerminalOpenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalOpenRequest.ProtoReflect.Descriptor instead.
 func (*TerminalOpenRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{25}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *TerminalOpenRequest) GetRequestId() string {
@@ -2162,7 +2341,7 @@ type TerminalOpenResponse struct {
 
 func (x *TerminalOpenResponse) Reset() {
 	*x = TerminalOpenResponse{}
-	mi := &file_proto_agent_channel_proto_msgTypes[26]
+	mi := &file_proto_agent_channel_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2174,7 +2353,7 @@ func (x *TerminalOpenResponse) String() string {
 func (*TerminalOpenResponse) ProtoMessage() {}
 
 func (x *TerminalOpenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[26]
+	mi := &file_proto_agent_channel_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2187,7 +2366,7 @@ func (x *TerminalOpenResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalOpenResponse.ProtoReflect.Descriptor instead.
 func (*TerminalOpenResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{26}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *TerminalOpenResponse) GetRequestId() string {
@@ -2221,7 +2400,7 @@ type TerminalDataRequest struct {
 
 func (x *TerminalDataRequest) Reset() {
 	*x = TerminalDataRequest{}
-	mi := &file_proto_agent_channel_proto_msgTypes[27]
+	mi := &file_proto_agent_channel_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2233,7 +2412,7 @@ func (x *TerminalDataRequest) String() string {
 func (*TerminalDataRequest) ProtoMessage() {}
 
 func (x *TerminalDataRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[27]
+	mi := &file_proto_agent_channel_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2246,7 +2425,7 @@ func (x *TerminalDataRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalDataRequest.ProtoReflect.Descriptor instead.
 func (*TerminalDataRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{27}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *TerminalDataRequest) GetRequestId() string {
@@ -2273,7 +2452,7 @@ type TerminalDataResponse struct {
 
 func (x *TerminalDataResponse) Reset() {
 	*x = TerminalDataResponse{}
-	mi := &file_proto_agent_channel_proto_msgTypes[28]
+	mi := &file_proto_agent_channel_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2285,7 +2464,7 @@ func (x *TerminalDataResponse) String() string {
 func (*TerminalDataResponse) ProtoMessage() {}
 
 func (x *TerminalDataResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[28]
+	mi := &file_proto_agent_channel_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2298,7 +2477,7 @@ func (x *TerminalDataResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalDataResponse.ProtoReflect.Descriptor instead.
 func (*TerminalDataResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{28}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *TerminalDataResponse) GetRequestId() string {
@@ -2326,7 +2505,7 @@ type TerminalResizeRequest struct {
 
 func (x *TerminalResizeRequest) Reset() {
 	*x = TerminalResizeRequest{}
-	mi := &file_proto_agent_channel_proto_msgTypes[29]
+	mi := &file_proto_agent_channel_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2338,7 +2517,7 @@ func (x *TerminalResizeRequest) String() string {
 func (*TerminalResizeRequest) ProtoMessage() {}
 
 func (x *TerminalResizeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[29]
+	mi := &file_proto_agent_channel_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2351,7 +2530,7 @@ func (x *TerminalResizeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalResizeRequest.ProtoReflect.Descriptor instead.
 func (*TerminalResizeRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{29}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *TerminalResizeRequest) GetRequestId() string {
@@ -2384,7 +2563,7 @@ type TerminalCloseRequest struct {
 
 func (x *TerminalCloseRequest) Reset() {
 	*x = TerminalCloseRequest{}
-	mi := &file_proto_agent_channel_proto_msgTypes[30]
+	mi := &file_proto_agent_channel_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2396,7 +2575,7 @@ func (x *TerminalCloseRequest) String() string {
 func (*TerminalCloseRequest) ProtoMessage() {}
 
 func (x *TerminalCloseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[30]
+	mi := &file_proto_agent_channel_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2409,7 +2588,7 @@ func (x *TerminalCloseRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalCloseRequest.ProtoReflect.Descriptor instead.
 func (*TerminalCloseRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{30}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *TerminalCloseRequest) GetRequestId() string {
@@ -2430,7 +2609,7 @@ type TerminalExitResponse struct {
 
 func (x *TerminalExitResponse) Reset() {
 	*x = TerminalExitResponse{}
-	mi := &file_proto_agent_channel_proto_msgTypes[31]
+	mi := &file_proto_agent_channel_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2442,7 +2621,7 @@ func (x *TerminalExitResponse) String() string {
 func (*TerminalExitResponse) ProtoMessage() {}
 
 func (x *TerminalExitResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[31]
+	mi := &file_proto_agent_channel_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2455,7 +2634,7 @@ func (x *TerminalExitResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalExitResponse.ProtoReflect.Descriptor instead.
 func (*TerminalExitResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{31}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *TerminalExitResponse) GetRequestId() string {
@@ -2496,7 +2675,7 @@ type AutomationExecuteRequest struct {
 
 func (x *AutomationExecuteRequest) Reset() {
 	*x = AutomationExecuteRequest{}
-	mi := &file_proto_agent_channel_proto_msgTypes[32]
+	mi := &file_proto_agent_channel_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2508,7 +2687,7 @@ func (x *AutomationExecuteRequest) String() string {
 func (*AutomationExecuteRequest) ProtoMessage() {}
 
 func (x *AutomationExecuteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[32]
+	mi := &file_proto_agent_channel_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2521,7 +2700,7 @@ func (x *AutomationExecuteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AutomationExecuteRequest.ProtoReflect.Descriptor instead.
 func (*AutomationExecuteRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{32}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *AutomationExecuteRequest) GetRequestId() string {
@@ -2583,7 +2762,7 @@ type AutomationExecuteResponse struct {
 
 func (x *AutomationExecuteResponse) Reset() {
 	*x = AutomationExecuteResponse{}
-	mi := &file_proto_agent_channel_proto_msgTypes[33]
+	mi := &file_proto_agent_channel_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2595,7 +2774,7 @@ func (x *AutomationExecuteResponse) String() string {
 func (*AutomationExecuteResponse) ProtoMessage() {}
 
 func (x *AutomationExecuteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_channel_proto_msgTypes[33]
+	mi := &file_proto_agent_channel_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2608,7 +2787,7 @@ func (x *AutomationExecuteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AutomationExecuteResponse.ProtoReflect.Descriptor instead.
 func (*AutomationExecuteResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_channel_proto_rawDescGZIP(), []int{33}
+	return file_proto_agent_channel_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *AutomationExecuteResponse) GetRequestId() string {
@@ -2678,8 +2857,7 @@ var File_proto_agent_channel_proto protoreflect.FileDescriptor
 
 const file_proto_agent_channel_proto_rawDesc = "" +
 	"\n" +
-	"\x19proto/agent_channel.proto\x12\x10djadmin.agent.v1\"\xbc\n" +
-	"\n" +
+	"\x19proto/agent_channel.proto\x12\x10djadmin.agent.v1\"\x80\v\n" +
 	"\vServerFrame\x129\n" +
 	"\thello_ack\x18\x01 \x01(\v2\x1a.djadmin.agent.v1.HelloAckH\x00R\bhelloAck\x12B\n" +
 	"\flist_request\x18\x02 \x01(\v2\x1d.djadmin.agent.v1.ListRequestH\x00R\vlistRequest\x12B\n" +
@@ -2697,8 +2875,10 @@ const file_proto_agent_channel_proto_rawDesc = "" +
 	"\x15terminal_data_request\x18\r \x01(\v2%.djadmin.agent.v1.TerminalDataRequestH\x00R\x13terminalDataRequest\x12a\n" +
 	"\x17terminal_resize_request\x18\x0e \x01(\v2'.djadmin.agent.v1.TerminalResizeRequestH\x00R\x15terminalResizeRequest\x12^\n" +
 	"\x16terminal_close_request\x18\x0f \x01(\v2&.djadmin.agent.v1.TerminalCloseRequestH\x00R\x14terminalCloseRequest\x12j\n" +
-	"\x1aautomation_execute_request\x18\x10 \x01(\v2*.djadmin.agent.v1.AutomationExecuteRequestH\x00R\x18automationExecuteRequestB\t\n" +
-	"\apayload\"\xdd\t\n" +
+	"\x1aautomation_execute_request\x18\x10 \x01(\v2*.djadmin.agent.v1.AutomationExecuteRequestH\x00R\x18automationExecuteRequest\x12B\n" +
+	"\ftail_request\x18\x11 \x01(\v2\x1d.djadmin.agent.v1.TailRequestH\x00R\vtailRequestB\t\n" +
+	"\apayload\"\x9b\n" +
+	"\n" +
 	"\n" +
 	"AgentFrame\x12/\n" +
 	"\x05hello\x18\x01 \x01(\v2\x17.djadmin.agent.v1.HelloH\x00R\x05hello\x12E\n" +
@@ -2717,8 +2897,23 @@ const file_proto_agent_channel_proto_rawDesc = "" +
 	"\x16terminal_open_response\x18\f \x01(\v2&.djadmin.agent.v1.TerminalOpenResponseH\x00R\x14terminalOpenResponse\x12^\n" +
 	"\x16terminal_data_response\x18\r \x01(\v2&.djadmin.agent.v1.TerminalDataResponseH\x00R\x14terminalDataResponse\x12^\n" +
 	"\x16terminal_exit_response\x18\x0e \x01(\v2&.djadmin.agent.v1.TerminalExitResponseH\x00R\x14terminalExitResponse\x12m\n" +
-	"\x1bautomation_execute_response\x18\x0f \x01(\v2+.djadmin.agent.v1.AutomationExecuteResponseH\x00R\x19automationExecuteResponseB\t\n" +
-	"\apayload\"\\\n" +
+	"\x1bautomation_execute_response\x18\x0f \x01(\v2+.djadmin.agent.v1.AutomationExecuteResponseH\x00R\x19automationExecuteResponse\x12<\n" +
+	"\n" +
+	"tail_event\x18\x10 \x01(\v2\x1b.djadmin.agent.v1.TailEventH\x00R\ttailEventB\t\n" +
+	"\apayload\"t\n" +
+	"\vTailRequest\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\x12\x16\n" +
+	"\x06action\x18\x02 \x01(\tR\x06action\x12\x12\n" +
+	"\x04path\x18\x03 \x01(\tR\x04path\x12\x1a\n" +
+	"\bidentity\x18\x04 \x01(\tR\bidentity\"\x88\x01\n" +
+	"\tTailEvent\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\x12\x12\n" +
+	"\x04type\x18\x02 \x01(\tR\x04type\x12\x12\n" +
+	"\x04data\x18\x03 \x01(\fR\x04data\x12\x1a\n" +
+	"\bidentity\x18\x04 \x01(\tR\bidentity\x12\x18\n" +
+	"\amessage\x18\x05 \x01(\tR\amessage\"\\\n" +
 	"\x05Hello\x12#\n" +
 	"\rinstance_name\x18\x01 \x01(\tR\finstanceName\x12\x14\n" +
 	"\x05token\x18\x02 \x01(\tR\x05token\x12\x18\n" +
@@ -2908,83 +3103,87 @@ func file_proto_agent_channel_proto_rawDescGZIP() []byte {
 	return file_proto_agent_channel_proto_rawDescData
 }
 
-var file_proto_agent_channel_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
+var file_proto_agent_channel_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
 var file_proto_agent_channel_proto_goTypes = []any{
 	(*ServerFrame)(nil),               // 0: djadmin.agent.v1.ServerFrame
 	(*AgentFrame)(nil),                // 1: djadmin.agent.v1.AgentFrame
-	(*Hello)(nil),                     // 2: djadmin.agent.v1.Hello
-	(*HelloAck)(nil),                  // 3: djadmin.agent.v1.HelloAck
-	(*FileEntry)(nil),                 // 4: djadmin.agent.v1.FileEntry
-	(*ListRequest)(nil),               // 5: djadmin.agent.v1.ListRequest
-	(*ListResponse)(nil),              // 6: djadmin.agent.v1.ListResponse
-	(*StatRequest)(nil),               // 7: djadmin.agent.v1.StatRequest
-	(*StatResponse)(nil),              // 8: djadmin.agent.v1.StatResponse
-	(*ReadRequest)(nil),               // 9: djadmin.agent.v1.ReadRequest
-	(*ReadChunk)(nil),                 // 10: djadmin.agent.v1.ReadChunk
-	(*WriteOpenRequest)(nil),          // 11: djadmin.agent.v1.WriteOpenRequest
-	(*WriteOpenResponse)(nil),         // 12: djadmin.agent.v1.WriteOpenResponse
-	(*WriteChunkRequest)(nil),         // 13: djadmin.agent.v1.WriteChunkRequest
-	(*WriteChunkAck)(nil),             // 14: djadmin.agent.v1.WriteChunkAck
-	(*WriteCloseRequest)(nil),         // 15: djadmin.agent.v1.WriteCloseRequest
-	(*WriteCloseResponse)(nil),        // 16: djadmin.agent.v1.WriteCloseResponse
-	(*RenameRequest)(nil),             // 17: djadmin.agent.v1.RenameRequest
-	(*RenameResponse)(nil),            // 18: djadmin.agent.v1.RenameResponse
-	(*DeleteRequest)(nil),             // 19: djadmin.agent.v1.DeleteRequest
-	(*DeleteResponse)(nil),            // 20: djadmin.agent.v1.DeleteResponse
-	(*MkdirRequest)(nil),              // 21: djadmin.agent.v1.MkdirRequest
-	(*MkdirResponse)(nil),             // 22: djadmin.agent.v1.MkdirResponse
-	(*CreateFileRequest)(nil),         // 23: djadmin.agent.v1.CreateFileRequest
-	(*CreateFileResponse)(nil),        // 24: djadmin.agent.v1.CreateFileResponse
-	(*TerminalOpenRequest)(nil),       // 25: djadmin.agent.v1.TerminalOpenRequest
-	(*TerminalOpenResponse)(nil),      // 26: djadmin.agent.v1.TerminalOpenResponse
-	(*TerminalDataRequest)(nil),       // 27: djadmin.agent.v1.TerminalDataRequest
-	(*TerminalDataResponse)(nil),      // 28: djadmin.agent.v1.TerminalDataResponse
-	(*TerminalResizeRequest)(nil),     // 29: djadmin.agent.v1.TerminalResizeRequest
-	(*TerminalCloseRequest)(nil),      // 30: djadmin.agent.v1.TerminalCloseRequest
-	(*TerminalExitResponse)(nil),      // 31: djadmin.agent.v1.TerminalExitResponse
-	(*AutomationExecuteRequest)(nil),  // 32: djadmin.agent.v1.AutomationExecuteRequest
-	(*AutomationExecuteResponse)(nil), // 33: djadmin.agent.v1.AutomationExecuteResponse
+	(*TailRequest)(nil),               // 2: djadmin.agent.v1.TailRequest
+	(*TailEvent)(nil),                 // 3: djadmin.agent.v1.TailEvent
+	(*Hello)(nil),                     // 4: djadmin.agent.v1.Hello
+	(*HelloAck)(nil),                  // 5: djadmin.agent.v1.HelloAck
+	(*FileEntry)(nil),                 // 6: djadmin.agent.v1.FileEntry
+	(*ListRequest)(nil),               // 7: djadmin.agent.v1.ListRequest
+	(*ListResponse)(nil),              // 8: djadmin.agent.v1.ListResponse
+	(*StatRequest)(nil),               // 9: djadmin.agent.v1.StatRequest
+	(*StatResponse)(nil),              // 10: djadmin.agent.v1.StatResponse
+	(*ReadRequest)(nil),               // 11: djadmin.agent.v1.ReadRequest
+	(*ReadChunk)(nil),                 // 12: djadmin.agent.v1.ReadChunk
+	(*WriteOpenRequest)(nil),          // 13: djadmin.agent.v1.WriteOpenRequest
+	(*WriteOpenResponse)(nil),         // 14: djadmin.agent.v1.WriteOpenResponse
+	(*WriteChunkRequest)(nil),         // 15: djadmin.agent.v1.WriteChunkRequest
+	(*WriteChunkAck)(nil),             // 16: djadmin.agent.v1.WriteChunkAck
+	(*WriteCloseRequest)(nil),         // 17: djadmin.agent.v1.WriteCloseRequest
+	(*WriteCloseResponse)(nil),        // 18: djadmin.agent.v1.WriteCloseResponse
+	(*RenameRequest)(nil),             // 19: djadmin.agent.v1.RenameRequest
+	(*RenameResponse)(nil),            // 20: djadmin.agent.v1.RenameResponse
+	(*DeleteRequest)(nil),             // 21: djadmin.agent.v1.DeleteRequest
+	(*DeleteResponse)(nil),            // 22: djadmin.agent.v1.DeleteResponse
+	(*MkdirRequest)(nil),              // 23: djadmin.agent.v1.MkdirRequest
+	(*MkdirResponse)(nil),             // 24: djadmin.agent.v1.MkdirResponse
+	(*CreateFileRequest)(nil),         // 25: djadmin.agent.v1.CreateFileRequest
+	(*CreateFileResponse)(nil),        // 26: djadmin.agent.v1.CreateFileResponse
+	(*TerminalOpenRequest)(nil),       // 27: djadmin.agent.v1.TerminalOpenRequest
+	(*TerminalOpenResponse)(nil),      // 28: djadmin.agent.v1.TerminalOpenResponse
+	(*TerminalDataRequest)(nil),       // 29: djadmin.agent.v1.TerminalDataRequest
+	(*TerminalDataResponse)(nil),      // 30: djadmin.agent.v1.TerminalDataResponse
+	(*TerminalResizeRequest)(nil),     // 31: djadmin.agent.v1.TerminalResizeRequest
+	(*TerminalCloseRequest)(nil),      // 32: djadmin.agent.v1.TerminalCloseRequest
+	(*TerminalExitResponse)(nil),      // 33: djadmin.agent.v1.TerminalExitResponse
+	(*AutomationExecuteRequest)(nil),  // 34: djadmin.agent.v1.AutomationExecuteRequest
+	(*AutomationExecuteResponse)(nil), // 35: djadmin.agent.v1.AutomationExecuteResponse
 }
 var file_proto_agent_channel_proto_depIdxs = []int32{
-	3,  // 0: djadmin.agent.v1.ServerFrame.hello_ack:type_name -> djadmin.agent.v1.HelloAck
-	5,  // 1: djadmin.agent.v1.ServerFrame.list_request:type_name -> djadmin.agent.v1.ListRequest
-	7,  // 2: djadmin.agent.v1.ServerFrame.stat_request:type_name -> djadmin.agent.v1.StatRequest
-	9,  // 3: djadmin.agent.v1.ServerFrame.read_request:type_name -> djadmin.agent.v1.ReadRequest
-	11, // 4: djadmin.agent.v1.ServerFrame.write_open_request:type_name -> djadmin.agent.v1.WriteOpenRequest
-	13, // 5: djadmin.agent.v1.ServerFrame.write_chunk_request:type_name -> djadmin.agent.v1.WriteChunkRequest
-	15, // 6: djadmin.agent.v1.ServerFrame.write_close_request:type_name -> djadmin.agent.v1.WriteCloseRequest
-	17, // 7: djadmin.agent.v1.ServerFrame.rename_request:type_name -> djadmin.agent.v1.RenameRequest
-	19, // 8: djadmin.agent.v1.ServerFrame.delete_request:type_name -> djadmin.agent.v1.DeleteRequest
-	21, // 9: djadmin.agent.v1.ServerFrame.mkdir_request:type_name -> djadmin.agent.v1.MkdirRequest
-	23, // 10: djadmin.agent.v1.ServerFrame.create_file_request:type_name -> djadmin.agent.v1.CreateFileRequest
-	25, // 11: djadmin.agent.v1.ServerFrame.terminal_open_request:type_name -> djadmin.agent.v1.TerminalOpenRequest
-	27, // 12: djadmin.agent.v1.ServerFrame.terminal_data_request:type_name -> djadmin.agent.v1.TerminalDataRequest
-	29, // 13: djadmin.agent.v1.ServerFrame.terminal_resize_request:type_name -> djadmin.agent.v1.TerminalResizeRequest
-	30, // 14: djadmin.agent.v1.ServerFrame.terminal_close_request:type_name -> djadmin.agent.v1.TerminalCloseRequest
-	32, // 15: djadmin.agent.v1.ServerFrame.automation_execute_request:type_name -> djadmin.agent.v1.AutomationExecuteRequest
-	2,  // 16: djadmin.agent.v1.AgentFrame.hello:type_name -> djadmin.agent.v1.Hello
-	6,  // 17: djadmin.agent.v1.AgentFrame.list_response:type_name -> djadmin.agent.v1.ListResponse
-	8,  // 18: djadmin.agent.v1.AgentFrame.stat_response:type_name -> djadmin.agent.v1.StatResponse
-	10, // 19: djadmin.agent.v1.AgentFrame.read_chunk:type_name -> djadmin.agent.v1.ReadChunk
-	12, // 20: djadmin.agent.v1.AgentFrame.write_open_response:type_name -> djadmin.agent.v1.WriteOpenResponse
-	14, // 21: djadmin.agent.v1.AgentFrame.write_chunk_ack:type_name -> djadmin.agent.v1.WriteChunkAck
-	16, // 22: djadmin.agent.v1.AgentFrame.write_close_response:type_name -> djadmin.agent.v1.WriteCloseResponse
-	18, // 23: djadmin.agent.v1.AgentFrame.rename_response:type_name -> djadmin.agent.v1.RenameResponse
-	20, // 24: djadmin.agent.v1.AgentFrame.delete_response:type_name -> djadmin.agent.v1.DeleteResponse
-	22, // 25: djadmin.agent.v1.AgentFrame.mkdir_response:type_name -> djadmin.agent.v1.MkdirResponse
-	24, // 26: djadmin.agent.v1.AgentFrame.create_file_response:type_name -> djadmin.agent.v1.CreateFileResponse
-	26, // 27: djadmin.agent.v1.AgentFrame.terminal_open_response:type_name -> djadmin.agent.v1.TerminalOpenResponse
-	28, // 28: djadmin.agent.v1.AgentFrame.terminal_data_response:type_name -> djadmin.agent.v1.TerminalDataResponse
-	31, // 29: djadmin.agent.v1.AgentFrame.terminal_exit_response:type_name -> djadmin.agent.v1.TerminalExitResponse
-	33, // 30: djadmin.agent.v1.AgentFrame.automation_execute_response:type_name -> djadmin.agent.v1.AutomationExecuteResponse
-	4,  // 31: djadmin.agent.v1.ListResponse.entries:type_name -> djadmin.agent.v1.FileEntry
-	1,  // 32: djadmin.agent.v1.AgentChannel.Session:input_type -> djadmin.agent.v1.AgentFrame
-	0,  // 33: djadmin.agent.v1.AgentChannel.Session:output_type -> djadmin.agent.v1.ServerFrame
-	33, // [33:34] is the sub-list for method output_type
-	32, // [32:33] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	5,  // 0: djadmin.agent.v1.ServerFrame.hello_ack:type_name -> djadmin.agent.v1.HelloAck
+	7,  // 1: djadmin.agent.v1.ServerFrame.list_request:type_name -> djadmin.agent.v1.ListRequest
+	9,  // 2: djadmin.agent.v1.ServerFrame.stat_request:type_name -> djadmin.agent.v1.StatRequest
+	11, // 3: djadmin.agent.v1.ServerFrame.read_request:type_name -> djadmin.agent.v1.ReadRequest
+	13, // 4: djadmin.agent.v1.ServerFrame.write_open_request:type_name -> djadmin.agent.v1.WriteOpenRequest
+	15, // 5: djadmin.agent.v1.ServerFrame.write_chunk_request:type_name -> djadmin.agent.v1.WriteChunkRequest
+	17, // 6: djadmin.agent.v1.ServerFrame.write_close_request:type_name -> djadmin.agent.v1.WriteCloseRequest
+	19, // 7: djadmin.agent.v1.ServerFrame.rename_request:type_name -> djadmin.agent.v1.RenameRequest
+	21, // 8: djadmin.agent.v1.ServerFrame.delete_request:type_name -> djadmin.agent.v1.DeleteRequest
+	23, // 9: djadmin.agent.v1.ServerFrame.mkdir_request:type_name -> djadmin.agent.v1.MkdirRequest
+	25, // 10: djadmin.agent.v1.ServerFrame.create_file_request:type_name -> djadmin.agent.v1.CreateFileRequest
+	27, // 11: djadmin.agent.v1.ServerFrame.terminal_open_request:type_name -> djadmin.agent.v1.TerminalOpenRequest
+	29, // 12: djadmin.agent.v1.ServerFrame.terminal_data_request:type_name -> djadmin.agent.v1.TerminalDataRequest
+	31, // 13: djadmin.agent.v1.ServerFrame.terminal_resize_request:type_name -> djadmin.agent.v1.TerminalResizeRequest
+	32, // 14: djadmin.agent.v1.ServerFrame.terminal_close_request:type_name -> djadmin.agent.v1.TerminalCloseRequest
+	34, // 15: djadmin.agent.v1.ServerFrame.automation_execute_request:type_name -> djadmin.agent.v1.AutomationExecuteRequest
+	2,  // 16: djadmin.agent.v1.ServerFrame.tail_request:type_name -> djadmin.agent.v1.TailRequest
+	4,  // 17: djadmin.agent.v1.AgentFrame.hello:type_name -> djadmin.agent.v1.Hello
+	8,  // 18: djadmin.agent.v1.AgentFrame.list_response:type_name -> djadmin.agent.v1.ListResponse
+	10, // 19: djadmin.agent.v1.AgentFrame.stat_response:type_name -> djadmin.agent.v1.StatResponse
+	12, // 20: djadmin.agent.v1.AgentFrame.read_chunk:type_name -> djadmin.agent.v1.ReadChunk
+	14, // 21: djadmin.agent.v1.AgentFrame.write_open_response:type_name -> djadmin.agent.v1.WriteOpenResponse
+	16, // 22: djadmin.agent.v1.AgentFrame.write_chunk_ack:type_name -> djadmin.agent.v1.WriteChunkAck
+	18, // 23: djadmin.agent.v1.AgentFrame.write_close_response:type_name -> djadmin.agent.v1.WriteCloseResponse
+	20, // 24: djadmin.agent.v1.AgentFrame.rename_response:type_name -> djadmin.agent.v1.RenameResponse
+	22, // 25: djadmin.agent.v1.AgentFrame.delete_response:type_name -> djadmin.agent.v1.DeleteResponse
+	24, // 26: djadmin.agent.v1.AgentFrame.mkdir_response:type_name -> djadmin.agent.v1.MkdirResponse
+	26, // 27: djadmin.agent.v1.AgentFrame.create_file_response:type_name -> djadmin.agent.v1.CreateFileResponse
+	28, // 28: djadmin.agent.v1.AgentFrame.terminal_open_response:type_name -> djadmin.agent.v1.TerminalOpenResponse
+	30, // 29: djadmin.agent.v1.AgentFrame.terminal_data_response:type_name -> djadmin.agent.v1.TerminalDataResponse
+	33, // 30: djadmin.agent.v1.AgentFrame.terminal_exit_response:type_name -> djadmin.agent.v1.TerminalExitResponse
+	35, // 31: djadmin.agent.v1.AgentFrame.automation_execute_response:type_name -> djadmin.agent.v1.AutomationExecuteResponse
+	3,  // 32: djadmin.agent.v1.AgentFrame.tail_event:type_name -> djadmin.agent.v1.TailEvent
+	6,  // 33: djadmin.agent.v1.ListResponse.entries:type_name -> djadmin.agent.v1.FileEntry
+	1,  // 34: djadmin.agent.v1.AgentChannel.Session:input_type -> djadmin.agent.v1.AgentFrame
+	0,  // 35: djadmin.agent.v1.AgentChannel.Session:output_type -> djadmin.agent.v1.ServerFrame
+	35, // [35:36] is the sub-list for method output_type
+	34, // [34:35] is the sub-list for method input_type
+	34, // [34:34] is the sub-list for extension type_name
+	34, // [34:34] is the sub-list for extension extendee
+	0,  // [0:34] is the sub-list for field type_name
 }
 
 func init() { file_proto_agent_channel_proto_init() }
@@ -3009,6 +3208,7 @@ func file_proto_agent_channel_proto_init() {
 		(*ServerFrame_TerminalResizeRequest)(nil),
 		(*ServerFrame_TerminalCloseRequest)(nil),
 		(*ServerFrame_AutomationExecuteRequest)(nil),
+		(*ServerFrame_TailRequest)(nil),
 	}
 	file_proto_agent_channel_proto_msgTypes[1].OneofWrappers = []any{
 		(*AgentFrame_Hello)(nil),
@@ -3026,6 +3226,7 @@ func file_proto_agent_channel_proto_init() {
 		(*AgentFrame_TerminalDataResponse)(nil),
 		(*AgentFrame_TerminalExitResponse)(nil),
 		(*AgentFrame_AutomationExecuteResponse)(nil),
+		(*AgentFrame_TailEvent)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -3033,7 +3234,7 @@ func file_proto_agent_channel_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_agent_channel_proto_rawDesc), len(file_proto_agent_channel_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   34,
+			NumMessages:   36,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

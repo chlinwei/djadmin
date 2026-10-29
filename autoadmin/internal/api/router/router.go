@@ -427,6 +427,8 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	// 日志采集域（Filebeat 纳管目标、采集配置下发、链路体检、数据流清理、ES 集群与检索）
 	// 与监控域挂在同一个 /monitor 路由组下，共用组级鉴权；两者的依赖由上面统一构造。
 	logcollectHandler := logcollect.NewHandler(database, gateway, playbookHandler, secretEncryptor, packageRoot)
+	logcollectHandler.ConfigureLiveTail(tokens, allowedOrigins)
+	engine.GET("/ws/monitor/log-tail/", logcollectHandler.LiveTail)
 	// Filebeat 选包同样可能在架构缺失时补采一次资产信息。
 	logcollectHandler.SetHostInfoRefresher(assetsHandler.RefreshHostInfoByID)
 	// 日志格式认证（架构文档 §4.8）：编排与写回在 assets 侧，取样例 + 跑 ES 在日志采集域

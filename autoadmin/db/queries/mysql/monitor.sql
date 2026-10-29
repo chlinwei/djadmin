@@ -963,6 +963,22 @@ JOIN assets_application_deployment d ON d.id = sd.deployment_id
 JOIN assets_host h ON h.id = d.host_id
 ORDER BY d.host_id;
 
+-- 应用实例名只在同一主机内唯一；按服务、实例与事件已有的主机 IP 联查，
+-- 最多取两行以识别歧义，不从事件中读取冗余的主机 ID。
+-- name: ListLiveTailHostTargets :many
+SELECT d.host_id, COALESCE(h.instance_name, '') AS host_instance_name
+FROM assets_application_service_deployment sd
+JOIN assets_application_deployment d ON d.id = sd.deployment_id
+JOIN assets_application_service s ON s.id = sd.service_id
+JOIN assets_host h ON h.id = d.host_id
+WHERE sd.service_id = sqlc.arg(service_id)
+  AND d.instance_name = sqlc.arg(instance_name)
+  AND h.ip = sqlc.arg(host_ip)
+  AND sd.enabled = TRUE AND d.enabled = TRUE AND s.enabled = TRUE AND s.log_collection_enabled = TRUE
+  AND h.is_deleted_in_cloud = FALSE
+  AND NOT EXISTS (SELECT 1 FROM assets_service_deletion deleted WHERE deleted.service_id=s.id)
+LIMIT 2;
+
 -- 渲染 Filebeat inputs 所需的「服务×实例」行，按主机批量取（一次查完一页/一批主机，
 -- 避免按主机循环查库）。列与语义同 loadHostLogRenderInput 的实例查询。
 -- name: ListHostLogRenderInstances :many

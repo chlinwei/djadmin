@@ -30,6 +30,7 @@ type Handler struct {
 	// 批量动作的执行器（入队 + 有界并发 + 进度可查），见 log_batch_job.go。
 	// 由 router 在装配队列发布者后注入；未注入时批量作业接口直接报"执行器未装配"。
 	batchRunner *LogBatchRunner
+	liveTail    *liveTailState
 }
 
 // NewHandler 装配日志采集域 Handler。凭据加解密器与软件包根目录由调用方（router）统一构造后注入：

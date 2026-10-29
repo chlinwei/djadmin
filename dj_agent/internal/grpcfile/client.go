@@ -50,6 +50,8 @@ type session struct {
 
 	automationMu sync.Mutex
 	automation   map[string]context.CancelFunc
+	tails        tailManager
+	tailOutput   chan *pb.TailEvent
 }
 
 func (s *session) send(frame *pb.AgentFrame) error {
@@ -122,6 +124,8 @@ func Run(ctx context.Context, addr, instanceName, backendToken string, exec *exe
 }
 
 func runOnce(ctx context.Context, addr, instanceName, backendToken string, exec *executor.Executor, onConnectionState func(bool)) (bool, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	established := false
 	conn, err := grpc.NewClient(
 		addr,
@@ -148,11 +152,25 @@ func runOnce(ctx context.Context, addr, instanceName, backendToken string, exec 
 	}
 
 	sess := &session{
-		stream:    stream,
-		exec:      exec,
-		writes:    make(map[string]*writeHandle),
-		terminals: make(map[string]*terminalSession),
+		stream:     stream,
+		exec:       exec,
+		writes:     make(map[string]*writeHandle),
+		terminals:  make(map[string]*terminalSession),
+		tailOutput: make(chan *pb.TailEvent, 8),
 	}
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event := <-sess.tailOutput:
+				if sess.send(&pb.AgentFrame{Payload: &pb.AgentFrame_TailEvent{TailEvent: event}}) != nil {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
 	defer sess.closeAllTerminals()
 	if err := sess.send(&pb.AgentFrame{Payload: &pb.AgentFrame_Hello{Hello: &pb.Hello{InstanceName: instanceName, Token: backendToken, Version: buildinfo.Version}}}); err != nil {
 		return established, fmt.Errorf("send hello failed: %w", err)
@@ -181,6 +199,8 @@ func runOnce(ctx context.Context, addr, instanceName, backendToken string, exec 
 		case *pb.ServerFrame_ReadRequest:
 			// 下载可能耗时较长，放到独立 goroutine 里跑，避免阻塞同一连接上的其他并发操作。
 			go sess.handleRead(payload.ReadRequest)
+		case *pb.ServerFrame_TailRequest:
+			sess.handleTail(ctx, payload.TailRequest)
 		case *pb.ServerFrame_WriteOpenRequest:
 			sess.handleWriteOpen(payload.WriteOpenRequest)
 		case *pb.ServerFrame_WriteChunkRequest:

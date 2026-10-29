@@ -38,6 +38,7 @@ message ServerFrame {
     // agent 本地降权执行后回传一次 automation_execute_response（以 request_id 关联）。
     // 取代旧的 backend 直连 host.ip:19090 HTTP 执行路径。
     AutomationExecuteRequest automation_execute_request = 16;
+    TailRequest tail_request = 17;
   }
 }
 
@@ -59,7 +60,27 @@ message AgentFrame {
     TerminalDataResponse terminal_data_response = 13; // agent -> backend 的 stdout/stderr（PTY 已合并两者）
     TerminalExitResponse terminal_exit_response = 14; // shell 进程退出
     AutomationExecuteResponse automation_execute_response = 15; // 自动化/workflow 任务执行结果
+    TailEvent tail_event = 16;
   }
+
+}
+
+// prepare opens without reading; start acknowledges admission of the physical file.
+// renew extends a 45s lease and replies with a lease event; stop is idempotent.
+// Rotation requires another start.
+message TailRequest {
+  string request_id = 1;
+  string action = 2;
+  string path = 3;
+  string identity = 4;
+}
+
+message TailEvent {
+  string request_id = 1;
+  string type = 2;
+  bytes data = 3;
+  string identity = 4;
+  string message = 5;
 }
 
 // 会话建立后 agent 发送的第一帧：携带 instance_name 与共享密钥供 backend 校验注册，

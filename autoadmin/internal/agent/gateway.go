@@ -32,6 +32,8 @@ type session struct {
 	pending        map[string]chan *pb.AutomationExecuteResponse
 	terminalEvents map[string]chan *pb.AgentFrame
 	fileEvents     map[string]chan *pb.AgentFrame
+	tailEvents     map[string]chan *pb.TailEvent
+	tailControl    chan *pb.TailRequest
 }
 
 func NewGateway(validate func(string, string) bool, onHello func(instanceName, version string)) *Gateway {
@@ -65,6 +67,22 @@ func (gateway *Gateway) Session(stream pb.AgentChannel_SessionServer) error {
 		return fmt.Errorf("agent authentication failed")
 	}
 	sess := &session{instanceName: hello.InstanceName, stream: stream, pending: make(map[string]chan *pb.AutomationExecuteResponse), terminalEvents: make(map[string]chan *pb.AgentFrame), fileEvents: make(map[string]chan *pb.AgentFrame)}
+	sess.tailEvents = make(map[string]chan *pb.TailEvent)
+	sess.tailControl = make(chan *pb.TailRequest, 128)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case req := <-sess.tailControl:
+				if sess.send(&pb.ServerFrame{Payload: &pb.ServerFrame_TailRequest{TailRequest: req}}) != nil {
+					return
+				}
+			}
+		}
+	}()
 	if gateway.onHello != nil {
 		gateway.onHello(sess.instanceName, hello.Version)
 	}
@@ -87,7 +105,7 @@ func (gateway *Gateway) Session(stream pb.AgentChannel_SessionServer) error {
 		slog.Info("agent session ended", "instance_name", sess.instanceName, "session_count", sessionCount)
 		sess.closePending()
 	}()
-	if err = stream.Send(&pb.ServerFrame{Payload: &pb.ServerFrame_HelloAck{HelloAck: &pb.HelloAck{Accepted: true, Message: "accepted"}}}); err != nil {
+	if err = sess.send(&pb.ServerFrame{Payload: &pb.ServerFrame_HelloAck{HelloAck: &pb.HelloAck{Accepted: true, Message: "accepted"}}}); err != nil {
 		return err
 	}
 	for {
@@ -117,6 +135,9 @@ func (gateway *Gateway) Session(stream pb.AgentChannel_SessionServer) error {
 		if requestID := fileResponseRequestID(frame); requestID != "" {
 			sess.sendFileEvent(requestID, frame)
 		}
+		if event := frame.GetTailEvent(); event != nil {
+			sess.sendTailEvent(event)
+		}
 	}
 }
 func (sess *session) closePending() {
@@ -132,6 +153,10 @@ func (sess *session) closePending() {
 	}
 	for id, ch := range sess.fileEvents {
 		delete(sess.fileEvents, id)
+		close(ch)
+	}
+	for id, ch := range sess.tailEvents {
+		delete(sess.tailEvents, id)
 		close(ch)
 	}
 }

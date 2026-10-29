@@ -164,6 +164,7 @@
               :loading="loading"
               :pagination="pagination"
               :scroll="{ x: tableScrollX }"
+              sticky
               size="small"
               :locale="tableLocale"
               @change="handleTableChange"
@@ -183,9 +184,28 @@
                   </a-tooltip>
                 </template>
                 <template v-else-if="column.key === 'action'">
-                  <a-tooltip title="查看详情">
-                    <a-button size="small" type="link" @click="openDetail(record)">查看详情</a-button>
-                  </a-tooltip>
+                  <a-space :size="6">
+                    <a-tooltip title="详细日志" placement="top">
+                      <a-button size="small" type="link" @click="openDetail(record)">查看详情</a-button>
+                    </a-tooltip>
+                    <a-tooltip v-if="liveTailEnabled" title="查看日志" placement="top">
+                      <a-button size="small" type="link" @click="liveTailDialog?.start(record)">
+                        <FontAwesomeIcon :icon="['fas', 'file-lines']" />
+                        <span>&nbsp;实时跟踪</span>
+                      </a-button>
+                    </a-tooltip>
+                    <a-tooltip v-if="canOpenWebSsh" title="打开WebSSH 终端" placement="top">
+                      <a-button
+                        aria-label="Web SSH"
+                        type="link"
+                        :loading="webSshOpeningLogId === record.id"
+                        :disabled="webSshOpeningLogId !== null && webSshOpeningLogId !== record.id"
+                        @click="openWebSsh(record)"
+                      >
+                        <FontAwesomeIcon :icon="['fas', 'terminal']" />
+                      </a-button>
+                    </a-tooltip>
+                  </a-space>
                 </template>
               </template>
             </a-table>
@@ -230,10 +250,10 @@
                 <template v-else-if="column.key === 'sample_message'">{{ record.sample?.log_message || '-' }}</template>
                 <template v-else-if="column.key === 'action'">
                   <a-space :size="6">
-                    <a-tooltip title="在明细里查看这一类日志">
+                    <a-tooltip title="查看日志" placement="top">
                       <a-button size="small" type="link" @click="drillDown(record)">查看日志</a-button>
                     </a-tooltip>
-                    <a-tooltip title="查看详情">
+                    <a-tooltip title="详细日志" placement="top">
                       <a-button size="small" type="link" :disabled="!record.sample" @click="openDetail(record.sample)">查看详情</a-button>
                     </a-tooltip>
                   </a-space>
@@ -258,6 +278,12 @@
         <a-descriptions-item label="日志路径">{{ activeLog?.log_path || '-' }}</a-descriptions-item>
         <a-descriptions-item label="错误指纹" v-if="activeLog?.error_fingerprint">{{ activeLog.error_fingerprint }}</a-descriptions-item>
       </a-descriptions>
+      <a-tooltip v-if="liveTailEnabled" title="查看日志" placement="top">
+        <a-button style="margin-top: 12px" @click="liveTailDialog?.start(activeLog)">
+          <FontAwesomeIcon :icon="['fas', 'file-lines']" />
+          <span>&nbsp;实时跟踪</span>
+        </a-button>
+      </a-tooltip>
       <div class="detail-section-head">
         <span class="detail-section-title">原始日志</span>
         <a-space :size="8">
@@ -295,6 +321,8 @@
       </template>
     </a-drawer>
 
+    <LiveTailDialog v-if="liveTailEnabled" ref="liveTailDialog" />
+
     <a-modal
       v-model:open="detailTextModal.open"
       :title="detailTextModal.title"
@@ -313,6 +341,7 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { createPagination, tableLocale } from '@/util/tableStyle'
 import * as echarts from 'echarts'
@@ -322,7 +351,21 @@ import { formatTimeWithTimezone } from '@/util/timezone'
 import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISOStringByUserTimezone } from '@/util/timezoneRange'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { copyTextWithFallback } from '@/util/clipboard'
+import { getHostList } from '@/api/assets/host'
+import { checkPermission } from '@/directives/permission/permission'
+import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
+import { buildDeploymentWebSSHRoute } from '@/views/assets/service-tree/navigation'
 import store from '@/store'
+import LiveTailDialog from './LiveTailDialog.vue'
+
+const liveTailDialog = ref(null)
+// Only the server advertises availability; hiding also unmounts active readers.
+const liveTailEnabled = ref(false)
+const router = useRouter()
+const canOpenWebSsh = computed(() => checkPermission('assets:hosts:view'))
+const webSshOpeningLogId = ref(null)
+let webSshRequestId = 0
+let pendingWebSshWindow = null
 
 // 与后端 LOG_SEARCH_MAX_RESULT_WINDOW 保持一致：超过该上限需要用户缩小范围，而不是无限深翻页。
 const MAX_RESULT_WINDOW = 2000
@@ -548,6 +591,7 @@ function onTimeRangeOpenChange(open) {
 }
 
 const pagination = reactive(createPagination(0, 100, { pageSizeOptions: ['50', '100', '200'] }))
+const actionColumnWidth = computed(() => 100 + (liveTailEnabled.value ? 100 : 0) + (canOpenWebSsh.value ? 60 : 0))
 
 // 跨服务模式多一列「逻辑服务」：记录上只有 service 编码，名字用候选清单反查
 //（查不到显示编码——范围外的文档不该出现，出现编码也比空着好排查）。
@@ -568,16 +612,17 @@ const columns = computed(() => {
     { title: '主机', dataIndex: 'host_ip', key: 'host_ip', width: 130 },
     { title: '日志路径', dataIndex: 'log_path', key: 'log_path', width: 280, ellipsis: true },
     { title: '错误日志', dataIndex: 'log_message', key: 'log_message', ellipsis: true },
-    { title: '操作', key: 'action', width: 100, fixed: 'right' },
+    { title: '操作', key: 'action', width: actionColumnWidth.value, fixed: 'right' },
   )
   return base
 })
 
-// 路径列预留独立宽度；跨服务模式再增加维度列与逻辑服务列，避免挤压日志正文。
+// 操作列扩展时同步增加横向滚动宽度，避免挤压正文；跨服务模式再增加来源列宽。
 const tableScrollX = computed(() => {
-  if (!isMultiService.value) return 1670
+  const base = 1570 + actionColumnWidth.value
+  if (!isMultiService.value) return base
   const extra = dimensionColumns.value.reduce((sum, column) => sum + (column.width || 0), 0) + 150
-  return 1670 + extra
+  return base + extra
 })
 
 const statsValueColumnTitle = computed(
@@ -727,6 +772,7 @@ async function ensureClusterId() {
 
 async function loadLogs() {
   if (!queryReady.value) {
+    liveTailEnabled.value = false
     logs.value = []
     pagination.total = 0
     return
@@ -738,6 +784,7 @@ async function loadLogs() {
     const id = await ensureClusterId()
     if (requestId !== logsRequestId) return
     if (!id) {
+      liveTailEnabled.value = false
       message.warning('尚未配置日志存储集群')
       logs.value = []
       pagination.total = 0
@@ -746,10 +793,12 @@ async function loadLogs() {
     const response = await searchElasticsearchLogs(id, params)
     if (requestId !== logsRequestId) return
     const payload = response?.data?.data || {}
+    liveTailEnabled.value = payload.live_tail_enabled === true
     logs.value = payload.results || []
     pagination.total = Math.min(payload.count || 0, MAX_RESULT_WINDOW)
   } catch (error) {
     if (requestId !== logsRequestId) return
+    liveTailEnabled.value = false
     message.error(error?.response?.data?.msg || error?.message || '查询日志失败')
   } finally {
     if (requestId === logsRequestId) loading.value = false
@@ -758,6 +807,7 @@ async function loadLogs() {
 
 async function loadStats() {
   if (!queryReady.value) {
+    liveTailEnabled.value = false
     statsBuckets.value = []
     return
   }
@@ -768,6 +818,7 @@ async function loadStats() {
     const id = await ensureClusterId()
     if (requestId !== statsRequestId) return
     if (!id) {
+      liveTailEnabled.value = false
       message.warning('尚未配置日志存储集群')
       statsBuckets.value = []
       return
@@ -775,10 +826,12 @@ async function loadStats() {
     const response = await searchElasticsearchLogFacetStats(id, params)
     if (requestId !== statsRequestId) return
     const payload = response?.data?.data || {}
+    liveTailEnabled.value = payload.live_tail_enabled === true
     statsBuckets.value = payload.buckets || []
     statsIntervalMinutes.value = payload.interval_minutes || 1
   } catch (error) {
     if (requestId !== statsRequestId) return
+    liveTailEnabled.value = false
     message.error(error?.response?.data?.msg || error?.message || '统计失败')
   } finally {
     if (requestId === statsRequestId) {
@@ -936,6 +989,90 @@ function drillDown(bucket) {
   runSearch()
 }
 
+async function openWebSsh(record) {
+  if (!canOpenWebSsh.value) {
+    message.warning('缺少主机查看权限，无法打开 Web SSH')
+    return
+  }
+  const ip = String(record?.host_ip || '').trim()
+  if (!ip) {
+    message.warning('当前日志缺少主机 IP，无法打开 Web SSH')
+    return
+  }
+  if (webSshOpeningLogId.value !== null) {
+    message.info('正在打开 Web SSH，请稍候')
+    return
+  }
+  const requestId = ++webSshRequestId
+  webSshOpeningLogId.value = record.id
+  let terminalWindow = null
+  try {
+    // Reserve the tab during the click to avoid popup blocking after the lookup.
+    // Sever its opener before awaiting; only a verified asset may become its target.
+    terminalWindow = window.open('about:blank', '_blank', 'width=1280,height=820')
+    if (!terminalWindow) {
+      message.warning('浏览器阻止了新窗口，请允许弹出窗口后重试')
+      return
+    }
+    pendingWebSshWindow = terminalWindow
+    terminalWindow.opener = null
+    const pageSize = 200
+    const matches = []
+    let page = 1
+    let total
+    do {
+      const response = await getHostList({ search: ip, page, page_size: pageSize })
+      if (requestId !== webSshRequestId) return
+      const payload = response?.data?.data
+      if (response?.data?.code !== 200) throw new Error(response?.data?.msg || '查询主机失败')
+      if (!Array.isArray(payload?.results) || !Number.isInteger(payload.count) || payload.count < 0) {
+        throw new Error('主机查询响应无效，请刷新后重试')
+      }
+      total = payload.count
+      if (!payload.results.length && (page - 1) * pageSize < total) {
+        throw new Error('主机查询分页不完整，请刷新后重试')
+      }
+      // The inventory search is fuzzy: inspect every page and never pick a prefix match.
+      matches.push(...payload.results.filter((host) => String(host.ip || '').trim() === ip))
+      if (matches.length > 1) throw new Error('该 IP 匹配多个主机，请先修正主机资产')
+      page++
+    } while ((page - 1) * pageSize < total)
+    const host = matches[0]
+    if (!host) throw new Error('未找到该日志对应的主机，请检查主机资产')
+    if (!host.id || !String(host.instance_name || '').trim()) {
+      throw new Error('该主机未绑定 Agent 实例，无法打开 Web SSH')
+    }
+    if (host.is_deleted_in_cloud) throw new Error('该主机已在云端删除，无法打开 Web SSH')
+    if (host.agent_online !== true) throw new Error('Agent 离线，无法打开 Web SSH')
+    if (terminalWindow.closed) {
+      message.info('窗口已关闭，未打开 Web SSH')
+      return
+    }
+    const route = router.resolve(buildDeploymentWebSSHRoute({ host_id: host.id }, host))
+    terminalWindow.location.replace(route.href)
+  } catch (error) {
+    terminalWindow?.close()
+    if (requestId === webSshRequestId) {
+      message.error(error?.response?.data?.msg || error?.message || '打开 Web SSH 失败')
+    }
+  } finally {
+    if (requestId === webSshRequestId) {
+      pendingWebSshWindow = null
+      webSshOpeningLogId.value = null
+    }
+  }
+}
+
+function cancelWebSshOpening() {
+  // A late lookup must not open a terminal after the log page was left or evicted.
+  webSshRequestId++
+  pendingWebSshWindow?.close()
+  pendingWebSshWindow = null
+  webSshOpeningLogId.value = null
+}
+
+useKeepAliveRefreshLifecycle(null, cancelWebSshOpening)
+
 function openDetail(record) {
   if (!record) return
   activeLog.value = record
@@ -1007,6 +1144,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  cancelWebSshOpening()
   window.removeEventListener('resize', resizeTrendChart)
   trendChart?.dispose()
   trendChart = null

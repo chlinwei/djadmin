@@ -442,7 +442,7 @@ func (handler *Handler) ElasticsearchLogSearch(context *gin.Context) {
 	}
 	// _source 带上 project/business_system/environment：跨服务检索（application_service_ids）的
 	// 列表要按层级显示"业务系统/环境/逻辑服务"列，文档上的维度编码是唯一的来源。
-	body := gin.H{"from": offset, "size": size, "track_total_hits": 2000, "sort": []any{gin.H{"@timestamp": "desc"}}, "_source": []string{"@timestamp", "log_level", "service", "instance", "host_ip", "log_name", "log_path", "message", "log_message", "error_fingerprint", "app_fields", "log.file.path", "project", "business_system", "environment", "shared_source_id", "shared_source_name"}, "query": gin.H{"bool": gin.H{"filter": parts[0], "must": parts[1]}}}
+	body := gin.H{"from": offset, "size": size, "track_total_hits": 2000, "sort": []any{gin.H{"@timestamp": "desc"}}, "_source": []string{"@timestamp", "log_level", "service", "service_id", "instance", "host_ip", "log_name", "log_path", "message", "log_message", "error_fingerprint", "app_fields", "log.file.path", "project", "business_system", "environment", "shared_source_id", "shared_source_name"}, "query": gin.H{"bool": gin.H{"filter": parts[0], "must": parts[1]}}}
 	data, err := handler.elasticsearchRequest(context, cluster, http.MethodPost, searchPath, body)
 	if err != nil {
 		response.BusinessError(context, 400, err.Error(), nil)
@@ -466,7 +466,10 @@ func (handler *Handler) ElasticsearchLogSearch(context *gin.Context) {
 	if total, ok := hits["total"].(map[string]any); ok {
 		count = intValue(total["value"])
 	}
-	response.Success(context, gin.H{"results": results, "count": count, "size": size, "offset": offset})
+	response.Success(context, gin.H{
+		"results": results, "count": count, "size": size, "offset": offset,
+		"live_tail_enabled": handler.liveTailUnavailableReason() == "",
+	})
 }
 
 // nestedFilePath 取 Filebeat 写在事件里的真实文件路径 `log.file.path`；缺失返回空串。
@@ -589,7 +592,10 @@ func (handler *Handler) ElasticsearchLogFacetStats(context *gin.Context) {
 		item := gin.H{"value": bucket["key"], "count": bucket["doc_count"], "sample": sample, "trend": trend}
 		buckets = append(buckets, item)
 	}
-	response.Success(context, gin.H{"field": field, "interval_minutes": interval, "buckets": buckets})
+	response.Success(context, gin.H{
+		"field": field, "interval_minutes": interval, "buckets": buckets,
+		"live_tail_enabled": handler.liveTailUnavailableReason() == "",
+	})
 }
 
 // facetAggField 的维度名与索引字段一致；真实路径统一存储在 log_path keyword 字段中。

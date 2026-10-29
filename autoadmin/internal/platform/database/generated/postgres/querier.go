@@ -788,6 +788,9 @@ type Querier interface {
 	ListInstalledLogTargetRuntime(ctx context.Context) ([]ListInstalledLogTargetRuntimeRow, error)
 	ListInventoriesTyped(ctx context.Context, arg ListInventoriesTypedParams) ([]AutomationInventory, error)
 	ListJobsTyped(ctx context.Context, arg ListJobsTypedParams) ([]AutomationExecutionJob, error)
+	// 应用实例名只在同一主机内唯一；按服务、实例与事件已有的主机 IP 联查，
+	// 最多取两行以识别歧义，不从事件中读取冗余的主机 ID。
+	ListLiveTailHostTargets(ctx context.Context, arg ListLiveTailHostTargetsParams) ([]ListLiveTailHostTargetsRow, error)
 	ListLogBatchJobItems(ctx context.Context, batchJobID int64) ([]ListLogBatchJobItemsRow, error)
 	// 批量作业明细的建 item 前一步：一次取回全部目标（主机名/IP 作为快照写入 item）。
 	ListLogBatchTargets(ctx context.Context, targetIds []int64) ([]ListLogBatchTargetsRow, error)

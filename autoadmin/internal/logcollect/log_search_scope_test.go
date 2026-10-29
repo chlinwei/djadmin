@@ -7,8 +7,10 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"autoadmin/internal/assets"
+	"autoadmin/internal/identity"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
@@ -20,6 +22,8 @@ func TestLogSearchTwelveHourScopedIndices(t *testing.T) {
 		multi                bool
 		filterPath           bool
 		shared               bool
+		tailReady            bool
+		tailMode             string
 	}{
 		{name: "single service logs"},
 		{name: "multiple service logs", multi: true},
@@ -33,9 +37,14 @@ func TestLogSearchTwelveHourScopedIndices(t *testing.T) {
 		{name: "single service includes shared events", shared: true},
 		{name: "multiple members share one event", multi: true, shared: true},
 		{name: "multiple members aggregate shared events once", field: "log_level", multi: true, shared: true},
+		{name: "live tail default enabled logs", tailReady: true},
+		{name: "live tail disabled logs", tailReady: true, tailMode: "disabled"},
+		{name: "live tail default enabled statistics", field: "service", tailReady: true},
+		{name: "live tail disabled statistics", field: "service", tailReady: true, tailMode: "disabled"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LOG_LIVE_TAIL_MODE", tc.tailMode)
 			type capturedRequest struct {
 				path, query string
 				body        map[string]any
@@ -93,6 +102,9 @@ func TestLogSearchTwelveHourScopedIndices(t *testing.T) {
 			gin.SetMode(gin.TestMode)
 			engine := gin.New()
 			handler := &Handler{db: database, secrets: secrets}
+			if tc.tailReady {
+				handler.ConfigureLiveTail(identity.NewTokenManager("test-secret", time.Hour), []string{"*"})
+			}
 			endpoint := "/clusters/:id/log-search/"
 			action := handler.ElasticsearchLogSearch
 			if tc.field != "" {
@@ -120,9 +132,10 @@ func TestLogSearchTwelveHourScopedIndices(t *testing.T) {
 			var result struct {
 				Code int `json:"code"`
 				Data struct {
-					Results []map[string]any `json:"results"`
-					Count   int              `json:"count"`
-					Buckets []struct {
+					LiveTailEnabled *bool            `json:"live_tail_enabled"`
+					Results         []map[string]any `json:"results"`
+					Count           int              `json:"count"`
+					Buckets         []struct {
 						Value  string           `json:"value"`
 						Count  int              `json:"count"`
 						Sample map[string]any   `json:"sample"`
@@ -132,6 +145,9 @@ func TestLogSearchTwelveHourScopedIndices(t *testing.T) {
 			}
 			if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil || result.Code != 200 {
 				t.Fatalf("API response = %s, decode error = %v", recorder.Body.String(), err)
+			}
+			if result.Data.LiveTailEnabled == nil || *result.Data.LiveTailEnabled != (tc.tailReady && tc.tailMode != "disabled") {
+				t.Fatalf("live_tail_enabled must reflect server availability: %s", recorder.Body.String())
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Fatal(err)

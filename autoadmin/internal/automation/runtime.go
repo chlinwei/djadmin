@@ -213,17 +213,42 @@ func (handler *Handler) saveInventory(context *gin.Context, id int64) {
 	response.Success(context, item)
 }
 
+type precheckQuery struct {
+	HostIDs []int64
+	Limit   string
+}
+
+func bindPrecheckQuery(context *gin.Context) (precheckQuery, bool) {
+	input := precheckQuery{Limit: strings.TrimSpace(context.Query("limit"))}
+	values, present := context.GetQueryArray("host_ids")
+	if !present {
+		return input, true
+	}
+	if len(values) != 1 {
+		automationBadRequest(context, "host_ids must be comma-separated integers")
+		return input, false
+	}
+	if strings.TrimSpace(values[0]) == "" {
+		return input, true
+	}
+	for _, raw := range strings.Split(values[0], ",") {
+		id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil || id <= 0 {
+			automationBadRequest(context, "host_ids must be positive comma-separated integers")
+			return input, false
+		}
+		input.HostIDs = append(input.HostIDs, id)
+	}
+	return input, true
+}
+
 func (handler *Handler) PrecheckInventoryLimit(context *gin.Context) {
 	id, ok := automationID(context)
 	if !ok {
 		return
 	}
-	var input struct {
-		Limit   string  `json:"limit"`
-		HostIDs []int64 `json:"host_ids"`
-	}
-	if context.Request.ContentLength > 0 && context.ShouldBindJSON(&input) != nil {
-		automationBadRequest(context, "request body is invalid")
+	input, valid := bindPrecheckQuery(context)
+	if !valid {
 		return
 	}
 	inventory, err := handler.inventoryByID(context, id)
@@ -236,7 +261,7 @@ func (handler *Handler) PrecheckInventoryLimit(context *gin.Context) {
 		return
 	}
 	ids := uniquePositiveIDs(input.HostIDs)
-	if context.Request.ContentLength == 0 || len(input.HostIDs) == 0 {
+	if len(input.HostIDs) == 0 {
 		ids = intSlice(inventory["selected_host_ids"])
 	}
 	hosts, err := handler.snapshotHosts(context, ids, strings.TrimSpace(input.Limit))
@@ -382,9 +407,21 @@ func (handler *Handler) saveTask(context *gin.Context, id int64) {
 }
 
 func (handler *Handler) PrecheckTask(context *gin.Context) {
-	task, input, ok := handler.taskRunInput(context)
+	id, ok := automationID(context)
 	if !ok {
 		return
+	}
+	input, valid := bindPrecheckQuery(context)
+	if !valid {
+		return
+	}
+	task, err := handler.taskByID(context, id)
+	if err != nil {
+		automationResourceError(context, err)
+		return
+	}
+	if input.Limit == "" {
+		input.Limit = stringValue(task["default_limit"])
 	}
 	hosts, status, message, err := handler.precheckTask(context, task, input.HostIDs, input.Limit)
 	if err != nil {

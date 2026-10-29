@@ -64,7 +64,7 @@ export function runTaskNow(id, params = {}) {
 }
 
 export function precheckTaskRun(id, params = {}) {
-  return requestUtil.post(prefix + `tasks/${id}/precheck/`, params)
+  return requestUtil.get(prefix + `tasks/${id}/precheck/`, precheckQueryParams(params))
 }
 
 export function getInventoryList(params) {
@@ -84,7 +84,11 @@ export function batchDeleteInventories(ids) {
 }
 
 export function precheckInventoryLimit(id, params = {}) {
-  return requestUtil.post(prefix + `inventories/${id}/precheck-limit/`, params)
+  return requestUtil.get(prefix + `inventories/${id}/precheck-limit/`, precheckQueryParams(params))
+}
+
+function precheckQueryParams(params) {
+  return { limit: params.limit, host_ids: params.host_ids?.join(',') }
 }
 
 export function getAutomationHostOptions(params) {
@@ -110,5 +114,4 @@ export function cancelJob(id) {
 export function getJobLog(id) {
   return requestUtil.get(prefix + `jobs/${id}/log/`)
 }
-
 

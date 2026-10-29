@@ -468,7 +468,7 @@ async function loadScanHosts() {
   if (scanMode.value === 'project' && (!scanForm.project_id || !scanScopeLoaded.value)) return
   scanHostsLoading.value = true
   try {
-    const data = responseData(await requestUtil.post(`${baselinePrefix}scan-hosts/`, scanScopeParams()))
+    const data = responseData(await requestUtil.get(`${baselinePrefix}scan-hosts/`, scanScopeParams()))
     if (requestId !== scanHostsRequestId) return
     if (!Array.isArray(data.hosts)) throw new Error('主机范围响应格式无效')
     scanHosts.value = data.hosts

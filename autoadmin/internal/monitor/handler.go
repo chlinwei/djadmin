@@ -225,16 +225,6 @@ func (handler *Handler) PrometheusProxy(context *gin.Context) {
 		return
 	}
 	query := context.Request.URL.Query()
-	// codemirror-promql 会以 POST + form 提交 /labels、/series 等请求，统一转成 query 参数发给上游
-	if context.Request.Method == http.MethodPost {
-		if err := context.Request.ParseForm(); err == nil {
-			for key, values := range context.Request.PostForm {
-				for _, value := range values {
-					query.Set(key, value)
-				}
-			}
-		}
-	}
 	_, payload, err := handler.prometheusGet(context, path, query)
 	if err != nil {
 		context.JSON(http.StatusOK, gin.H{"status": "error", "data": gin.H{}, "errorType": payload.Error, "error": err.Error(), "warnings": payload.Warnings})

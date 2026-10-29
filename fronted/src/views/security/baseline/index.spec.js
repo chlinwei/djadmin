@@ -22,13 +22,13 @@ beforeEach(() => {
   vi.clearAllMocks()
   savedItems = [...items]
   requestUtil.get.mockImplementation((url) => Promise.resolve(response(
-    url === 'sys/security/baseline/7/'
+    url.endsWith('/scan-hosts/')
+      ? { hosts: [{ id: 10, name: 'host-a', ip: '10.0.0.1', online: true }, { id: 11, name: 'host-b', ip: '10.0.0.2', online: false }] }
+      : url === 'sys/security/baseline/7/'
       ? { categories: [{ id: 3, name: '类目一' }, { id: 4, name: '类目二' }], items: savedItems }
       : { results: url === 'sys/security/baseline/' ? [baseline] : [] },
   )))
-  requestUtil.post.mockImplementation((url) => Promise.resolve(response(url.endsWith('/scan-hosts/')
-    ? { hosts: [{ id: 10, name: 'host-a', ip: '10.0.0.1', online: true }, { id: 11, name: 'host-b', ip: '10.0.0.2', online: false }] }
-    : { targets: 1 })))
+  requestUtil.post.mockResolvedValue(response({ targets: 1 }))
 })
 
 afterEach(() => {
@@ -151,11 +151,16 @@ describe('扫描项目与环境联动', () => {
     openProjectScan()
     await flushPromises()
     let resolveOld
-    requestUtil.post.mockImplementation(() => new Promise((resolve) => { resolveOld = resolve }))
+    const get = requestUtil.get.getMockImplementation()
+    requestUtil.get.mockImplementation((url, params) => url.endsWith('/scan-hosts/')
+      ? new Promise((resolve) => { resolveOld = resolve })
+      : get(url, params))
     wrapper.vm.scanForm.project_id = 301
     const error = vi.spyOn(message, 'error').mockImplementation(() => {})
     vi.spyOn(message, 'warning').mockImplementation(() => {})
-    requestUtil.post.mockRejectedValue(new Error('主机加载失败'))
+    requestUtil.get.mockImplementation((url, params) => url.endsWith('/scan-hosts/')
+      ? Promise.reject(new Error('主机加载失败'))
+      : get(url, params))
     wrapper.vm.scanForm.project_id = 302
     await flushPromises()
     resolveOld(response({ hosts: [{ id: 99 }] }))
@@ -173,8 +178,9 @@ describe('扫描项目与环境联动', () => {
     requestUtil.get.mockClear()
     wrapper.vm.openScanModal(baseline)
     await flushPromises()
-    expect(requestUtil.get).not.toHaveBeenCalled()
-    expect(requestUtil.post).toHaveBeenLastCalledWith('sys/security/baseline/scan-hosts/', { mount_type: 'host' })
+    expect(requestUtil.get).toHaveBeenCalledTimes(1)
+    expect(requestUtil.get).toHaveBeenLastCalledWith('sys/security/baseline/scan-hosts/', { mount_type: 'host' })
+    expect(requestUtil.post).not.toHaveBeenCalled()
     wrapper.vm.scanMode = 'project'
     await flushPromises()
     wrapper.vm.scanMode = 'host'
@@ -191,7 +197,10 @@ describe('扫描项目与环境联动', () => {
     await loadPage()
     openProjectScan()
     await flushPromises()
-    requestUtil.post.mockResolvedValue(response({ hosts: [] }))
+    const get = requestUtil.get.getMockImplementation()
+    requestUtil.get.mockImplementation((url, params) => url.endsWith('/scan-hosts/')
+      ? Promise.resolve(response({ hosts: [] }))
+      : get(url, params))
     wrapper.vm.scanForm.project_id = 303
     await flushPromises()
     requestUtil.post.mockClear()

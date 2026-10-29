@@ -32,7 +32,7 @@
 发起扫描有两个独立分支，默认“按主机”（`mount_type=host`），直接从全部资产主机中多选，
 主机选择器留空表示全部主机，不要求项目或环境，接口拒绝混入项目/环境参数。
 “按项目”分支选择项目及可选环境，扫描解析出的全部主机，不展示主机多选。
-`POST /sys/security/baseline/scan-hosts/` 使用与执行相同的
+`GET /sys/security/baseline/scan-hosts/` 通过查询参数传递范围，使用与执行相同的
 范围参数返回 `hosts: [{id,name,ip,online}]`，受 `baseline:scan` 权限保护，不创建扫描。
 切换扫描方式或项目/环境立即清空主机选择并重新加载；加载失败或范围为空禁止提交。
 按主机分支不依赖项目/环境资产选项加载；详情明确显示“按主机、不限定项目、不限定环境”，
@@ -123,7 +123,7 @@ POST   /sys/security/baseline/{id}/items/     新增策略（弹窗确认即落�
 PATCH  /sys/security/baseline/{id}/items/{itemId}/   更新策略（弹窗确认即落库）
                                         或提交 {direction: up/down} 在当前类目内上下移动
 DELETE /sys/security/baseline/{id}/items/{itemId}/   删除策略（即时生效）
-POST   /sys/security/baseline/scan-hosts/ 预览主机 {mount_type, project_id?, environment_id?}
+GET    /sys/security/baseline/scan-hosts/?mount_type=host  预览主机；项目/环境范围另传 project_id、environment_id
 POST   /sys/security/baseline/{id}/scan/  发起扫描 {mount_type, project_id?, environment_id?, host_ids?}
 GET    /sys/security/scans/?type=       扫描记录（type 默认 baseline；page/page_size 分页，page_size 默认 10 上限 100，返回 count+results）
 GET    /sys/security/scans/{id}/        扫描详情（概要 + 每主机符合率 + 条目明细：全部 pass/fail 条目，含主机、级别、expected（Rego 策略）/actual（违规明细）、消息，fail 排前）

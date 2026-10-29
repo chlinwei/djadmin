@@ -134,7 +134,7 @@ export function cancelManagedTarget(id) {
 }
 
 export function checkManagedTargetServiceStatus(id) {
-  return requestUtil.post(prefix + `targets/${id}/check-service-status/`)
+  return requestUtil.get(prefix + `targets/${id}/check-service-status/`)
 }
 
 export function startManagedTargetService(id) {

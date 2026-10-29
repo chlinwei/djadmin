@@ -38,6 +38,38 @@ func TestLoginPreflight(t *testing.T) {
 	}
 }
 
+func TestReadOnlyRoutesUseGET(t *testing.T) {
+	tokens := identity.NewTokenManager("test-secret", time.Hour)
+	engine, err := New(nil, tokens, []string{"*"}, nil, "", "test-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		"/sys/security/baseline/scan-hosts/",
+		"/sys/automation/inventories/:id/precheck-limit/",
+		"/sys/automation/tasks/:id/precheck/",
+		"/monitor/targets/:id/check-service-status/",
+		"/monitor/targets/prometheus/proxy/*apiPath",
+		"/assets/application-services/log-status-summary/",
+	} {
+		t.Run(path, func(t *testing.T) {
+			found := false
+			for _, route := range engine.Routes() {
+				if route.Path != path {
+					continue
+				}
+				if route.Method != http.MethodGet {
+					t.Errorf("read-only route accepts %s", route.Method)
+				}
+				found = found || route.Method == http.MethodGet
+			}
+			if !found {
+				t.Fatal("GET route missing")
+			}
+		})
+	}
+}
+
 func TestWriteRoutesRequireConfiguredPermission(t *testing.T) {
 	database, mock, err := sqlmock.New()
 	if err != nil {

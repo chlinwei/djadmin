@@ -5,8 +5,8 @@
 
 ## 入口
 
-- 前端 Explore 页（`fronted/src/views/monitor/explore/index.vue`）使用 codemirror-promql 编辑器，自动补全请求 `<后端>/monitor/targets/prometheus/proxy/api/v1/*`（同域代理，避免跨域/鉴权问题）。补全会用到 `/api/v1/label/__name__/values`、`/api/v1/labels`、`/api/v1/series`、`/api/v1/metadata` 等端点；其中 `/labels`、`/series`、`/label/*/values` 以 POST + form 方式提交。
-- Go 侧处理器：`autoadmin/internal/monitor/handler.go` 的 `PrometheusProxy`，路由注册为 `Any`（GET/POST 等均可，`router.go`）。仅放行 `/api/v1/*` 前缀；POST 请求的 form 参数会合并进 query（POST 优先覆盖同名 query 参数）后转发给上游。
+- 前端 Explore 页（`fronted/src/views/monitor/explore/index.vue`）使用 codemirror-promql 编辑器，自动补全请求 `<后端>/monitor/targets/prometheus/proxy/api/v1/*`（同域代理，避免跨域/鉴权问题）。补全会用到 `/api/v1/label/__name__/values`、`/api/v1/labels`、`/api/v1/series`、`/api/v1/metadata` 等端点；SDK 显式配置 `httpMethod: 'GET'`，所有筛选条件放在查询参数中。
+- Go 侧处理器：`autoadmin/internal/monitor/handler.go` 的 `PrometheusProxy`，只注册 GET 路由，不接收 POST 查询。仅放行 `/api/v1/*` 前缀，原样保留包括多个 `match[]` 在内的查询参数，以 GET 转发给上游。
 
 ## 最终逻辑
 
@@ -34,6 +34,7 @@ Django 侧已废弃（源码已移出版本库）；监控中心相关功能只�
 | Filebeat 启停/查状态/下发配置 | `dispatchLogTargetServiceControl` / `ApplyLogTargetConfig` | ✅ |
 | 取消任务 / 删除目标 / PATCH 目标字段 | 仅改库，不触 agent | 不需要在线 |
 
+- Exporter 单台状态查询使用 `GET /monitor/targets/:id/check-service-status/`，只执行 `systemctl status` 并返回结果，不写入业务状态；启动、停止仍为 POST。所有纯 GET 查询不记录为变更类操作审计。
 - ⚠️ `BatchCreateTargets`（Exporter 批量纳管）必须实现 `install_now=true` 时立即调用 `dispatchExporterJob`（前端固定传 install_now=true，Django 同语义）；此前曾漏实现导致纳管后目标停在未安装状态，勿回退。
 - 列表展示的 `host_agent_online` 来自实时 gRPC 会话（`read_resources.go`），不是落库快照。
 - 前端所有操作按钮以 `host_agent_online` 置灰（含 Filebeat 需 `agent_installed`），与后端校验双保险。

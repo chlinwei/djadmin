@@ -174,10 +174,16 @@ pending ──(worker 消费/内联派发)──> running ──┬──> succe
 |---|---|---|
 | 任务 增/改/删 | `POST/PATCH/PUT/batch-delete /sys/automation/tasks/*` | `automation:tasks:create` / `:update` / `:delete` |
 | 任务查看 | `GET /sys/automation/tasks/*` | `automation:tasks:view` |
-| 立即执行 / 预检 | `POST tasks/:id/run_now` / `:id/precheck` | `automation:jobs:create` |
+| 立即执行 / 预检 | `POST tasks/:id/run_now/` / `GET tasks/:id/precheck/` | `automation:jobs:create` |
 | 运行记录 | `/sys/automation/jobs/*` 等 | `automation:jobs:view` / `:cancel` |
 | 模板 CRUD | `/sys/automation/playbooks/*` | `automation:playbooks:*` |
 | ShellCheck 组件 | `/sys/automation/shellcheck/binary/` | 读 `automation:playbooks:view`、写 `automation:playbooks:update` |
+
+任务预检与 Inventory 范围预检均为只读 GET：`/sys/automation/tasks/:id/precheck/` 与
+`/sys/automation/inventories/:id/precheck-limit/`。`host_ids` 查询参数使用逗号分隔的正整数；
+未传或为空时使用 Inventory 默认主机集合，`limit` 保持 Ansible 筛选语义，任务未指定时沿用
+任务默认 limit。非法 ID 返回请求错误，不能退化为全量；预检不创建作业、不下发执行。
+Inventory 预检沿用 `automation:inventory:view` 权限，任务预检沿用执行权限。
 
 迁移 000047 补齐了此前 `sys_menu` 里缺失的 `automation:tasks:create/update/delete` 三条权限点
 （只有 `tasks:view`，导致非 admin 保存任务 403「无权限访问」），并把误命名为「任务创建」的

@@ -121,9 +121,7 @@ func TestScanHostsPreview(t *testing.T) {
 	mock.ExpectQuery("SELECT DISTINCT h.id").WithArgs(int64(3), int64(2)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "instance_name", "ip", "agent_online"}).
 			AddRow(10, "host", "10.0.0.1", true))
-	ctx, recorder := ginTestContext("POST", "/sys/security/baseline/scan-hosts/", map[string]any{
-		"mount_type": "environment", "project_id": 3, "environment_id": 2,
-	})
+	ctx, recorder := ginTestContext("GET", "/sys/security/baseline/scan-hosts/?mount_type=environment&project_id=3&environment_id=2", nil)
 	(&Handler{db: pool}).ScanHosts(ctx)
 	data := decodeResponse(t, recorder)["data"].(map[string]any)
 	hosts := data["hosts"].([]any)
@@ -132,6 +130,23 @@ func TestScanHostsPreview(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestScanHostsRejectsInvalidQuery(t *testing.T) {
+	for _, query := range []string{
+		"", "?mount_type=unknown", "?mount_type=host&project_id=3",
+		"?mount_type=project", "?mount_type=project&project_id=abc",
+		"?mount_type=project&project_id=0", "?mount_type=environment&project_id=3",
+		"?mount_type=environment&project_id=3&environment_id=-1",
+	} {
+		t.Run(query, func(t *testing.T) {
+			ctx, recorder := ginTestContext("GET", "/sys/security/baseline/scan-hosts/"+query, nil)
+			(&Handler{}).ScanHosts(ctx)
+			if decodeResponse(t, recorder)["code"] != float64(400) {
+				t.Fatalf("invalid query accepted: %s", recorder.Body.String())
+			}
+		})
 	}
 }
 

@@ -46,7 +46,7 @@ func assertConfigQueryConsumed(t *testing.T, mock sqlmock.Sqlmock) {
 func performProxyRequest(t *testing.T, handler *Handler, method, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	router := gin.New()
-	router.Any("/monitor/targets/prometheus/proxy/*apiPath", handler.PrometheusProxy)
+	router.GET("/monitor/targets/prometheus/proxy/*apiPath", handler.PrometheusProxy)
 	request := httptest.NewRequest(method, target, strings.NewReader(body))
 	if body != "" {
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -76,7 +76,7 @@ func TestPrometheusProxyLabelValuesArray(t *testing.T) {
 	assertConfigQueryConsumed(t, mock)
 }
 
-func TestPrometheusProxyPostForm(t *testing.T) {
+func TestPrometheusProxyQueryParameters(t *testing.T) {
 	handler, _, mock := newPrometheusProxyHandler(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			t.Errorf("upstream method = %s, want GET", r.Method)
@@ -84,15 +84,15 @@ func TestPrometheusProxyPostForm(t *testing.T) {
 		if r.URL.Path != "/api/v1/labels" {
 			t.Errorf("unexpected upstream path %q", r.URL.Path)
 		}
-		if r.URL.Query().Get("match[]") != `up` || r.URL.Query().Get("limit") != "400" {
-			t.Errorf("form params missing in upstream query: %v", r.URL.Query())
+		if got := r.URL.Query()["match[]"]; len(got) != 2 || got[0] != "up" || got[1] != "process_cpu_seconds_total" || r.URL.Query().Get("limit") != "400" {
+			t.Errorf("query params missing in upstream query: %v", r.URL.Query())
 		}
 		fmt.Fprint(w, `{"status":"success","data":["__name__","job"]}`)
 	})
 
-	form := url.Values{"match[]": {`up`}, "limit": {"400"}}
-	recorder := performProxyRequest(t, handler, http.MethodPost,
-		"/monitor/targets/prometheus/proxy/api/v1/labels", form.Encode())
+	query := url.Values{"match[]": {"up", "process_cpu_seconds_total"}, "limit": {"400"}}
+	recorder := performProxyRequest(t, handler, http.MethodGet,
+		"/monitor/targets/prometheus/proxy/api/v1/labels?"+query.Encode(), "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
@@ -100,6 +100,15 @@ func TestPrometheusProxyPostForm(t *testing.T) {
 		t.Fatalf("unexpected body: %s", recorder.Body.String())
 	}
 	assertConfigQueryConsumed(t, mock)
+}
+
+func TestPrometheusProxyRejectsPost(t *testing.T) {
+	handler := &Handler{}
+	recorder := performProxyRequest(t, handler, http.MethodPost,
+		"/monitor/targets/prometheus/proxy/api/v1/labels", "match[]=up")
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("POST query should not be registered: %d %s", recorder.Code, recorder.Body.String())
+	}
 }
 
 func TestPrometheusProxyRejectsNonAPIPath(t *testing.T) {

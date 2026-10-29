@@ -33,6 +33,8 @@ function buildPromQLExtension() {
     promQLExtension = promQLExtension.setComplete({
       remote: {
         url: props.completionRemoteUrl,
+        // 补全只读取指标和标签，显式禁用 SDK 默认的 POST 查询。
+        httpMethod: 'GET',
         // 每次请求都动态读取最新 token，避免登录态刷新后仍沿用旧值。
         fetchFn: (url, options = {}) => {
           const token = localStorage.getItem('token') || ''

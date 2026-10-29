@@ -131,7 +131,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	automationInventories.PATCH("/:id/", middleware.RequirePermission("automation:inventory:update"), playbookHandler.UpdateInventory)
 	automationInventories.PUT("/:id/", middleware.RequirePermission("automation:inventory:update"), playbookHandler.UpdateInventory)
 	automationInventories.POST("/batch-delete/", middleware.RequirePermission("automation:inventory:delete"), playbookHandler.BatchDeleteInventories)
-	automationInventories.POST("/:id/precheck-limit/", middleware.RequirePermission("automation:inventory:view"), playbookHandler.PrecheckInventoryLimit)
+	automationInventories.GET("/:id/precheck-limit/", middleware.RequirePermission("automation:inventory:view"), playbookHandler.PrecheckInventoryLimit)
 	automationTasks := engine.Group("/sys/automation/tasks", middleware.Authenticate(tokens))
 	automationTasks.GET("/", middleware.RequirePermission("automation:tasks:view"), playbookHandler.ListTasks)
 	automationTasks.POST("/", middleware.RequirePermission("automation:tasks:create"), playbookHandler.CreateTask)
@@ -139,7 +139,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	automationTasks.PATCH("/:id/", middleware.RequirePermission("automation:tasks:update"), playbookHandler.UpdateTask)
 	automationTasks.PUT("/:id/", middleware.RequirePermission("automation:tasks:update"), playbookHandler.UpdateTask)
 	automationTasks.POST("/batch-delete/", middleware.RequirePermission("automation:tasks:delete"), playbookHandler.BatchDeleteTasks)
-	automationTasks.POST("/:id/precheck/", middleware.RequirePermission("automation:jobs:create"), playbookHandler.PrecheckTask)
+	automationTasks.GET("/:id/precheck/", middleware.RequirePermission("automation:jobs:create"), playbookHandler.PrecheckTask)
 	automationTasks.POST("/:id/run_now/", middleware.RequirePermission("automation:jobs:create"), playbookHandler.RunTaskNow)
 	automationJobs := engine.Group("/sys/automation/jobs", middleware.Authenticate(tokens))
 	automationJobs.GET("/", middleware.RequirePermission("automation:jobs:view"), playbookHandler.ListJobs)
@@ -331,7 +331,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	baselineGroup.PATCH("/:id/", middleware.RequirePermission("baseline:manage"), baselineHandler.SaveBaseline)
 	baselineGroup.DELETE("/:id/", middleware.RequirePermission("baseline:manage"), baselineHandler.DeleteBaseline)
 	baselineGroup.POST("/:id/scan/", middleware.RequirePermission("baseline:scan"), baselineHandler.StartScan)
-	baselineGroup.POST("/scan-hosts/", middleware.RequirePermission("baseline:scan"), baselineHandler.ScanHosts)
+	baselineGroup.GET("/scan-hosts/", middleware.RequirePermission("baseline:scan"), baselineHandler.ScanHosts)
 	baselineGroup.POST("/:id/categories/", middleware.RequirePermission("baseline:manage"), baselineHandler.CreateBaselineCategory)
 	// 类目子资源挂在基线下（避免与 /:id/ 通配符同级冲突）。
 	baselineGroup.PATCH("/:id/categories/:categoryId/", middleware.RequirePermission("baseline:manage"), baselineHandler.UpdateBaselineCategory)
@@ -369,7 +369,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	// 与单条同一套按行语义（每项都是该行覆盖值的全集），一次事务写完，逐条返回 ok/message。
 	services.POST("/:id/log-config/settings/batch/", middleware.RequirePermission("assets:applications:update"), assetsHandler.BatchSaveApplicationServiceLogSettings)
 	// 一批逻辑服务的日志状态汇总（日志中心层级视图用：全部/项目/业务系统/环境节点下的清单）。
-	// 读接口，入参是一批 id，所以按 POST 传列表（与 log-targets/batch-jobs 同形）。
+	// 只读查询，服务 id 以逗号分隔的查询参数传递。
 	services.GET("/log-status-summary/", middleware.RequirePermission("assets:applications:view"), assetsHandler.LogStatusSummary)
 	// 服务级日志采集总开关（关掉后该服务下所有日志都不采集，逐条开关不生效）。
 	services.POST("/:id/log-collection/", middleware.RequirePermission("assets:applications:update"), assetsHandler.SetApplicationServiceLogCollection)
@@ -489,7 +489,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	monitorRoutes.PUT("/targets/:id/", monitorHandler.UpdateTarget)
 	monitorRoutes.POST("/targets/:id/retry/", monitorHandler.RetryTarget)
 	monitorRoutes.POST("/targets/:id/cancel/", monitorHandler.CancelTarget)
-	monitorRoutes.POST("/targets/:id/check-service-status/", monitorHandler.CheckTargetService)
+	monitorRoutes.GET("/targets/:id/check-service-status/", monitorHandler.CheckTargetService)
 	monitorRoutes.POST("/targets/:id/start-service/", monitorHandler.StartTargetService)
 	monitorRoutes.POST("/targets/:id/stop-service/", monitorHandler.StopTargetService)
 	monitorRoutes.GET("/install-histories/", monitorHandler.ListInstallHistories)
@@ -593,7 +593,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	monitorRoutes.GET("/targets/prometheus/flags/", monitorHandler.PrometheusFlags)
 	monitorRoutes.GET("/targets/prometheus/query/", monitorHandler.PrometheusQuery)
 	monitorRoutes.GET("/targets/prometheus/query-range/", monitorHandler.PrometheusQueryRange)
-	monitorRoutes.Any("/targets/prometheus/proxy/*apiPath", monitorHandler.PrometheusProxy)
+	monitorRoutes.GET("/targets/prometheus/proxy/*apiPath", monitorHandler.PrometheusProxy)
 	engine.GET("/monitor/prometheus/http-sd/", monitorHandler.MachineAuthenticate(), monitorHandler.PrometheusHTTPServiceDiscovery)
 	engine.GET("/monitor/targets/prometheus/http-sd/", monitorHandler.MachineAuthenticate(), monitorHandler.PrometheusHTTPServiceDiscovery)
 	engine.POST("/monitor/alert-webhook/api/v2/alerts", monitorHandler.MachineAuthenticate(), monitorHandler.AlertWebhook)

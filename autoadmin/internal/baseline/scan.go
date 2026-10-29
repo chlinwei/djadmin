@@ -25,9 +25,9 @@ import (
 // 结果落 baseline_scan_result → 按主机聚合符合率。
 
 type scanInput struct {
-	MountType     string  `json:"mount_type"`
-	ProjectID     *int64  `json:"project_id"`
-	EnvironmentID *int64  `json:"environment_id"`
+	MountType     string  `json:"mount_type" form:"mount_type"`
+	ProjectID     *int64  `json:"project_id" form:"project_id"`
+	EnvironmentID *int64  `json:"environment_id" form:"environment_id"`
 	HostIDs       []int64 `json:"host_ids"`
 }
 
@@ -84,6 +84,10 @@ func bindScanInput(context *gin.Context) (scanInput, bool) {
 		response.BusinessError(context, 400, "请求参数无效", nil)
 		return input, false
 	}
+	return validateScanInput(context, input)
+}
+
+func validateScanInput(context *gin.Context, input scanInput) (scanInput, bool) {
 	if input.MountType != "project" && input.MountType != "environment" && input.MountType != "host" {
 		response.BusinessError(context, 400, "基线扫描只支持按主机、项目或项目×环境选择主机", nil)
 		return input, false
@@ -108,7 +112,12 @@ func bindScanInput(context *gin.Context) (scanInput, bool) {
 
 // 预览与执行共用范围解析，不能用前端资产关联推算可扫描主机。
 func (handler *Handler) ScanHosts(context *gin.Context) {
-	input, valid := bindScanInput(context)
+	var input scanInput
+	if err := context.ShouldBindQuery(&input); err != nil {
+		response.BusinessError(context, 400, "请求参数无效", nil)
+		return
+	}
+	input, valid := validateScanInput(context, input)
 	if !valid {
 		return
 	}

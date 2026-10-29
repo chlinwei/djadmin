@@ -21,13 +21,26 @@
 | `baseline` | 基线标准（name 唯一 / version / description / enabled） |
 | `baseline_category` | 类目：策略的一级分组实体（迁移 000011 起），name + sort（上移下移交换 sort），FK→baseline ON DELETE CASCADE |
 | `baseline_item` | 策略：`category_id` FK→baseline_category、`config`（OPA 策略，与 inspection_check 同构）、`severity`（high/medium/low）、sort；`chapter`/`executor` 列已删除（迁移 000009/000011） |
-| `security_scan` | 统一扫描任务：`scan_type`（`baseline`，预留 `cve` 等）+ 挂载点（mount_type=project/environment + project_id/environment_id）+ status + summary |
+| `security_scan` | 统一扫描任务：`scan_type`（`baseline`，预留 `cve` 等）+ 范围（mount_type=host/project/environment；host 模式 project_id/environment_id 为 NULL）+ status + summary |
 | `security_scan_target` | 每主机执行状态：passed/failed/compliance_rate/error_message |
 | `baseline_scan_result` | 策略结果明细：scan × host × item，`chapter` 为**快照字段**（扫描时以类目名填充，类目后续改名不影响历史结果）+ expected/actual/message/remediation。expected=agent OPA 检查返回的 `{query, policy}`；actual=`{violation_count, violations, inputs, details, run_user}`；remediation=修复建议快照（文案本体存 `baseline_item.config.remediation`，策略编辑弹窗录入，迁移 000012 加列）。历史上 expected 曾未采集恒为 null，修复后新扫描正常写入 |
 
 注意：`security_scan_target.error_message` NOT NULL 无默认——INSERT 必须显式给 `''`。
 
 ## 数据访问（sqlc，2026-09-16 起）
+
+发起扫描有两个独立分支，默认“按主机”（`mount_type=host`），直接从全部资产主机中多选，
+主机选择器留空表示全部主机，不要求项目或环境，接口拒绝混入项目/环境参数。
+“按项目”分支选择项目及可选环境，扫描解析出的全部主机，不展示主机多选。
+`POST /sys/security/baseline/scan-hosts/` 使用与执行相同的
+范围参数返回 `hosts: [{id,name,ip,online}]`，受 `baseline:scan` 权限保护，不创建扫描。
+切换扫描方式或项目/环境立即清空主机选择并重新加载；加载失败或范围为空禁止提交。
+按主机分支不依赖项目/环境资产选项加载；详情明确显示“按主机、不限定项目、不限定环境”，
+该分支不推断项目和环境归属，逐主机环境集合为空，不伪造为某一项目的全环境。
+扫描请求的 `host_ids` 缺省或空数组表示全部，非空则仅扫描这些主机并去重；
+提交时在创建事务内重新解析范围，任一 ID 不属于当前范围（含已删除主机）均明确拒绝，不扩大为全部。
+离线主机仍可选择，沿用执行阶段的离线错误语义。目标记录与范围快照只保存实际扫描主机，
+不新增表、列或外键。
 
 扫描详情概要包含项目和具体环境名称列表，不以“全部环境”代替环境清单：
 按项目扫描列出实际扫描主机在该项目内涉及的全部服务环境，按项目×环境扫描只列出选定环境。
@@ -110,7 +123,8 @@ POST   /sys/security/baseline/{id}/items/     新增策略（弹窗确认即落�
 PATCH  /sys/security/baseline/{id}/items/{itemId}/   更新策略（弹窗确认即落库）
                                         或提交 {direction: up/down} 在当前类目内上下移动
 DELETE /sys/security/baseline/{id}/items/{itemId}/   删除策略（即时生效）
-POST   /sys/security/baseline/{id}/scan/  发起扫描 {mount_type, project_id, environment_id}
+POST   /sys/security/baseline/scan-hosts/ 预览主机 {mount_type, project_id?, environment_id?}
+POST   /sys/security/baseline/{id}/scan/  发起扫描 {mount_type, project_id?, environment_id?, host_ids?}
 GET    /sys/security/scans/?type=       扫描记录（type 默认 baseline；page/page_size 分页，page_size 默认 10 上限 100，返回 count+results）
 GET    /sys/security/scans/{id}/        扫描详情（概要 + 每主机符合率 + 条目明细：全部 pass/fail 条目，含主机、级别、expected（Rego 策略）/actual（违规明细）、消息，fail 排前）
                                         start_time/end_time 为 RFC3339（与列表接口一致，迁移 sqlc 前是

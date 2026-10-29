@@ -737,6 +737,48 @@ func (q *Queries) ListBaselineCategories(ctx context.Context, baselineID int64) 
 	return items, nil
 }
 
+const listBaselineHostTargets = `-- name: ListBaselineHostTargets :many
+SELECT id, COALESCE(instance_name, '') AS instance_name, COALESCE(ip, '') AS ip,
+       COALESCE(agent_online, FALSE) AS agent_online
+FROM assets_host
+ORDER BY id
+`
+
+type ListBaselineHostTargetsRow struct {
+	ID           int64  `json:"id"`
+	InstanceName string `json:"instance_name"`
+	Ip           string `json:"ip"`
+	AgentOnline  bool   `json:"agent_online"`
+}
+
+func (q *Queries) ListBaselineHostTargets(ctx context.Context) ([]ListBaselineHostTargetsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listBaselineHostTargets)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBaselineHostTargetsRow{}
+	for rows.Next() {
+		var i ListBaselineHostTargetsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.InstanceName,
+			&i.Ip,
+			&i.AgentOnline,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listBaselineItemOrderForUpdate = `-- name: ListBaselineItemOrderForUpdate :many
 SELECT id, category_id, sort FROM baseline_item
 WHERE baseline_id = $1

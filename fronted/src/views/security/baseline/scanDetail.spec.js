@@ -58,6 +58,7 @@ describe('扫描详情的项目与环境', () => {
   })
 
   it.each([
+    ['独立主机范围', { mount_type: 'host' }, '不限定项目', '不限定环境'],
     ['项目环境范围', { mount_type: 'environment', project_id: 2, project_name: '核心项目', environment_id: 3, environment_name: '生产' }, '核心项目', '生产'],
     ['项目范围', { mount_type: 'project', project_name: '核心项目', environments: [{ id: 1, name: 'test' }, { id: 2, name: 'prod' }] }, '核心项目', 'test、prod'],
     ['关联已删除', { mount_type: 'environment', project_id: 2, environment_id: 3 }, '项目 #2（已删除或不可用）', '环境 #3（已删除或不可用）'],

@@ -34,8 +34,9 @@
         <template v-else-if="scan">
           <a-descriptions bordered :column="3" size="small" class="scan-summary">
             <a-descriptions-item label="基线">{{ scan.baseline }}</a-descriptions-item>
-            <a-descriptions-item label="项目">{{ scan.project_name || (scan.project_id ? `项目 #${scan.project_id}（已删除或不可用）` : '-') }}</a-descriptions-item>
-            <a-descriptions-item label="环境">{{ environmentSummary }}</a-descriptions-item>
+            <a-descriptions-item label="扫描方式">{{ scan.mount_type === 'host' ? '按主机' : '按项目' }}</a-descriptions-item>
+            <a-descriptions-item label="项目">{{ scan.mount_type === 'host' ? '不限定项目' : scan.project_name || (scan.project_id ? `项目 #${scan.project_id}（已删除或不可用）` : '-') }}</a-descriptions-item>
+            <a-descriptions-item label="环境">{{ scan.mount_type === 'host' ? '不限定环境' : environmentSummary }}</a-descriptions-item>
             <a-descriptions-item label="发起人">{{ scan.requested_username || '-' }}</a-descriptions-item>
             <a-descriptions-item label="开始时间">{{ scan.start_time || '-' }}</a-descriptions-item>
             <a-descriptions-item label="结束时间">{{ scan.end_time || '-' }}</a-descriptions-item>

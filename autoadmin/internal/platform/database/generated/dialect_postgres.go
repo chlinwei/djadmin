@@ -342,6 +342,7 @@ type ListAutomationInventoryHostsRow = postgres.ListAutomationInventoryHostsRow
 type ListAutomationJobHostLogsRow = postgres.ListAutomationJobHostLogsRow
 type ListAutomationPlaybooksParams = postgres.ListAutomationPlaybooksParams
 type ListBaselineCategoriesRow = postgres.ListBaselineCategoriesRow
+type ListBaselineHostTargetsRow = postgres.ListBaselineHostTargetsRow
 type ListBaselineItemOrderForUpdateRow = postgres.ListBaselineItemOrderForUpdateRow
 type ListBaselineItemsRow = postgres.ListBaselineItemsRow
 type ListBaselineScanResultsRow = postgres.ListBaselineScanResultsRow

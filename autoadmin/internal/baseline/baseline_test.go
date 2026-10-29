@@ -262,7 +262,7 @@ func TestStartScanRejectsUnsupportedMountType(t *testing.T) {
 		t.Fatalf("code = %v, want 400", code)
 	}
 	// OS 基线只扫主机：service 挂载必须被拒绝。
-	if msg := decodeResponse(t, recorder)["msg"]; !strings.Contains(fmt.Sprint(msg), "只支持按项目") {
+	if msg := decodeResponse(t, recorder)["msg"]; !strings.Contains(fmt.Sprint(msg), "只支持按主机") {
 		t.Fatalf("msg = %v, want mount-type error", msg)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"testing"
 
@@ -79,6 +80,163 @@ func TestDecodeScanScopeRejectsInvalidSnapshot(t *testing.T) {
 	}
 }
 
+func TestSelectScanHosts(t *testing.T) {
+	hosts := []scanHost{{HostID: 10}, {HostID: 11}}
+	for _, test := range []struct {
+		name string
+		ids  []int64
+		want []int64
+		fail bool
+	}{
+		{"default all", nil, []int64{10, 11}, false},
+		{"empty all", []int64{}, []int64{10, 11}, false},
+		{"subset", []int64{11}, []int64{11}, false},
+		{"deduplicate", []int64{11, 11}, []int64{11}, false},
+		{"outside scope", []int64{10, 99}, nil, true},
+		{"invalid ID", []int64{0}, nil, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := selectScanHosts(hosts, test.ids)
+			if (err != nil) != test.fail {
+				t.Fatalf("error: %v", err)
+			}
+			if len(got) != len(test.want) {
+				t.Fatalf("hosts: %v", got)
+			}
+			for i, host := range got {
+				if host.HostID != test.want[i] {
+					t.Fatalf("hosts: %v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestScanHostsPreview(t *testing.T) {
+	pool, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	mock.ExpectQuery("SELECT DISTINCT h.id").WithArgs(int64(3), int64(2)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "instance_name", "ip", "agent_online"}).
+			AddRow(10, "host", "10.0.0.1", true))
+	ctx, recorder := ginTestContext("POST", "/sys/security/baseline/scan-hosts/", map[string]any{
+		"mount_type": "environment", "project_id": 3, "environment_id": 2,
+	})
+	(&Handler{db: pool}).ScanHosts(ctx)
+	data := decodeResponse(t, recorder)["data"].(map[string]any)
+	hosts := data["hosts"].([]any)
+	if len(hosts) != 1 || hosts[0].(map[string]any)["id"] != float64(10) {
+		t.Fatalf("hosts: %v", hosts)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStartScanRejectsHostOutsideScope(t *testing.T) {
+	pool, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	mock.ExpectQuery("SELECT id, name, version, enabled FROM baseline").WithArgs(int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "version", "enabled"}).AddRow(7, "baseline", "1", true))
+	mock.ExpectQuery("SELECT COUNT").WithArgs(int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT DISTINCT h.id").WithArgs(int64(3)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "instance_name", "ip", "agent_online"}).
+			AddRow(10, "host", "10.0.0.1", true))
+	mock.ExpectRollback()
+	ctx, recorder := ginTestContext("POST", "/sys/security/baseline/7/scan/", map[string]any{
+		"mount_type": "project", "project_id": 3, "host_ids": []int64{99},
+	})
+	(&Handler{db: pool}).StartScan(ctx)
+	payload := decodeResponse(t, recorder)
+	if payload["code"] != float64(400) {
+		t.Fatalf("out-of-scope host accepted: %v", payload)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHostScanIndependentOfProject(t *testing.T) {
+	for _, ids := range [][]int64{nil, {11}} {
+		t.Run(fmt.Sprint(ids), func(t *testing.T) {
+			pool, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pool.Close()
+			mock.ExpectQuery("SELECT id, name, version, enabled FROM baseline").WithArgs(int64(7)).
+				WillReturnRows(sqlmock.NewRows([]string{"id", "name", "version", "enabled"}).AddRow(7, "baseline", "1", true))
+			mock.ExpectQuery("SELECT COUNT").WithArgs(int64(7)).
+				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+			mock.ExpectBegin()
+			mock.ExpectQuery("FROM assets_host").WithArgs().
+				WillReturnRows(sqlmock.NewRows([]string{"id", "instance_name", "ip", "agent_online"}).
+					AddRow(10, "host-a", "10.0.0.1", true).AddRow(11, "host-b", "10.0.0.2", false))
+			expectCreateReturnsID(mock, "INSERT INTO security_scan(", []driver.Value{
+				sqlmock.AnyArg(), sqlmock.AnyArg(), int64(7), "host", nil, nil, "", hostScopeArgument{ids: ids},
+			}, 28)
+			firstID := int64(10)
+			if len(ids) > 0 {
+				firstID = ids[0]
+			}
+			mock.ExpectExec(regexp.QuoteMeta("INSERT INTO security_scan_target(")).
+				WithArgs(int64(28), firstID, sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+				WillReturnError(errors.New("stop before execution"))
+			mock.ExpectRollback()
+			ctx, recorder := ginTestContext("POST", "/sys/security/baseline/7/scan/", map[string]any{
+				"mount_type": "host", "host_ids": ids,
+			})
+			(&Handler{db: pool}).StartScan(ctx)
+			if decodeResponse(t, recorder)["code"] == float64(200) {
+				t.Fatal("target failure must not succeed")
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+type hostScopeArgument struct{ ids []int64 }
+
+func (arg hostScopeArgument) Match(value driver.Value) bool {
+	raw, ok := value.([]byte)
+	if !ok {
+		return false
+	}
+	scope, err := decodeScanScope(raw)
+	wantCount := len(arg.ids)
+	if wantCount == 0 {
+		wantCount = 2
+	}
+	if err != nil || scope.ProjectName != "" || len(scope.Environments) != 0 || len(scope.Hosts) != wantCount {
+		return false
+	}
+	for _, id := range arg.ids {
+		if _, exists := scope.Hosts[id]; !exists {
+			return false
+		}
+	}
+	return true
+}
+
+func TestHostScanRejectsProjectParameters(t *testing.T) {
+	ctx, recorder := ginTestContext("POST", "/sys/security/baseline/7/scan/", map[string]any{
+		"mount_type": "host", "project_id": 3,
+	})
+	(&Handler{}).StartScan(ctx)
+	if decodeResponse(t, recorder)["code"] != float64(400) {
+		t.Fatal("mixed scope accepted")
+	}
+}
+
 func TestGetScanLegacyScopeIsExplicitlyCurrent(t *testing.T) {
 	pool, mock, err := sqlmock.New()
 	if err != nil {
@@ -126,7 +284,7 @@ func (scopeSnapshotArgument) Match(value driver.Value) bool {
 		return false
 	}
 	scope, err := decodeScanScope(raw)
-	return err == nil && scope.ProjectName == "project" && len(scope.Environments) == 1 &&
+	return err == nil && scope.ProjectName == "project" && len(scope.Hosts) == 1 && len(scope.Environments) == 1 &&
 		scope.Environments[0].Name == "test" && len(scope.Hosts[10]) == 1
 }
 
@@ -142,7 +300,8 @@ func TestStartScanWritesScopeInTargetTransaction(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT DISTINCT h.id").WithArgs(int64(3)).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "instance_name", "ip", "agent_online"}).AddRow(10, "host", "10.0.0.1", true))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "instance_name", "ip", "agent_online"}).
+			AddRow(10, "host", "10.0.0.1", true).AddRow(11, "other", "10.0.0.2", true))
 	mock.ExpectQuery("SELECT name FROM assets_project").WithArgs(int64(3)).
 		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("project"))
 	mock.ExpectQuery("SELECT DISTINCT d.host_id, s.environment_id").WithArgs(int64(3), nil, nil).
@@ -153,7 +312,9 @@ func TestStartScanWritesScopeInTargetTransaction(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO security_scan_target(")).
 		WillReturnError(errors.New("target insert failed"))
 	mock.ExpectRollback()
-	ctx, recorder := ginTestContext("POST", "/sys/security/baseline/7/scan/", map[string]any{"mount_type": "project", "project_id": 3})
+	ctx, recorder := ginTestContext("POST", "/sys/security/baseline/7/scan/", map[string]any{
+		"mount_type": "project", "project_id": 3, "host_ids": []int64{10},
+	})
 	(&Handler{db: pool}).StartScan(ctx)
 	var payload map[string]any
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {

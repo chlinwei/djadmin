@@ -354,6 +354,7 @@ type ListAutomationInventoryHostsRow = mysql.ListAutomationInventoryHostsRow
 type ListAutomationJobHostLogsRow = mysql.ListAutomationJobHostLogsRow
 type ListAutomationPlaybooksParams = mysql.ListAutomationPlaybooksParams
 type ListBaselineCategoriesRow = mysql.ListBaselineCategoriesRow
+type ListBaselineHostTargetsRow = mysql.ListBaselineHostTargetsRow
 type ListBaselineItemOrderForUpdateRow = mysql.ListBaselineItemOrderForUpdateRow
 type ListBaselineItemsRow = mysql.ListBaselineItemsRow
 type ListBaselineScanResultsRow = mysql.ListBaselineScanResultsRow

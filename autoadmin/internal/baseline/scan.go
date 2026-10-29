@@ -25,25 +25,34 @@ import (
 // 结果落 baseline_scan_result → 按主机聚合符合率。
 
 type scanInput struct {
-	MountType     string `json:"mount_type"`
-	ProjectID     *int64 `json:"project_id"`
-	EnvironmentID *int64 `json:"environment_id"`
+	MountType     string  `json:"mount_type"`
+	ProjectID     *int64  `json:"project_id"`
+	EnvironmentID *int64  `json:"environment_id"`
+	HostIDs       []int64 `json:"host_ids"`
 }
 
 type scanHost struct {
-	HostID   int64
-	HostName string
-	HostIP   string
+	HostID   int64  `json:"id"`
+	HostName string `json:"name"`
+	HostIP   string `json:"ip"`
 	// InstanceName 是主机 instance_name（= assets_host.instance_name），
 	// 也是 gRPC 网关会话的路由 key。
-	InstanceName string
-	Online       bool
+	InstanceName string `json:"-"`
+	Online       bool   `json:"online"`
 }
 
 // resolveHosts 复用 inspection 域的项目/环境主机集合查询（OS 基线只扫主机）。
 func resolveScanHosts(ctx context.Context, queries *db.Queries, input scanInput) ([]scanHost, error) {
 	var rows []db.ListMountProjectHostsRow
-	if input.MountType == "environment" {
+	if input.MountType == "host" {
+		hostRows, err := queries.ListBaselineHostTargets(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range hostRows {
+			rows = append(rows, db.ListMountProjectHostsRow(row))
+		}
+	} else if input.MountType == "environment" {
 		environmentRows, queryErr := queries.ListMountProjectEnvironmentHosts(ctx, db.ListMountProjectEnvironmentHostsParams{
 			ProjectID:     sql.NullInt64{Int64: *input.ProjectID, Valid: true},
 			EnvironmentID: sql.NullInt64{Int64: *input.EnvironmentID, Valid: true},
@@ -69,22 +78,74 @@ func resolveScanHosts(ctx context.Context, queries *db.Queries, input scanInput)
 	return hosts, nil
 }
 
-func (handler *Handler) StartScan(context *gin.Context) {
+func bindScanInput(context *gin.Context) (scanInput, bool) {
 	var input scanInput
 	if err := context.ShouldBindJSON(&input); err != nil {
 		response.BusinessError(context, 400, "请求参数无效", nil)
-		return
+		return input, false
 	}
-	if input.MountType != "project" && input.MountType != "environment" {
-		response.BusinessError(context, 400, "基线扫描只支持按项目或项目×环境选择主机", nil)
-		return
+	if input.MountType != "project" && input.MountType != "environment" && input.MountType != "host" {
+		response.BusinessError(context, 400, "基线扫描只支持按主机、项目或项目×环境选择主机", nil)
+		return input, false
+	}
+	if input.MountType == "host" {
+		if input.ProjectID != nil || input.EnvironmentID != nil {
+			response.BusinessError(context, 400, "按主机扫描不能指定项目或环境", nil)
+			return input, false
+		}
+		return input, true
 	}
 	if input.ProjectID == nil || *input.ProjectID <= 0 {
 		response.BusinessError(context, 400, "必须选择项目", nil)
-		return
+		return input, false
 	}
 	if input.MountType == "environment" && (input.EnvironmentID == nil || *input.EnvironmentID <= 0) {
 		response.BusinessError(context, 400, "按环境扫描必须选择环境", nil)
+		return input, false
+	}
+	return input, true
+}
+
+// 预览与执行共用范围解析，不能用前端资产关联推算可扫描主机。
+func (handler *Handler) ScanHosts(context *gin.Context) {
+	input, valid := bindScanInput(context)
+	if !valid {
+		return
+	}
+	hosts, err := resolveScanHosts(context, db.New(handler.db), input)
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	response.Success(context, gin.H{"hosts": hosts})
+}
+
+func selectScanHosts(hosts []scanHost, ids []int64) ([]scanHost, error) {
+	if len(ids) == 0 {
+		return hosts, nil
+	}
+	available := make(map[int64]scanHost, len(hosts))
+	for _, host := range hosts {
+		available[host.HostID] = host
+	}
+	selected := make([]scanHost, 0, len(ids))
+	seen := make(map[int64]bool)
+	for _, id := range ids {
+		host, exists := available[id]
+		if !exists {
+			return nil, fmt.Errorf("主机 %d 不在当前扫描范围内，请刷新后重新选择", id)
+		}
+		if !seen[id] {
+			selected = append(selected, host)
+			seen[id] = true
+		}
+	}
+	return selected, nil
+}
+
+func (handler *Handler) StartScan(context *gin.Context) {
+	input, valid := bindScanInput(context)
+	if !valid {
 		return
 	}
 	baselineID := pathID(context)
@@ -123,6 +184,12 @@ func (handler *Handler) StartScan(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
+	// 提交时重新核验成员关系；失效选择必须报错，不能扩大为全部主机。
+	hosts, err = selectScanHosts(hosts, input.HostIDs)
+	if err != nil {
+		response.BusinessError(context, 400, err.Error(), nil)
+		return
+	}
 	if len(hosts) == 0 {
 		response.BusinessError(context, 400, "所选范围没有解析到任何主机", nil)
 		return
@@ -131,20 +198,23 @@ func (handler *Handler) StartScan(context *gin.Context) {
 	if claims, _ := identity.ClaimsFromContext(context); claims != nil {
 		username = claims.Username
 	}
-	projectName, err := scopeQueries.GetProjectNameByID(context, *input.ProjectID)
-	if err != nil {
-		response.Error(context, err)
-		return
+	projectName := ""
+	if input.ProjectID != nil {
+		projectName, err = scopeQueries.GetProjectNameByID(context, *input.ProjectID)
+		if err != nil {
+			response.Error(context, err)
+			return
+		}
 	}
 	environmentName := ""
-	if input.MountType == "project" {
-		input.EnvironmentID = nil
-	} else {
+	if input.MountType == "environment" {
 		environmentName, err = scopeQueries.GetBusinessEnvironmentNameByID(context, *input.EnvironmentID)
 		if err != nil {
 			response.Error(context, err)
 			return
 		}
+	} else {
+		input.EnvironmentID = nil
 	}
 	hostIDs := make([]int64, 0, len(hosts))
 	for _, host := range hosts {

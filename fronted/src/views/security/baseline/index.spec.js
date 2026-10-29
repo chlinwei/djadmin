@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import Antd, { message, Tooltip } from 'ant-design-vue'
+import Antd, { FormItem, message, Tooltip } from 'ant-design-vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import BaselinePage from './index.vue'
 import requestUtil from '@/util/request'
@@ -26,7 +26,9 @@ beforeEach(() => {
       ? { categories: [{ id: 3, name: '类目一' }, { id: 4, name: '类目二' }], items: savedItems }
       : { results: url === 'sys/security/baseline/' ? [baseline] : [] },
   )))
-  requestUtil.post.mockResolvedValue(response({ targets: 1 }))
+  requestUtil.post.mockImplementation((url) => Promise.resolve(response(url.endsWith('/scan-hosts/')
+    ? { hosts: [{ id: 10, name: 'host-a', ip: '10.0.0.1', online: true }, { id: 11, name: 'host-b', ip: '10.0.0.2', online: false }] }
+    : { targets: 1 })))
 })
 
 afterEach(() => {
@@ -45,6 +47,10 @@ async function loadPage() {
 }
 
 describe('扫描项目与环境联动', () => {
+  function openProjectScan() {
+    wrapper.vm.openScanModal(baseline)
+    wrapper.vm.scanMode = 'project'
+  }
   beforeEach(() => {
     const originalGet = requestUtil.get.getMockImplementation()
     requestUtil.get.mockImplementation((url, params) => {
@@ -70,7 +76,7 @@ describe('扫描项目与环境联动', () => {
 
   it('完整读取分页资产，只显示所选项目的启用服务环境，空项目不展示全局环境', async () => {
     await loadPage()
-    wrapper.vm.openScanModal(baseline)
+    openProjectScan()
     await flushPromises()
     expect(wrapper.vm.projectOptions.map((option) => option.value)).toEqual([301, 302, 303])
     expect(wrapper.vm.environmentOptions).toEqual([])
@@ -89,18 +95,110 @@ describe('扫描项目与环境联动', () => {
 
   it('切换项目清掉无效环境，留空时仍提交项目全环境扫描', async () => {
     await loadPage()
-    wrapper.vm.openScanModal(baseline)
+    openProjectScan()
     await flushPromises()
     wrapper.vm.scanForm.project_id = 301
     wrapper.vm.scanForm.environment_id = 71
+    await flushPromises()
     await wrapper.vm.submitScan()
     expect(requestUtil.post).toHaveBeenLastCalledWith('sys/security/baseline/7/scan/',
-      { mount_type: 'environment', project_id: 301, environment_id: 71 })
+      { mount_type: 'environment', project_id: 301, environment_id: 71, host_ids: [] })
     wrapper.vm.scanForm.project_id = 302
     expect(wrapper.vm.scanForm.environment_id).toBeUndefined()
+    await flushPromises()
     await wrapper.vm.submitScan()
     expect(requestUtil.post).toHaveBeenLastCalledWith('sys/security/baseline/7/scan/',
-      { mount_type: 'project', project_id: 302, environment_id: null })
+      { mount_type: 'project', project_id: 302, environment_id: null, host_ids: [] })
+  })
+
+  it('默认按主机且全部，支持部分主机，项目分支不携带主机选择', async () => {
+    await loadPage()
+    wrapper.vm.openScanModal(baseline)
+    await flushPromises()
+    expect(wrapper.vm.scanMode).toBe('host')
+    const labels = () => wrapper.findAllComponents(FormItem).map((item) => item.props('label'))
+    expect(labels()).toContain('主机（默认全部）')
+    expect(labels()).not.toContain('项目')
+    expect(labels()).not.toContain('环境（可选）')
+    expect(wrapper.vm.scanForm.host_ids).toEqual([])
+    expect(wrapper.vm.scanHostOptions).toHaveLength(2)
+    wrapper.vm.scanForm.host_ids = [11]
+    await wrapper.vm.submitScan()
+    expect(requestUtil.post).toHaveBeenLastCalledWith('sys/security/baseline/7/scan/',
+      { mount_type: 'host', host_ids: [11] })
+    wrapper.vm.scanMode = 'project'
+    expect(wrapper.vm.scanForm.host_ids).toEqual([])
+    expect(wrapper.vm.scanHostsLoaded).toBe(false)
+    await flushPromises()
+    expect(wrapper.vm.scanHostsLoaded).toBe(false)
+    expect(labels()).toContain('项目')
+    expect(labels()).toContain('环境（可选）')
+    expect(labels()).not.toContain('主机（默认全部）')
+    wrapper.vm.scanForm.project_id = 301
+    await flushPromises()
+    await wrapper.vm.submitScan()
+    expect(requestUtil.post).toHaveBeenLastCalledWith('sys/security/baseline/7/scan/',
+      { mount_type: 'project', project_id: 301, environment_id: null, host_ids: [] })
+    wrapper.vm.scanMode = 'host'
+    await flushPromises()
+    await wrapper.vm.submitScan()
+    expect(requestUtil.post).toHaveBeenLastCalledWith('sys/security/baseline/7/scan/',
+      { mount_type: 'host', host_ids: [] })
+  })
+
+  it('主机加载失败不发起扫描，旧范围的响应不能覆盖新范围', async () => {
+    await loadPage()
+    openProjectScan()
+    await flushPromises()
+    let resolveOld
+    requestUtil.post.mockImplementation(() => new Promise((resolve) => { resolveOld = resolve }))
+    wrapper.vm.scanForm.project_id = 301
+    const error = vi.spyOn(message, 'error').mockImplementation(() => {})
+    vi.spyOn(message, 'warning').mockImplementation(() => {})
+    requestUtil.post.mockRejectedValue(new Error('主机加载失败'))
+    wrapper.vm.scanForm.project_id = 302
+    await flushPromises()
+    resolveOld(response({ hosts: [{ id: 99 }] }))
+    await flushPromises()
+    expect(wrapper.vm.scanHosts).toEqual([])
+    expect(wrapper.vm.scanHostsLoaded).toBe(false)
+    expect(error).toHaveBeenCalledWith('主机加载失败')
+    requestUtil.post.mockClear()
+    await wrapper.vm.submitScan()
+    expect(requestUtil.post.mock.calls.some(([url]) => url.endsWith('/7/scan/'))).toBe(false)
+  })
+
+  it('按主机不加载项目资产，迟到项目响应不重置主机选择', async () => {
+    await loadPage()
+    requestUtil.get.mockClear()
+    wrapper.vm.openScanModal(baseline)
+    await flushPromises()
+    expect(requestUtil.get).not.toHaveBeenCalled()
+    expect(requestUtil.post).toHaveBeenLastCalledWith('sys/security/baseline/scan-hosts/', { mount_type: 'host' })
+    wrapper.vm.scanMode = 'project'
+    await flushPromises()
+    wrapper.vm.scanMode = 'host'
+    await flushPromises()
+    wrapper.vm.scanForm.host_ids = [11]
+    wrapper.vm.scanScopeLoaded = false
+    await flushPromises()
+    expect(wrapper.vm.scanForm.host_ids).toEqual([11])
+    await wrapper.vm.submitScan()
+    expect(requestUtil.post).toHaveBeenLastCalledWith('sys/security/baseline/7/scan/', { mount_type: 'host', host_ids: [11] })
+  })
+
+  it('空主机范围禁止提交', async () => {
+    await loadPage()
+    openProjectScan()
+    await flushPromises()
+    requestUtil.post.mockResolvedValue(response({ hosts: [] }))
+    wrapper.vm.scanForm.project_id = 303
+    await flushPromises()
+    requestUtil.post.mockClear()
+    const warning = vi.spyOn(message, 'warning').mockImplementation(() => {})
+    await wrapper.vm.submitScan()
+    expect(warning).toHaveBeenCalledWith('所选范围没有可扫描主机')
+    expect(requestUtil.post.mock.calls.some(([url]) => url.endsWith('/7/scan/'))).toBe(false)
   })
 
   it('范围加载失败时提示错误并阻止发起扫描，重开弹窗可重试', async () => {
@@ -110,15 +208,15 @@ describe('扫描项目与环境联动', () => {
     vi.spyOn(message, 'warning').mockImplementation(() => {})
     requestUtil.get.mockImplementation((url, params) => url === 'assets/application-services/'
       ? Promise.reject(new Error('服务名单加载失败')) : get(url, params))
-    wrapper.vm.openScanModal(baseline)
+    openProjectScan()
     await flushPromises()
     expect(error).toHaveBeenCalledWith('服务名单加载失败')
     expect(wrapper.vm.scanScopeLoaded).toBe(false)
     wrapper.vm.scanForm.project_id = 301
     await wrapper.vm.submitScan()
-    expect(requestUtil.post).not.toHaveBeenCalled()
+    expect(requestUtil.post.mock.calls.some(([url]) => url.endsWith('/7/scan/'))).toBe(false)
     requestUtil.get.mockImplementation(get)
-    wrapper.vm.openScanModal(baseline)
+    openProjectScan()
     await flushPromises()
     expect(wrapper.vm.scanScopeLoaded).toBe(true)
     expect(wrapper.vm.scanForm.project_id).toBeUndefined()
@@ -132,14 +230,14 @@ describe('扫描项目与环境联动', () => {
     let resolveOld
     requestUtil.get.mockImplementation((url, params) => url === 'assets/application-services/'
       ? new Promise((resolve) => { resolveOld = resolve }) : get(url, params))
-    wrapper.vm.openScanModal(baseline)
+    openProjectScan()
     await flushPromises()
     wrapper.vm.scanForm.project_id = 301
     await wrapper.vm.submitScan()
     expect(warning).toHaveBeenCalledWith('扫描范围尚未加载完成，请稍后重试')
-    expect(requestUtil.post).not.toHaveBeenCalled()
+    expect(requestUtil.post.mock.calls.some(([url]) => url.endsWith('/7/scan/'))).toBe(false)
     requestUtil.get.mockImplementation(get)
-    wrapper.vm.openScanModal(baseline)
+    openProjectScan()
     await flushPromises()
     wrapper.vm.scanForm.project_id = 301
     resolveOld(response({ results: [{ business_system: 7, environment: 72, enabled: true }] }))

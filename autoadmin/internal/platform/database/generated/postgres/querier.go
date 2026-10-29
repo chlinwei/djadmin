@@ -681,6 +681,7 @@ type Querier interface {
 	ListAutomationPlaybooks(ctx context.Context, arg ListAutomationPlaybooksParams) ([]AutomationPlaybookTemplate, error)
 	// ---- 类目（策略分组实体，迁移 000011 起）----
 	ListBaselineCategories(ctx context.Context, baselineID int64) ([]ListBaselineCategoriesRow, error)
+	ListBaselineHostTargets(ctx context.Context) ([]ListBaselineHostTargetsRow, error)
 	// 移动时锁定基线策略，按当前顺序在应用层定位同类目相邻项。
 	ListBaselineItemOrderForUpdate(ctx context.Context, baselineID int64) ([]ListBaselineItemOrderForUpdateRow, error)
 	ListBaselineItems(ctx context.Context, baselineID int64) ([]ListBaselineItemsRow, error)

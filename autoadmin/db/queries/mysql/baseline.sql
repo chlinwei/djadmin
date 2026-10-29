@@ -185,6 +185,12 @@ WHERE b.project_id = sqlc.arg(project_id)
   AND (s.environment_id = sqlc.narg(environment_id) OR sqlc.narg(environment_id) IS NULL)
 ORDER BY d.host_id, s.environment_id;
 
+-- name: ListBaselineHostTargets :many
+SELECT id, COALESCE(instance_name, '') AS instance_name, COALESCE(ip, '') AS ip,
+       COALESCE(agent_online, FALSE) AS agent_online
+FROM assets_host
+ORDER BY id;
+
 -- 明细排序：原来用 FIELD(status,'fail','pass')（MySQL 专有），改成等价的 CASE 表达式，
 -- 两方言都认（FIELD 未命中返回 0，所以 ELSE 分支排在最前）。
 -- name: ListBaselineScanResults :many

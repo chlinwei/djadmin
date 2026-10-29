@@ -287,15 +287,25 @@
       </a-form>
     </a-modal>
 
-    <a-modal v-model:open="scanModalOpen" title="发起基线扫描" centered :confirm-loading="scanning" :ok-button-props="{ disabled: scanScopeLoading || !scanScopeLoaded }" @ok="submitScan">
+    <a-modal v-model:open="scanModalOpen" title="发起基线扫描" centered :confirm-loading="scanning" :ok-button-props="{ disabled: (scanMode === 'project' && (scanScopeLoading || !scanScopeLoaded)) || scanHostsLoading || !scanHostsLoaded || !scanHosts.length }" @ok="submitScan">
       <a-form layout="vertical">
         <a-form-item label="基线"><a-input :value="scanBaseline?.name" readonly /></a-form-item>
-        <a-form-item label="项目" required>
+        <a-form-item label="扫描方式">
+          <a-radio-group v-model:value="scanMode">
+            <a-radio-button value="host">按主机</a-radio-button>
+            <a-radio-button value="project">按项目</a-radio-button>
+          </a-radio-group>
+        </a-form-item>
+        <a-form-item v-if="scanMode === 'project'" label="项目" required>
           <a-select v-model:value="scanForm.project_id" :options="projectOptions" :loading="scanScopeLoading" :disabled="scanScopeLoading" :virtual="false" show-search option-filter-prop="label" placeholder="选择项目" :getPopupContainer="getPopupContainer" />
         </a-form-item>
-        <a-form-item label="环境（可选）">
+        <a-form-item v-if="scanMode === 'project'" label="环境（可选）">
           <a-select v-model:value="scanForm.environment_id" :options="environmentOptions" :disabled="!scanForm.project_id || scanScopeLoading" :virtual="false" allow-clear placeholder="全部环境" :getPopupContainer="getPopupContainer" />
         </a-form-item>
+        <a-form-item v-if="scanMode === 'host'" label="主机（默认全部）" :help="scanHostsLoaded ? `全部 ${scanHosts.length} 台，已选择 ${scanForm.host_ids.length || scanHosts.length} 台；留空表示全部主机` : '正在加载主机，加载失败可关闭弹窗后重试'">
+          <a-select v-model:value="scanForm.host_ids" mode="multiple" :options="scanHostOptions" :loading="scanHostsLoading" :disabled="!scanHostsLoaded || scanHostsLoading" allow-clear show-search option-filter-prop="label" placeholder="全部主机" :getPopupContainer="getPopupContainer" />
+        </a-form-item>
+        <a-alert v-if="scanHostsLoaded && !scanHosts.length" type="warning" show-icon message="所选范围没有可扫描主机" />
       </a-form>
     </a-modal>
 
@@ -402,7 +412,15 @@ const categoryForm = reactive({ id: null, name: '' })
 const scanModalOpen = ref(false)
 const scanning = ref(false)
 const scanBaseline = ref(null)
-const scanForm = reactive({ project_id: undefined, environment_id: undefined })
+const scanMode = ref('host')
+const scanForm = reactive({ project_id: undefined, environment_id: undefined, host_ids: [] })
+const scanHosts = ref([])
+const scanHostsLoading = ref(false)
+const scanHostsLoaded = ref(false)
+let scanHostsRequestId = 0
+const scanHostOptions = computed(() => scanHosts.value.map((host) => ({
+  label: `${host.name} (${host.ip})${host.online ? '' : ' · 离线'}`, value: host.id,
+})))
 const scanProjects = ref([])
 const scanEnvironments = ref([])
 const scanServices = ref([])
@@ -428,6 +446,39 @@ watch(environmentOptions, (options) => {
     scanForm.environment_id = undefined
   }
 }, { flush: 'sync' })
+
+// 范围变化立即使旧选择失效；迟到响应不能重新放回其他范围的主机。
+watch(() => scanMode.value === 'host'
+  ? ['host']
+  : ['project', scanForm.project_id, scanForm.environment_id, scanScopeLoaded.value], loadScanHosts, { flush: 'sync' })
+watch(scanMode, (mode) => {
+  if (mode === 'project' && !scanScopeLoaded.value && !scanScopeLoading.value) loadScanScopeOptions()
+}, { flush: 'sync' })
+
+const scanScopeParams = () => scanMode.value === 'host'
+  ? { mount_type: 'host' }
+  : { mount_type: scanForm.environment_id ? 'environment' : 'project', project_id: scanForm.project_id, environment_id: scanForm.environment_id ?? null }
+
+async function loadScanHosts() {
+  const requestId = ++scanHostsRequestId
+  scanForm.host_ids = []
+  scanHosts.value = []
+  scanHostsLoaded.value = false
+  scanHostsLoading.value = false
+  if (scanMode.value === 'project' && (!scanForm.project_id || !scanScopeLoaded.value)) return
+  scanHostsLoading.value = true
+  try {
+    const data = responseData(await requestUtil.post(`${baselinePrefix}scan-hosts/`, scanScopeParams()))
+    if (requestId !== scanHostsRequestId) return
+    if (!Array.isArray(data.hosts)) throw new Error('主机范围响应格式无效')
+    scanHosts.value = data.hosts
+    scanHostsLoaded.value = true
+  } catch (error) {
+    if (requestId === scanHostsRequestId) message.error(error?.message || '主机范围加载失败')
+  } finally {
+    if (requestId === scanHostsRequestId) scanHostsLoading.value = false
+  }
+}
 
 const statusLabel = (status) => ({ pending: '等待中', running: '扫描中', success: '完成', failed: '存在不符合', skipped: '已跳过', canceled: '已取消' }[status] || status)
 const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red', skipped: 'default', canceled: 'orange' }[status] || 'default')
@@ -747,20 +798,27 @@ async function confirmDeleteCategory(record) {
 
 // 发起扫描：按项目（×环境）解析主机集合，逐主机执行基线套件。
 async function submitScan() {
-  if (!scanForm.project_id) {
+  if (scanMode.value === 'project' && !scanForm.project_id) {
     message.warning('请选择项目')
     return
   }
-  if (scanScopeLoading.value || !scanScopeLoaded.value) {
+  if (scanMode.value === 'project' && (scanScopeLoading.value || !scanScopeLoaded.value)) {
     message.warning('扫描范围尚未加载完成，请稍后重试')
+    return
+  }
+  if (scanHostsLoading.value || !scanHostsLoaded.value) {
+    message.warning('主机范围尚未加载完成，请稍后重试')
+    return
+  }
+  if (!scanHosts.value.length) {
+    message.warning('所选范围没有可扫描主机')
     return
   }
   scanning.value = true
   try {
     const data = responseData(await startBaselineScan(scanBaseline.value.id, {
-      mount_type: scanForm.environment_id ? 'environment' : 'project',
-      project_id: scanForm.project_id,
-      environment_id: scanForm.environment_id ?? null,
+      ...scanScopeParams(),
+      host_ids: scanMode.value === 'host' ? scanForm.host_ids : [],
     }))
     scanModalOpen.value = false
     message.success(`扫描已发起（${data.targets} 台主机）`)
@@ -772,11 +830,15 @@ async function submitScan() {
    } finally { scanning.value = false }
 }
 function openScanModal(record) {
+  ++scanScopeRequestId
+  scanScopeLoading.value = false
+  scanScopeLoaded.value = false
+  scanMode.value = 'host'
   scanBaseline.value = record
   scanForm.project_id = undefined
   scanForm.environment_id = undefined
   scanModalOpen.value = true
-  loadScanScopeOptions()
+  loadScanHosts()
 }
 
 async function loadScanScopeOptions() {

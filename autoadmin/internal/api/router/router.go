@@ -331,6 +331,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	baselineGroup.PATCH("/:id/", middleware.RequirePermission("baseline:manage"), baselineHandler.SaveBaseline)
 	baselineGroup.DELETE("/:id/", middleware.RequirePermission("baseline:manage"), baselineHandler.DeleteBaseline)
 	baselineGroup.POST("/:id/scan/", middleware.RequirePermission("baseline:scan"), baselineHandler.StartScan)
+	baselineGroup.POST("/scan-hosts/", middleware.RequirePermission("baseline:scan"), baselineHandler.ScanHosts)
 	baselineGroup.POST("/:id/categories/", middleware.RequirePermission("baseline:manage"), baselineHandler.CreateBaselineCategory)
 	// 类目子资源挂在基线下（避免与 /:id/ 通配符同级冲突）。
 	baselineGroup.PATCH("/:id/categories/:categoryId/", middleware.RequirePermission("baseline:manage"), baselineHandler.UpdateBaselineCategory)

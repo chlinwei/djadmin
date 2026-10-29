@@ -63,17 +63,21 @@
                                     <a-input v-model:value="formState.phonenumber" />
                                 </a-form-item>
                                 <a-form-item label="时区" name="timezone">
-                                    <!-- virtual=false：选项数量少，禁用虚拟滚动规避 rc-virtual-list 卸载竞态（KeepAlive 切页时 removeEventListener of null，ant-design-vue 4.2.6 上游 bug）。 -->
+                                    <!-- 禁用虚拟滚动规避 KeepAlive 切页时 rc-virtual-list 卸载竞态；选项通过搜索缩小范围。 -->
                                     <a-select
                                         v-model:value="formState.timezone"
                                         :getPopupContainer="getPopupContainer"
                                         :options="timezoneOptions"
                                         :virtual="false"
-                                        @change="handleTimezoneChange"
+                                        show-search
+                                        option-filter-prop="label"
+                                        placeholder="搜索时区、地区或 UTC 偏移"
+                                        :disabled="timezoneOptions.length === 0 || profileSaving"
+                                        @dropdownVisibleChange="refreshTimezoneOptions"
                                     />
                                 </a-form-item>
                                 <a-form-item>
-                                    <a-button type="primary" html-type="submit" style="margin-left: 10px;">保存</a-button>
+                                    <a-button type="primary" html-type="submit" :loading="profileSaving" style="margin-left: 10px;">保存</a-button>
                                 </a-form-item>
 
                             </a-form>
@@ -192,7 +196,7 @@
 
 </template>
 <script setup>
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import { tableLocale } from '@/util/tableStyle';
 import { reactive } from 'vue';
 import {
@@ -203,14 +207,15 @@ import {
 } from '@/api/user/index.js';
 import { getCurrentUserRoleList } from '@/api/role';
 import { updateUserInfo, updateUserPassword } from '@/api/user';
-import { updateUserTimezone, getCurrentUserInfo } from '@/api/sys/userTimezone'
+import { getCurrentUserInfo } from '@/api/sys/userTimezone'
+import store from '@/store'
 import { onMounted } from 'vue';
 import { message } from 'ant-design-vue';
 import Avatar from '@/views/userCenter/components/Avatar.vue';
 import UserNotificationChain from '@/views/monitor/alerts/UserNotificationChain.vue';
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
-import { TIMEZONE_LIST, formatTimeWithTimezone } from '@/util/timezone'
+import { getTimezoneOptions, formatTimeWithTimezone } from '@/util/timezone'
 import { emitUserTimezoneChanged } from '@/util/userTimezoneSync'
 
 
@@ -225,6 +230,7 @@ const formState = reactive({
     phonenumber: currentUser.user.phonenumber,
     timezone: currentUser.user.timezone || 'UTC'
 });
+const profileSaving = ref(false)
 const alertMediaOptions = ref([])
 const alertMediaBindings = ref([])
 const bindingLoading = ref(false)
@@ -242,11 +248,20 @@ const password_formState = reactive({
     confirm_password: ''
 })
 
-// 时区选项
-const timezoneOptions = ref(TIMEZONE_LIST.map(tz => ({
-    label: tz.label,
-    value: tz.value
-})))
+const timezoneOptions = ref([])
+const refreshTimezoneOptions = (open = true) => {
+    if (!open) {
+        return
+    }
+    try {
+        timezoneOptions.value = getTimezoneOptions(formState.timezone)
+    } catch (error) {
+        timezoneOptions.value = []
+        console.error('加载时区列表失败:', error)
+        message.error('加载时区列表失败，请检查浏览器是否支持时区枚举及当前时区是否有效。')
+    }
+}
+watch(() => formState.timezone, () => refreshTimezoneOptions(), { immediate: true })
 
 const normalizeUtcTime = (value) => {
     if (!value || typeof value !== 'string') {
@@ -267,57 +282,31 @@ const formatDateTime = (value) => {
         return '-'
     }
     try {
-        const timezone = formState.timezone || 'UTC'
+        const timezone = store.state.user?.timezone || 'UTC'
         return formatTimeWithTimezone(normalizeUtcTime(value), timezone, 'YYYY-MM-DD HH:mm:ss')
     } catch (error) {
         return value
     }
 }
 
-const syncTimezoneToLocalUser = (timezone) => {
-    const localUser = getCurrentUser()
-    if (!localUser) {
-        return
-    }
-    localUser.timezone = timezone
-    saveCurrentUser(localUser)
-    emitUserTimezoneChanged(timezone)
+const applySavedProfile = (response) => {
+    const user = response.data.data.user
+    currentUser.user = user
+    saveCurrentUser(user)
+    emitUserTimezoneChanged(user.timezone)
 }
 
-const refreshCurrentUserCache = async () => {
+const onFinish_updateUserInfo = async values => {
+    profileSaving.value = true
     try {
-        const res = await getCurrentUserInfo()
-        const userData = res?.data?.data
-        if (userData) {
-            currentUser.user = userData
-            formState.phonenumber = userData.phonenumber || ''
-            formState.timezone = userData.timezone || 'UTC'
-            saveCurrentUser(userData)
-            if (userData.timezone) {
-                emitUserTimezoneChanged(userData.timezone)
-            }
-        }
+        applySavedProfile(await updateUserInfo(values))
+        message.success('更新成功')
     } catch (error) {
-        console.error('刷新用户缓存失败:', error)
+        console.error('保存个人资料失败:', error)
+        message.error(error?.message || '保存个人资料失败')
+    } finally {
+        profileSaving.value = false
     }
-}
-
-const onFinish_updateUserInfo = values => {
-    updateUserInfo(values, (result) => {
-        currentUser.user = getCurrentUser();
-        // 同时保存时区
-        if (formState.timezone && currentUser.user && currentUser.user.id) {
-            updateUserTimezone(currentUser.user.id, formState.timezone).then(() => {
-                syncTimezoneToLocalUser(formState.timezone)
-                refreshCurrentUserCache()
-                message.success("更新成功")
-            }).catch(error => {
-                console.error('保存时区失败:', error)
-            })
-        } else {
-            message.success("更新成功")
-        }
-    });
 };
 const onFinishFailed_updateUserInfo = errorInfo => {
     console.log('Failed:', errorInfo);
@@ -445,20 +434,6 @@ const bindingColumns = [
     { title: '状态', dataIndex: 'enabled', key: 'enabled', width: 80 },
     { title: '操作', key: 'operation', fixed: 'right', width: 100 },
 ]
-
-// 处理时区变更 - 实时保存
-const handleTimezoneChange = (value) => {
-    if (currentUser.user && currentUser.user.id) {
-        updateUserTimezone(currentUser.user.id, value).then(() => {
-            syncTimezoneToLocalUser(value)
-            refreshCurrentUserCache()
-            message.success("时区已保存")
-        }).catch(error => {
-            console.error('保存时区失败:', error)
-            message.error("保存时区失败")
-        })
-    }
-}
 
 onMounted(() => {
     // 从API加载最新用户信息（包括时区）

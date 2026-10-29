@@ -621,6 +621,7 @@ type UpdateUserLoginDateParams = postgres.UpdateUserLoginDateParams
 type UpdateUserPasswordParams = postgres.UpdateUserPasswordParams
 type UpdateUserPhonenumberParams = postgres.UpdateUserPhonenumberParams
 type UpdateUserProfileParams = postgres.UpdateUserProfileParams
+type UpdateUserTimezoneParams = postgres.UpdateUserTimezoneParams
 type UpsertHostHardwareParams = postgres.UpsertHostHardwareParams
 type UpsertHostRuntimeParams = postgres.UpsertHostRuntimeParams
 type UpsertHostSystemParams = postgres.UpsertHostSystemParams

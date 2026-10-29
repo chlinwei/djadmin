@@ -637,6 +637,7 @@ type UpdateUserLoginDateParams = mysql.UpdateUserLoginDateParams
 type UpdateUserPasswordParams = mysql.UpdateUserPasswordParams
 type UpdateUserPhonenumberParams = mysql.UpdateUserPhonenumberParams
 type UpdateUserProfileParams = mysql.UpdateUserProfileParams
+type UpdateUserTimezoneParams = mysql.UpdateUserTimezoneParams
 type UpsertHostHardwareParams = mysql.UpsertHostHardwareParams
 type UpsertHostRuntimeParams = mysql.UpsertHostRuntimeParams
 type UpsertHostSystemParams = mysql.UpsertHostSystemParams

@@ -1109,6 +1109,7 @@ type Querier interface {
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error
 	UpdateUserPhonenumber(ctx context.Context, arg UpdateUserPhonenumberParams) error
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
+	UpdateUserTimezone(ctx context.Context, arg UpdateUserTimezoneParams) error
 	// conflict: host_id
 	UpsertHostHardware(ctx context.Context, arg UpsertHostHardwareParams) error
 	// conflict: host_id

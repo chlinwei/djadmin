@@ -1,18 +1,18 @@
-// 常见时区列表
-export const TIMEZONE_LIST = [
-    { label: 'UTC (协调世界时)', value: 'UTC', offset: 0 },
-    { label: 'GMT+8 (北京/香港/新加坡)', value: 'Asia/Shanghai', offset: 8 },
-    { label: 'GMT+9 (东京/首尔)', value: 'Asia/Tokyo', offset: 9 },
-    { label: 'GMT+5:30 (印度标准时)', value: 'Asia/Kolkata', offset: 5.5 },
-    { label: 'GMT+8 (澳大利亚/珀斯)', value: 'Australia/Perth', offset: 8 },
-    { label: 'GMT+10 (澳大利亚/悉尼)', value: 'Australia/Sydney', offset: 10 },
-    { label: 'GMT+0 (伦敦)', value: 'Europe/London', offset: 0 },
-    { label: 'GMT+1 (柏林/巴黎)', value: 'Europe/Berlin', offset: 1 },
-    { label: 'GMT-5 (纽约)', value: 'America/New_York', offset: -5 },
-    { label: 'GMT-8 (洛杉矶)', value: 'America/Los_Angeles', offset: -8 },
-    { label: 'GMT-6 (芝加哥)', value: 'America/Chicago', offset: -6 },
-    { label: 'GMT-3 (圣保罗)', value: 'America/Sao_Paulo', offset: -3 },
-]
+export function getTimezoneOptions(selectedTimezone, date = new Date()) {
+    if (typeof Intl.supportedValuesOf !== 'function') {
+        throw new Error('当前浏览器不支持时区枚举，请升级浏览器')
+    }
+    const zones = new Set(['UTC', ...Intl.supportedValuesOf('timeZone')])
+    // 枚举不包含全部别名；保存的有效 IANA 标识必须原样回显，不能自动改写用户设置。
+    if (selectedTimezone) {
+        new Intl.DateTimeFormat(undefined, { timeZone: selectedTimezone })
+        zones.add(selectedTimezone)
+    }
+    return [...zones].sort().map(value => ({
+        value,
+        label: formatTimezoneLabel(value, date),
+    }))
+}
 
 /**
  * 将UTC时间转换为指定时区的本地时间
@@ -115,11 +115,34 @@ export function toUtcQueryISOString(value) {
 /**
  * 获取时区的偏移小时数
  * @param {string} timezone - 时区标识符
+ * @param {Date} date - 偏移计算时刻，包含该时刻的夏令时规则
  * @returns {number} 相对于UTC的偏移小时数
  */
-export function getTimezoneOffset(timezone) {
-    const found = TIMEZONE_LIST.find(tz => tz.value === timezone)
-    return found ? found.offset : 0
+export function getTimezoneOffset(timezone, date = new Date()) {
+    // 数值字段不依赖浏览器语言；h23 避免午夜被输出为次日 24 点。
+    const parts = new Intl.DateTimeFormat(undefined, {
+        timeZone: timezone,
+        calendar: 'iso8601',
+        numberingSystem: 'latn',
+        hourCycle: 'h23',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+    }).formatToParts(date)
+    const values = Object.fromEntries(parts.map(part => [part.type, Number(part.value)]))
+    const localAsUtc = Date.UTC(values.year, values.month - 1, values.day, values.hour, values.minute, values.second)
+    return (localAsUtc - Math.floor(date.getTime() / 1000) * 1000) / 3600000
+}
+
+function formatTimezoneLabel(timezone, date) {
+    const minutes = Math.round(getTimezoneOffset(timezone, date) * 60)
+    const sign = minutes < 0 ? '-' : '+'
+    const hoursText = String(Math.floor(Math.abs(minutes) / 60)).padStart(2, '0')
+    const minutesText = String(Math.abs(minutes) % 60).padStart(2, '0')
+    return `UTC${sign}${hoursText}:${minutesText} · ${timezone}`
 }
 
 /**
@@ -127,7 +150,14 @@ export function getTimezoneOffset(timezone) {
  * @param {string} timezone - 时区标识符
  * @returns {string} 时区标签
  */
-export function getTimezoneLabel(timezone) {
-    const found = TIMEZONE_LIST.find(tz => tz.value === timezone)
-    return found ? found.label : timezone
+export function getTimezoneLabel(timezone, date = new Date()) {
+    try {
+        return formatTimezoneLabel(timezone, date)
+    } catch (error) {
+        if (!(error instanceof RangeError)) {
+            throw error
+        }
+        console.error('时区标签生成失败:', error)
+        return timezone
+    }
 }

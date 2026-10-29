@@ -7,8 +7,10 @@ import (
 	"errors"
 	"strings"
 	"time"
+	_ "time/tzdata" // 纯 Go 部署也能校验时区，不依赖宿主安装 tzdata。
 
 	"autoadmin/internal/api/response"
+	"autoadmin/internal/platform/database"
 	db "autoadmin/internal/platform/database/generated"
 	"autoadmin/internal/shared/apperror"
 
@@ -20,7 +22,8 @@ import (
 // alertMediaBindings/updateAlertMediaBindings 保持一致。
 
 type updateUserInfoRequest struct {
-	Phonenumber string `json:"phonenumber"`
+	Phonenumber *string `json:"phonenumber"`
+	Timezone    *string `json:"timezone"`
 }
 
 func (handler *Handler) UpdateUserInfo(context *gin.Context) {
@@ -34,13 +37,23 @@ func (handler *Handler) UpdateUserInfo(context *gin.Context) {
 		response.BusinessError(context, 400, "请求参数无效", nil)
 		return
 	}
-	user, err := handler.service.UpdatePhonenumber(context.Request.Context(), claims.UserID, strings.TrimSpace(input.Phonenumber))
+	if input.Phonenumber == nil && input.Timezone == nil {
+		response.BusinessError(context, 400, "请提供手机号或时区", nil)
+		return
+	}
+	if input.Timezone != nil {
+		value := strings.TrimSpace(*input.Timezone)
+		if _, err := time.LoadLocation(value); err != nil || value == "" || value == "Local" {
+			response.BusinessError(context, 400, "时区必须是有效的 IANA 标识", nil)
+			return
+		}
+		input.Timezone = &value
+	}
+	user, err := handler.service.UpdateSelfProfile(context.Request.Context(), claims.UserID, input.Phonenumber, input.Timezone)
 	if err != nil {
 		response.Error(context, apperror.WithCause(ErrUserQueryInternal, err))
 		return
 	}
-	// 不回传密码哈希
-	user.Password = ""
 	response.Success(context, gin.H{"user": user})
 }
 
@@ -187,20 +200,35 @@ type alertMediaOption struct {
 	Enabled   bool   `json:"enabled"`
 }
 
-func (service *Service) UpdatePhonenumber(ctx context.Context, userID int32, phonenumber string) (db.SysUser, error) {
-	user, err := service.repository.GetByID(ctx, userID)
+func (service *Service) UpdateSelfProfile(ctx context.Context, userID int32, phonenumber, timezone *string) (CurrentUser, error) {
+	var user db.SysUser
+	// 只更新明确提交的两个自助字段，避免整行写回覆盖管理员并发修改的账号状态等信息。
+	err := database.InTransaction(ctx, service.repository.Pool(), func(queries *db.Queries) error {
+		now := sql.NullTime{Time: time.Now().UTC(), Valid: true}
+		if phonenumber != nil {
+			value := strings.TrimSpace(*phonenumber)
+			if err := queries.UpdateUserPhonenumber(ctx, db.UpdateUserPhonenumberParams{
+				Phonenumber: sql.NullString{String: value, Valid: value != ""},
+				UpdateTime:  now, ID: userID,
+			}); err != nil {
+				return err
+			}
+		}
+		if timezone != nil {
+			if err := queries.UpdateUserTimezone(ctx, db.UpdateUserTimezoneParams{
+				Timezone: *timezone, UpdateTime: now, ID: userID,
+			}); err != nil {
+				return err
+			}
+		}
+		var err error
+		user, err = queries.GetUserByID(ctx, userID)
+		return err
+	})
 	if err != nil {
-		return db.SysUser{}, err
+		return CurrentUser{}, err
 	}
-	if err = service.repository.UpdatePhonenumber(ctx, db.UpdateUserPhonenumberParams{
-		Phonenumber: sql.NullString{String: phonenumber, Valid: phonenumber != ""},
-		UpdateTime:  sql.NullTime{Time: time.Now().UTC(), Valid: true},
-		ID:          userID,
-	}); err != nil {
-		return db.SysUser{}, err
-	}
-	user.Phonenumber = sql.NullString{String: phonenumber, Valid: phonenumber != ""}
-	return user, nil
+	return mapUser(user), nil
 }
 
 func (service *Service) UpdateAvatar(ctx context.Context, userID int32, avatar string) error {

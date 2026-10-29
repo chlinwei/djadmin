@@ -66,11 +66,8 @@ export function clearRemeberMe() {
 
 
 //更新基本资料
-export function updateUserInfo(user, callback) {
-    requestUtil.post("sys/usercenter/updateUserInfo/", user).then(result => {
-        saveCurrentUser(result.data.data.user);
-        callback(result);
-    })
+export function updateUserInfo(user) {
+    return requestUtil.post("sys/usercenter/updateUserInfo/", user)
 }
 
 export function getCurrentUserAlertMediaBindings() {

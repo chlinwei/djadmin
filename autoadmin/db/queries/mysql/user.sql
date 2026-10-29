@@ -112,6 +112,9 @@ DELETE FROM sys_agent_token WHERE id = ?;
 -- name: UpdateUserPhonenumber :exec
 UPDATE sys_user SET phonenumber = ?, update_time = ? WHERE id = ?;
 
+-- name: UpdateUserTimezone :exec
+UPDATE sys_user SET timezone = ?, update_time = ? WHERE id = ?;
+
 -- name: UpdateUserAvatar :exec
 UPDATE sys_user SET avatar = ?, update_time = ? WHERE id = ?;
 

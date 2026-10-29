@@ -45,13 +45,15 @@ const avatarUrl = computed(() => {
     return raw ? getMediaUrl(raw) : ''
 })
 const currentTime = ref('')
+const currentInstant = ref(new Date())
 const userTimezone = ref(currentUser.value?.timezone || 'UTC')
 let timeInterval = null
 let stopListenTimezone = null
 
 const currentDate = computed(() => currentTime.value.split(' ')[0] || '--')
 const currentClock = computed(() => currentTime.value.split(' ')[1] || '--:--:--')
-const currentTimezoneLabel = computed(() => `时区: ${getTimezoneLabel(userTimezone.value || 'UTC')}`)
+// 标签与时钟共用计算时刻，长时间打开页面跨越夏令时切换时偏移也会刷新。
+const currentTimezoneLabel = computed(() => `时区: ${getTimezoneLabel(userTimezone.value || 'UTC', currentInstant.value)}`)
 const currentWeekday = computed(() => {
     try {
         return new Intl.DateTimeFormat('zh-CN', {
@@ -64,8 +66,9 @@ const currentWeekday = computed(() => {
 })
 
 const formatTime = () => {
+    currentInstant.value = new Date()
     try {
-        const now = new Date()
+        const now = currentInstant.value
         return formatTimeWithTimezone(now, userTimezone.value, 'YYYY-MM-DD HH:mm:ss')
     } catch (error) {
         const now = new Date()

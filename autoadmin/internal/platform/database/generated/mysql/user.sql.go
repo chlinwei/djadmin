@@ -938,3 +938,18 @@ func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfilePa
 	)
 	return err
 }
+
+const updateUserTimezone = `-- name: UpdateUserTimezone :exec
+UPDATE sys_user SET timezone = ?, update_time = ? WHERE id = ?
+`
+
+type UpdateUserTimezoneParams struct {
+	Timezone   string       `json:"timezone"`
+	UpdateTime sql.NullTime `json:"update_time"`
+	ID         int32        `json:"id"`
+}
+
+func (q *Queries) UpdateUserTimezone(ctx context.Context, arg UpdateUserTimezoneParams) error {
+	_, err := q.db.ExecContext(ctx, updateUserTimezone, arg.Timezone, arg.UpdateTime, arg.ID)
+	return err
+}

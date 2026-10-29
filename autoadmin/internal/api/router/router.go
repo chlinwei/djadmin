@@ -95,7 +95,8 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	)
 	engine.POST("/user/changeAvatar", middleware.Authenticate(tokens), identityHandler.ChangeAvatar)
 	apiTokens := engine.Group("/sys/usercenter", middleware.Authenticate(tokens))
-	apiTokens.POST("/updateUserInfo/", middleware.RequirePermission("system:usercenter:updateUserInfo"), identityHandler.UpdateUserInfo)
+	// 自助资料修改只依赖登录身份；handler 只写当前用户的手机号和时区，管理员接口仍独立鉴权。
+	apiTokens.POST("/updateUserInfo/", identityHandler.UpdateUserInfo)
 	apiTokens.POST("/updateUserPassword/", identityHandler.UpdateUserPassword)
 	apiTokens.GET("/alertMediaBindings/", identityHandler.AlertMediaBindings)
 	apiTokens.POST("/updateAlertMediaBindings/", identityHandler.UpdateAlertMediaBindings)

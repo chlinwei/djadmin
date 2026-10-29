@@ -96,6 +96,7 @@ func TestWriteRoutesRequireConfiguredPermission(t *testing.T) {
 		{name: "scheduler task update", method: http.MethodPatch, path: "/sys/scheduler/tasks/1/"},
 		{name: "inspection task create", method: http.MethodPost, path: "/sys/inspection/tasks/"},
 		{name: "asset host update", method: http.MethodPatch, path: "/assets/hosts/1/"},
+		{name: "other user update", method: http.MethodPatch, path: "/sys/users/99/"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

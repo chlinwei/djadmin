@@ -20,10 +20,14 @@ import (
 
 const historicalStreamSweepInterval = 10 * time.Minute
 
+var errMissingStreamOwner = errors.New("missing service ownership")
+var errMissingEventTime = errors.New("logs without reliable @timestamp")
+
 type historicalDataStream struct {
 	Name    string `json:"name"`
 	Indices []struct {
 		Name string `json:"index_name"`
+		UUID string `json:"index_uuid"`
 	} `json:"indices"`
 }
 
@@ -84,6 +88,9 @@ func (handler *Handler) recycleHistoricalStreams(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := handler.reconcileOrphanStreamFence(ctx, cluster, ""); err != nil {
+		return err
+	}
 	active, err := q.ListServiceActiveStreamTiers(ctx)
 	if err != nil {
 		return err
@@ -94,6 +101,15 @@ func (handler *Handler) recycleHistoricalStreams(ctx context.Context) error {
 		}
 		owner, tier, ownerErr := historicalStreamOwner(cluster.IndexPrefix, stream.Name, owners)
 		if ownerErr != nil {
+			if errors.Is(ownerErr, errMissingStreamOwner) {
+				attempt, cancel := context.WithTimeout(ctx, time.Minute)
+				err := handler.recycleOrphanStream(attempt, cluster, stream)
+				cancel()
+				if err != nil {
+					slog.Warn("orphan data stream recycling deferred", "stream", stream.Name, "error", err)
+				}
+				continue
+			}
 			slog.Warn("historical data stream recycling deferred", "stream", stream.Name, "error", ownerErr)
 			continue
 		}
@@ -133,7 +149,7 @@ func historicalStreamOwner(prefix, name string, owners []db.AssetsServiceDeletio
 		found, tier = owner, strings.TrimPrefix(name, base)
 	}
 	if found.ServiceID == 0 {
-		return found, "", fmt.Errorf("missing service ownership")
+		return found, "", errMissingStreamOwner
 	}
 	if tier == "" {
 		return found, "", fmt.Errorf("missing retention tier")
@@ -344,8 +360,12 @@ type historicalStreamSnapshot struct {
 }
 
 func (handler *Handler) historicalStreamSnapshot(ctx context.Context, cluster elasticsearchCluster, name string) (historicalStreamSnapshot, error) {
+	return handler.readHistoricalStreamSnapshot(ctx, cluster, name, historicalStreamSearchBody())
+}
+
+func (handler *Handler) readHistoricalStreamSnapshot(ctx context.Context, cluster elasticsearchCluster, name string, body map[string]any) (historicalStreamSnapshot, error) {
 	var snapshot historicalStreamSnapshot
-	raw, err := handler.elasticsearchRequestRaw(ctx, cluster, http.MethodPost, "/"+url.PathEscape(name)+"/_search", historicalStreamSearchBody())
+	raw, err := handler.elasticsearchRequestRaw(ctx, cluster, http.MethodPost, "/"+url.PathEscape(name)+"/_search", body)
 	if err != nil {
 		return snapshot, err
 	}
@@ -377,8 +397,11 @@ func (handler *Handler) historicalStreamSnapshot(ctx context.Context, cluster el
 	if result.TimedOut == nil || *result.TimedOut || result.Shards.Failed == nil || *result.Shards.Failed != 0 ||
 		result.Shards.Total <= 0 || result.Shards.Successful != result.Shards.Total ||
 		result.Hits.Total == nil || result.Hits.Total.Relation != "eq" || result.Hits.Total.Value < 0 ||
-		result.Aggregations.Missing.Count == nil || *result.Aggregations.Missing.Count != 0 {
+		result.Aggregations.Missing.Count == nil {
 		return snapshot, fmt.Errorf("incomplete search or logs without @timestamp; refusing stream deletion")
+	}
+	if *result.Aggregations.Missing.Count != 0 {
+		return snapshot, errMissingEventTime
 	}
 	snapshot.Count = result.Hits.Total.Value
 	if snapshot.Count > 0 {
@@ -419,7 +442,7 @@ func (handler *Handler) historicalStreamDeadline(ctx context.Context, cluster el
 	}
 	var result struct {
 		Indices map[string]struct {
-			Managed   bool   `json:"managed"`
+			Managed   *bool  `json:"managed"`
 			Policy    string `json:"policy"`
 			Created   int64  `json:"index_creation_date_millis"`
 			Lifecycle int64  `json:"lifecycle_date_millis"`
@@ -432,11 +455,24 @@ func (handler *Handler) historicalStreamDeadline(ctx context.Context, cluster el
 	if len(stream.Indices) == 0 || len(result.Indices) != len(stream.Indices) {
 		return time.Time{}, fmt.Errorf("backing indices changed or ILM evidence is incomplete")
 	}
+	unmanaged := 0
+	for _, index := range stream.Indices {
+		state, ok := result.Indices[index.Name]
+		if !ok || state.Managed == nil {
+			return time.Time{}, fmt.Errorf("missing backing index ILM evidence")
+		}
+		if !*state.Managed {
+			unmanaged++
+		}
+	}
+	if unmanaged == len(stream.Indices) {
+		return time.Time{}, errUnmanagedOrphanStream
+	}
 	var deadline time.Time
 	periods := map[string]time.Duration{}
 	for _, index := range stream.Indices {
 		state, ok := result.Indices[index.Name]
-		if !ok || !state.Managed || state.Policy == "" || state.Created <= 0 || state.Lifecycle <= 0 || state.Step == "ERROR" {
+		if !ok || !*state.Managed || state.Policy == "" || state.Created <= 0 || state.Lifecycle <= 0 || state.Step == "ERROR" {
 			return time.Time{}, fmt.Errorf("index %s has unknown, unmanaged or failed ILM state", index.Name)
 		}
 		period, ok := periods[state.Policy]
@@ -482,19 +518,30 @@ func (handler *Handler) historicalStreamDeadline(ctx context.Context, cluster el
 }
 
 func (handler *Handler) deleteExpiredHistoricalStream(ctx context.Context, cluster elasticsearchCluster, stream historicalDataStream, now time.Time) (deleted bool, reason string, err error) {
+	return handler.deleteExpiredStream(ctx, cluster, stream, now, false, nil)
+}
+
+func (handler *Handler) deleteExpiredStream(ctx context.Context, cluster elasticsearchCluster, stream historicalDataStream, now time.Time, orphan bool, beforeDelete func() error) (deleted bool, reason string, err error) {
 	if err := validateCleanupStreamName(cluster.IndexPrefix, stream.Name); err != nil {
 		return false, "", err
 	}
 	if len(stream.Indices) == 0 {
 		return false, "", fmt.Errorf("missing backing index evidence")
 	}
-	snapshot, err := handler.historicalStreamSnapshot(ctx, cluster, stream.Name)
+	snapshotFn := handler.historicalStreamSnapshot
+	if orphan {
+		snapshotFn = handler.orphanStreamSnapshot
+	}
+	snapshot, err := snapshotFn(ctx, cluster, stream.Name)
 	if err != nil {
 		return false, "", err
 	}
 	reason = "empty historical stream"
 	if snapshot.Count > 0 {
 		deadline, err := handler.historicalStreamDeadline(ctx, cluster, stream, snapshot.Latest)
+		if orphan && errors.Is(err, errUnmanagedOrphanStream) {
+			deadline, err = snapshot.Latest.Add(7*24*time.Hour), nil
+		}
 		if err != nil {
 			return false, "", err
 		}
@@ -570,12 +617,29 @@ func (handler *Handler) deleteExpiredHistoricalStream(ctx context.Context, clust
 	if refresh.Shards.Failed == nil || *refresh.Shards.Failed != 0 || refresh.Shards.Total <= 0 || refresh.Shards.Successful != refresh.Shards.Total {
 		return false, "", fmt.Errorf("historical stream refresh incomplete")
 	}
-	final, err := handler.historicalStreamSnapshot(ctx, cluster, stream.Name)
+	final, err := snapshotFn(ctx, cluster, stream.Name)
 	if err != nil {
 		return false, "", err
 	}
 	if final.Count != snapshot.Count || !final.Latest.Equal(snapshot.Latest) {
 		return false, "", fmt.Errorf("historical stream received writes during recycling; retry next sweep")
+	}
+	if orphan && final.Count > 0 {
+		deadline, deadlineErr := handler.historicalStreamDeadline(ctx, cluster, stream, final.Latest)
+		if errors.Is(deadlineErr, errUnmanagedOrphanStream) {
+			deadline, deadlineErr = final.Latest.Add(7*24*time.Hour), nil
+		}
+		if deadlineErr != nil {
+			return false, "", deadlineErr
+		}
+		if now.Before(deadline) {
+			return false, "", fmt.Errorf("orphan retention deadline changed during recycling")
+		}
+	}
+	if beforeDelete != nil {
+		if err := beforeDelete(); err != nil {
+			return false, "", err
+		}
 	}
 	result, err := handler.elasticsearchRequest(ctx, cluster, http.MethodDelete, "/_data_stream/"+url.PathEscape(stream.Name), nil)
 	if err != nil {

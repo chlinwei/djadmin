@@ -72,7 +72,7 @@ func (r *Repository) SaveApplicationService(ctx context.Context, id int64, input
 	if input.LogRetentionTier == nil || *input.LogRetentionTier < 1 {
 		return 0, apperror.New(apperror.CodeInvalidArgument, "请选择逻辑服务的默认保留档位，不能留空")
 	}
-	tx, err := beginLogConfigWrite(ctx, r.pool)
+	tx, err := r.beginServiceIdentityWrite(ctx)
 	if err != nil {
 		return 0, err
 	}

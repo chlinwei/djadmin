@@ -370,7 +370,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	services.POST("/:id/log-config/settings/batch/", middleware.RequirePermission("assets:applications:update"), assetsHandler.BatchSaveApplicationServiceLogSettings)
 	// 一批逻辑服务的日志状态汇总（日志中心层级视图用：全部/项目/业务系统/环境节点下的清单）。
 	// 读接口，入参是一批 id，所以按 POST 传列表（与 log-targets/batch-jobs 同形）。
-	services.POST("/log-status-summary/", middleware.RequirePermission("assets:applications:view"), assetsHandler.LogStatusSummary)
+	services.GET("/log-status-summary/", middleware.RequirePermission("assets:applications:view"), assetsHandler.LogStatusSummary)
 	// 服务级日志采集总开关（关掉后该服务下所有日志都不采集，逐条开关不生效）。
 	services.POST("/:id/log-collection/", middleware.RequirePermission("assets:applications:update"), assetsHandler.SetApplicationServiceLogCollection)
 	services.POST("/:id/refresh-runtime-status/", middleware.RequirePermission("assets:applications:update"), assetsHandler.RefreshApplicationServiceRuntimeStatus)

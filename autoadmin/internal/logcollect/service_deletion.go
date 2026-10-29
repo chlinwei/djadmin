@@ -50,6 +50,11 @@ func (handler *Handler) publishDeletionAwareGuard(ctx context.Context, cluster e
 		return err
 	}
 	body := buildMappingGuardPipelineBody(handler.mappingGuardMode())
+	// The separate persistent fence survives guard/bootstrap republishing. Missing
+	// means no orphan has ever been fenced, not permission to bypass a known fence.
+	body["processors"] = append([]any{gin.H{"pipeline": gin.H{
+		"name": orphanFencePipelineName(cluster.IndexPrefix), "ignore_missing_pipeline": true,
+	}}}, body["processors"].([]any)...)
 	owners := make([]any, 0, len(rows))
 	for _, row := range rows {
 		owners = append(owners, gin.H{"service_id": strconv.FormatInt(row.ServiceID, 10),

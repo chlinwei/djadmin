@@ -26,6 +26,7 @@ func TestSaveServiceReusesCompletedDeletionIdentity(t *testing.T) {
 			id := int64(0)
 			const savedID = int64(15)
 			mock.ExpectBegin()
+			expectServiceStreamClusterLocks(mock)
 			if editing {
 				id = savedID
 				mock.ExpectQuery("SELECT id FROM assets_application_service WHERE").
@@ -79,6 +80,7 @@ func TestSaveServiceDeletingLogIdentityReturnsBusinessError(t *testing.T) {
 			defer pool.Close()
 			handler := NewHandler(newTestService(t, NewRepository(pool)), nil, "")
 			mock.ExpectBegin()
+			expectServiceStreamClusterLocks(mock)
 			if editing {
 				mock.ExpectQuery("SELECT id FROM assets_application_service WHERE").
 					WithArgs(int64(15)).

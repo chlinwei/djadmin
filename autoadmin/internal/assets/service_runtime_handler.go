@@ -257,24 +257,32 @@ func (handler *Handler) BatchSaveApplicationServiceLogSettings(context *gin.Cont
 }
 
 // LogStatusSummary 一批逻辑服务的日志状态汇总（日志中心的层级视图用）：
-// POST /assets/application-services/log-status-summary/  body {"service_ids":[<服务 id>...]}
+// GET /assets/application-services/log-status-summary/?service_ids=15,16
 //
 // 存在的意义：日志中心的服务树在"全部/项目/业务系统/环境"这些层级上，原来这两个 tab 没有任何内容
 // （「日志查询」「日志配置」都硬性要求一个具体服务）。层级视图要一次拿到这一批服务的日志状态，
-// 于是有了这个"多服务"入口——**读**接口，只是入参是一批 id，所以按 POST 传列表（与 batch-jobs 同形）。
+// 于是有了这个"多服务"只读入口，服务 id 通过逗号分隔的查询参数传递。
 //
 // 日志条数/格式认证分桶在 assets 侧聚合（复用 ListServiceTemplateLogs，format_state 只有那一处实现）；
 // 配置态（待下发）由注入的评估器给（见 log_status_summary.go）。评估不可用时该项为 null 并在
 // pending_error 里说明，不让整个接口失败——日志状态本身仍然有用。
 func (handler *Handler) LogStatusSummary(context *gin.Context) {
-	var input struct {
-		ServiceIDs []int64 `json:"service_ids"`
-	}
-	if context.ShouldBindJSON(&input) != nil || len(input.ServiceIDs) == 0 {
+	rawIDs, ok := context.GetQueryArray("service_ids")
+	if !ok || len(rawIDs) != 1 || strings.TrimSpace(rawIDs[0]) == "" {
 		response.Error(context, ErrInvalid)
 		return
 	}
-	summary, err := handler.service.LogStatusSummary(context.Request.Context(), input.ServiceIDs)
+	parts := strings.Split(rawIDs[0], ",")
+	serviceIDs := make([]int64, 0, len(parts))
+	for _, part := range parts {
+		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err != nil {
+			response.Error(context, ErrInvalid)
+			return
+		}
+		serviceIDs = append(serviceIDs, id)
+	}
+	summary, err := handler.service.LogStatusSummary(context.Request.Context(), serviceIDs)
 	respond(context, summary, err)
 }
 

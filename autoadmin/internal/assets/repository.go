@@ -37,7 +37,15 @@ func (r *Repository) CreateProject(ctx context.Context, p db.CreateProjectParams
 	return result.LastInsertId()
 }
 func (r *Repository) UpdateProject(ctx context.Context, p db.UpdateProjectParams) error {
-	return r.queries.UpdateProject(ctx, p)
+	tx, err := r.beginServiceIdentityWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := db.New(tx).UpdateProject(ctx, p); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (r *Repository) DeleteProject(ctx context.Context, id int64) error {
 	count, err := r.queries.CountBusinessSystemsByProject(ctx, sql.NullInt64{Int64: id, Valid: true})
@@ -76,7 +84,15 @@ func (r *Repository) CreateBusinessSystem(ctx context.Context, p db.CreateBusine
 	return result.LastInsertId()
 }
 func (r *Repository) UpdateBusinessSystem(ctx context.Context, p db.UpdateBusinessSystemParams) error {
-	return r.queries.UpdateBusinessSystem(ctx, p)
+	tx, err := r.beginServiceIdentityWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := db.New(tx).UpdateBusinessSystem(ctx, p); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (r *Repository) DeleteBusinessSystem(ctx context.Context, id int64) error {
 	return r.queries.DeleteBusinessSystem(ctx, id)
@@ -102,7 +118,39 @@ func (r *Repository) CreateEnvironment(ctx context.Context, p db.CreateBusinessE
 	return result.LastInsertId()
 }
 func (r *Repository) UpdateEnvironment(ctx context.Context, p db.UpdateBusinessEnvironmentParams) error {
-	return r.queries.UpdateBusinessEnvironment(ctx, p)
+	tx, err := r.beginServiceIdentityWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := db.New(tx).UpdateBusinessEnvironment(ctx, p); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (r *Repository) beginServiceIdentityWrite(ctx context.Context) (*sql.Tx, error) {
+	tx, err := beginLogConfigWrite(ctx, r.pool)
+	if err != nil {
+		return nil, err
+	}
+	// All four stream identity dimensions share the recycler's cluster lock.
+	// Lock before editing rows, in cluster ID order, so neither a new service nor
+	// a hierarchy rename can acquire a candidate during the external ES delete.
+	q := db.New(tx)
+	ids, err := q.ListServiceDeletionClusterIDs(ctx)
+	if err == nil {
+		for _, id := range ids {
+			if _, err = q.LockElasticsearchClusterForGuard(ctx, id); err != nil {
+				break
+			}
+		}
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	return tx, nil
 }
 func (r *Repository) DeleteEnvironment(ctx context.Context, id int64) error {
 	count, err := r.queries.CountHostsByEnvironment(ctx, sql.NullInt64{Int64: id, Valid: true})

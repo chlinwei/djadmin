@@ -7,10 +7,13 @@ import (
 	"testing"
 	"time"
 
+	db "autoadmin/internal/platform/database/generated"
+
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
 func expectServiceSaveFence(mock sqlmock.Sqlmock, id int64) {
+	expectServiceStreamClusterLocks(mock)
 	mock.ExpectQuery("SELECT id FROM assets_application_service WHERE id=.*FOR UPDATE").
 		WithArgs(id).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(id))
 	mock.ExpectQuery("SELECT id FROM assets_business_system WHERE").
@@ -21,6 +24,47 @@ func expectServiceSaveFence(mock sqlmock.Sqlmock, id int64) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery("FROM monitor_log_retention_tier").WithArgs(int64(3)).
 		WillReturnRows(serviceRetentionTierRows("std", true))
+}
+
+func expectServiceStreamClusterLocks(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery("SELECT id FROM monitor_elasticsearch_cluster ORDER BY id").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(2).AddRow(5))
+	for _, id := range []int64{2, 5} {
+		mock.ExpectQuery("SELECT id FROM monitor_elasticsearch_cluster WHERE").
+			WithArgs(id).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(id))
+	}
+}
+
+func TestHierarchyIdentityWritesHoldStreamClusterLocks(t *testing.T) {
+	for _, kind := range []string{"project", "business", "environment"} {
+		t.Run(kind, func(t *testing.T) {
+			pool, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pool.Close()
+			mock.ExpectBegin()
+			expectServiceStreamClusterLocks(mock)
+			tables := map[string]string{"project": "assets_project", "business": "assets_business_system", "environment": "assets_business_environment"}
+			mock.ExpectExec("UPDATE " + tables[kind]).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectCommit()
+			repository := NewRepository(pool)
+			switch kind {
+			case "project":
+				err = repository.UpdateProject(context.Background(), db.UpdateProjectParams{ID: 1})
+			case "business":
+				err = repository.UpdateBusinessSystem(context.Background(), db.UpdateBusinessSystemParams{ID: 1})
+			case "environment":
+				err = repository.UpdateEnvironment(context.Background(), db.UpdateBusinessEnvironmentParams{ID: 1})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }
 
 func serviceRetentionTierRows(code string, enabled bool) *sqlmock.Rows {

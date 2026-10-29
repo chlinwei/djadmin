@@ -1,7 +1,6 @@
 package assets
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -333,7 +332,7 @@ func TestSummarizeLogStatusItemsSkipsPendingWhenUnavailable(t *testing.T) {
 	}
 }
 
-// handler 契约：请求体 `{service_ids:[...]}`，响应 data 里是 items/totals/pending_error。
+// handler 契约：GET 查询参数 service_ids=15,16，响应 data 里是 items/totals/pending_error。
 // 空列表是请求错误（不进服务层）。
 func TestLogStatusSummaryHandlerContract(t *testing.T) {
 	database, mock, err := sqlmock.New()
@@ -349,12 +348,10 @@ func TestLogStatusSummaryHandlerContract(t *testing.T) {
 		WillReturnRows(statusLogRows([]statusLogEntry{{logDefinition: 24, ruleID: sql.NullInt64{Int64: 7, Valid: true}}}))
 	expectNoLogFormatInstances(mock)
 
-	body, _ := json.Marshal(map[string]any{"service_ids": []int64{15}})
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
-	context.Request = httptest.NewRequest("POST", "/assets/application-services/log-status-summary/", bytes.NewReader(body))
-	context.Request.Header.Set("Content-Type", "application/json")
+	context.Request = httptest.NewRequest("GET", "/assets/application-services/log-status-summary/?service_ids=15,15", nil)
 
 	handler.LogStatusSummary(context)
 
@@ -374,22 +371,25 @@ func TestLogStatusSummaryHandlerContract(t *testing.T) {
 		t.Fatalf("database expectations: %v", err)
 	}
 
-	// 空 service_ids：错误信封（data=null），不读库。
-	recorder = httptest.NewRecorder()
-	context, _ = gin.CreateTestContext(recorder)
-	context.Request = httptest.NewRequest("POST", "/assets/application-services/log-status-summary/",
-		bytes.NewReader([]byte(`{"service_ids":[]}`)))
-	context.Request.Header.Set("Content-Type", "application/json")
-	handler.LogStatusSummary(context)
-
-	var envelope struct {
-		Code int             `json:"code"`
-		Data json.RawMessage `json:"data"`
+	for _, query := range []string{"", "?service_ids=", "?service_ids=abc", "?service_ids=15,", "?service_ids=9223372036854775808", "?service_ids=15&service_ids=16"} {
+		t.Run(query, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			context, _ := gin.CreateTestContext(recorder)
+			context.Request = httptest.NewRequest("GET", "/assets/application-services/log-status-summary/"+query, nil)
+			handler.LogStatusSummary(context)
+			var envelope struct {
+				Code int             `json:"code"`
+				Data json.RawMessage `json:"data"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+				t.Fatalf("解析错误信封: %v（body=%s）", err, recorder.Body.String())
+			}
+			if envelope.Code == 200 || string(envelope.Data) != "null" {
+				t.Fatalf("无效列表应是错误响应，得到 %s", recorder.Body.String())
+			}
+		})
 	}
-	if err = json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
-		t.Fatalf("解析错误信封: %v（body=%s）", err, recorder.Body.String())
-	}
-	if envelope.Code == 200 || string(envelope.Data) != "null" {
-		t.Fatalf("空列表应是错误响应，得到 %s", recorder.Body.String())
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }

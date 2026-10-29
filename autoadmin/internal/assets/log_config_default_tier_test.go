@@ -175,6 +175,7 @@ func TestSaveApplicationServiceRejectsInvalidRetentionTier(t *testing.T) {
 
 			defer database.Close()
 			mock.ExpectBegin()
+			expectServiceStreamClusterLocks(mock)
 			mock.ExpectQuery("SELECT id FROM assets_business_system WHERE").
 				WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
 			mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM assets_service_deletion").

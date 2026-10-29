@@ -115,13 +115,13 @@ export function getApplicationServiceLogConfig(id) {
 }
 
 // 一批逻辑服务的日志状态汇总（日志中心层级视图：全部/项目/业务系统/环境节点下的清单）。
-// 读接口，只是入参是一批 id，所以按 POST 传列表（与 /monitor/log-targets/batch-jobs/ 同形）。
+// 只读 GET 接口，服务 id 以逗号分隔的查询参数传递。
 // 响应 data = { items:[{service_id, logs, verified, needs_recheck, unverified, disabled_logs,
 // no_rule, pending:{hosts,managed,unmanaged,synced,drift,never}|null}], totals:{...},
 // pending_error }——pending 为 null / pending_error 非空表示"配置态没算出来"（例如没有启用的
 // 默认集群），界面显示"-"，不要当成 0。一次最多 200 个服务，超了后端报 400。
 export function getApplicationServiceLogStatusSummary(serviceIds) {
-    return requestUtil.post(`${applicationServicePrefix}log-status-summary/`, { service_ids: serviceIds })
+    return requestUtil.get(`${applicationServicePrefix}log-status-summary/`, { service_ids: serviceIds.join(',') })
 }
 
 // 服务级日志采集总开关（log_collection_enabled）。关闭后该服务下所有日志都不采集，

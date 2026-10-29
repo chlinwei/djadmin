@@ -31,6 +31,33 @@ type Filter struct {
 	CreatedTo   sql.NullTime
 }
 
+type OperationLog struct {
+	ID           int64  `json:"id"`
+	Username     string `json:"username"`
+	UserID       *int32 `json:"user_id"`
+	Method       string `json:"method"`
+	Path         string `json:"path"`
+	RouteName    string `json:"route_name"`
+	ClientIP     string `json:"client_ip"`
+	UserAgent    string `json:"user_agent"`
+	StatusCode   int32  `json:"status_code"`
+	DurationMS   *int32 `json:"duration_ms"`
+	Message      string `json:"message"`
+	CreatedAt    string `json:"created_at"`
+	RequestData  string `json:"request_data"`
+	ResponseData string `json:"response_data"`
+}
+
+func operationLog(row db.AuditOperationLog) OperationLog {
+	return OperationLog{
+		ID: row.ID, Username: row.Username, UserID: int32Ptr(row.UserID),
+		Method: row.Method, Path: row.Path, RouteName: row.RouteName,
+		ClientIP: row.ClientIp, UserAgent: row.UserAgent, StatusCode: row.StatusCode,
+		DurationMS: int32Ptr(row.DurationMs), Message: row.Message,
+		CreatedAt: formatTime(row.CreatedAt), RequestData: row.RequestData, ResponseData: row.ResponseData,
+	}
+}
+
 type Recorder interface {
 	Record(context.Context, Entry) error
 }
@@ -56,7 +83,7 @@ func (repository *Repository) Record(ctx context.Context, entry Entry) error {
 	})
 }
 
-func (repository *Repository) List(ctx context.Context, filter Filter, page pagination.Page) ([]db.AuditOperationLog, int64, error) {
+func (repository *Repository) List(ctx context.Context, filter Filter, page pagination.Page) ([]OperationLog, int64, error) {
 	countParams := countParams(filter)
 	count, err := repository.queries.CountOperationAudits(ctx, countParams)
 	if err != nil {
@@ -70,7 +97,14 @@ func (repository *Repository) List(ctx context.Context, filter Filter, page pagi
 		CreatedFrom: countParams.CreatedFrom, CreatedTo: countParams.CreatedTo,
 		Limit: page.Size, Offset: page.Offset,
 	})
-	return rows, count, err
+	if err != nil {
+		return nil, 0, err
+	}
+	logs := make([]OperationLog, 0, len(rows))
+	for _, row := range rows {
+		logs = append(logs, operationLog(row))
+	}
+	return logs, count, nil
 }
 
 func countParams(filter Filter) db.CountOperationAuditsParams {

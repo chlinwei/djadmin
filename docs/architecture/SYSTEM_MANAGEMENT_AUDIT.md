@@ -19,6 +19,7 @@
 ## 操作审计（internal/audit）
 
 - 审计中间件记录变更类请求并脱敏，豁免清单请求跳过（`middleware_test.go`）。
+- 操作日志列表通过响应模型输出，`duration_ms` 为毫秒整数或 `null`，`user_id` 为整数或 `null`，不暴露数据库可空类型的内部结构；`created_at` 统一返回 UTC 时间。前端列表与详情直接显示耗时，缺失值显示 `-`，零毫秒保留为 `0`。
 - 终端历史日志清洗 ANSI 转义、可读命令解析（`history_test.go`）。
 
 ## 测试覆盖
@@ -26,6 +27,7 @@
 - `internal/rbac/menu_test.go`：层级/排序、孤儿丢弃、环保护（双向/自引用）、NULL 根、可空字段映射、validateParent。
 - `internal/sysconfig/service_test.go`：normalize 全类型（含 secret 哈希+掩码透传）、typed 类型还原与掩码、mapConfig 输出契约（掩码+UTC 时间格式）。
 - `internal/audit/history_test.go` + `middleware_test.go`：见上。
+- `internal/audit/repository_test.go`：操作日志响应字段、可空整数及 UTC 时间序列化。
 
 
 <a id="user-avatar"></a>

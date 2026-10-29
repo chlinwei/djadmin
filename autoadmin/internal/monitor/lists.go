@@ -7,6 +7,7 @@ import (
 
 	"autoadmin/internal/api/response"
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/binding"
 
 	"github.com/gin-gonic/gin"
 )
@@ -20,11 +21,11 @@ func (handler *Handler) ListTargets(context *gin.Context) {
 		return
 	}
 	rows, err := queries.ListMonitorTargets(context, db.ListMonitorTargetsParams{
-		ExporterType:     optionalStringParam(context, "exporter_type"),
-		ManagedEnabled:   optionalBoolParam(context, "managed_enabled"),
-		InstallStatus:    optionalStringParam(context, "install_status"),
-		LastScrapeStatus: optionalStringParam(context, "last_scrape_status"),
-		SearchPattern:    searchPatternParam(context),
+		ExporterType:     binding.OptionalStringParam(context, "exporter_type"),
+		ManagedEnabled:   binding.OptionalBoolParam(context, "managed_enabled"),
+		InstallStatus:    binding.OptionalStringParam(context, "install_status"),
+		LastScrapeStatus: binding.OptionalStringParam(context, "last_scrape_status"),
+		SearchPattern:    binding.SearchPatternParam(context),
 		Limit:            int32(size),
 		Offset:           int32((page - 1) * size),
 	})
@@ -41,11 +42,11 @@ func (handler *Handler) ListTargets(context *gin.Context) {
 
 func monitorTargetFilter(context *gin.Context) db.CountMonitorTargetsParams {
 	return db.CountMonitorTargetsParams{
-		ExporterType:     optionalStringParam(context, "exporter_type"),
-		ManagedEnabled:   optionalBoolParam(context, "managed_enabled"),
-		InstallStatus:    optionalStringParam(context, "install_status"),
-		LastScrapeStatus: optionalStringParam(context, "last_scrape_status"),
-		SearchPattern:    searchPatternParam(context),
+		ExporterType:     binding.OptionalStringParam(context, "exporter_type"),
+		ManagedEnabled:   binding.OptionalBoolParam(context, "managed_enabled"),
+		InstallStatus:    binding.OptionalStringParam(context, "install_status"),
+		LastScrapeStatus: binding.OptionalStringParam(context, "last_scrape_status"),
+		SearchPattern:    binding.SearchPatternParam(context),
 	}
 }
 

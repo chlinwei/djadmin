@@ -3,12 +3,12 @@ package monitor
 import (
 	"database/sql"
 	"encoding/json"
-	"strconv"
 	"strings"
 	"time"
 
 	"autoadmin/internal/api/response"
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/binding"
 
 	"github.com/gin-gonic/gin"
 )
@@ -17,40 +17,6 @@ import (
 // （List/Get），因为 sqlc 生成的是编译期固定的 SQL，没法处理"写"那侧运行时可变的动态字段列表。
 // "写"（saveResource/deleteResource）继续走原来的动态 CRUD，JSON 请求体解码出来的 bool 本来就是
 // 正确类型，问题只出在"读"用 Scan 进 interface{} 上。
-
-func optionalBoolParam(context *gin.Context, name string) sql.NullBool {
-	value := strings.TrimSpace(context.Query(name))
-	parsed, err := strconv.ParseBool(value)
-	if value == "" || err != nil {
-		return sql.NullBool{}
-	}
-	return sql.NullBool{Bool: parsed, Valid: true}
-}
-
-func optionalInt64Param(context *gin.Context, name string) sql.NullInt64 {
-	value := strings.TrimSpace(context.Query(name))
-	parsed, err := strconv.ParseInt(value, 10, 64)
-	if value == "" || err != nil {
-		return sql.NullInt64{}
-	}
-	return sql.NullInt64{Int64: parsed, Valid: true}
-}
-
-func optionalStringParam(context *gin.Context, name string) sql.NullString {
-	value := strings.TrimSpace(context.Query(name))
-	if value == "" {
-		return sql.NullString{}
-	}
-	return sql.NullString{String: value, Valid: true}
-}
-
-func searchPatternParam(context *gin.Context) sql.NullString {
-	search := strings.TrimSpace(context.Query("search"))
-	if search == "" {
-		return sql.NullString{}
-	}
-	return sql.NullString{String: "%" + search + "%", Valid: true}
-}
 
 // ---- monitor_alert_media ----
 
@@ -84,7 +50,7 @@ func alertMediaResponseFrom(id int64, createTime, updateTime time.Time, remark s
 func (handler *Handler) ListAlertMedia(context *gin.Context) {
 	page, size := pagination(context)
 	queries := db.New(handler.db)
-	mediaType, enabled, pattern := optionalStringParam(context, "media_type"), optionalBoolParam(context, "enabled"), searchPatternParam(context)
+	mediaType, enabled, pattern := binding.OptionalStringParam(context, "media_type"), binding.OptionalBoolParam(context, "enabled"), binding.SearchPatternParam(context)
 	count, err := queries.CountAlertMedia(context, db.CountAlertMediaParams{MediaType: mediaType, Enabled: enabled, Pattern: pattern})
 	if err != nil {
 		response.Error(context, err)
@@ -194,8 +160,8 @@ func softwarePackageResponseFrom(
 func (handler *Handler) ListPackages(context *gin.Context) {
 	page, size := pagination(context)
 	queries := db.New(handler.db)
-	packageType, name, version := optionalStringParam(context, "package_type"), optionalStringParam(context, "name"), optionalStringParam(context, "version")
-	osParam, arch, enabled, pattern := optionalStringParam(context, "os"), optionalStringParam(context, "arch"), optionalBoolParam(context, "enabled"), searchPatternParam(context)
+	packageType, name, version := binding.OptionalStringParam(context, "package_type"), binding.OptionalStringParam(context, "name"), binding.OptionalStringParam(context, "version")
+	osParam, arch, enabled, pattern := binding.OptionalStringParam(context, "os"), binding.OptionalStringParam(context, "arch"), binding.OptionalBoolParam(context, "enabled"), binding.SearchPatternParam(context)
 	count, err := queries.CountSoftwarePackages(context, db.CountSoftwarePackagesParams{
 		PackageType: packageType, Name: name, Version: version, Os: osParam, Arch: arch, Enabled: enabled, Pattern: pattern,
 	})

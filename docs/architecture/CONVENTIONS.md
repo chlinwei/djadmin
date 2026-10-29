@@ -105,6 +105,15 @@
 
 响应格式以 [API 规则](../../.github/API_RULES.md) 为准；以下补充现有契约及后端实现边界。
 
+### 监控与日志采集的可选列表筛选
+
+两域的可选布尔、整数、字符串及 `search` 条件统一由
+`autoadmin/internal/shared/binding/query.go` 解析，返回对应的 `sql.Null*`，
+供列表及计数查询复用。参数去除首尾空白；缺失、空白以及无法解析的布尔/整数不启用该筛选。
+整数按有符号 64 位十进制解析，零和负数不额外拦截；重复参数取首值。
+非空 `search` 两侧加 `%`，不转义输入中的 SQL LIKE 通配符。
+这组函数仅用于上述可选筛选，不替代资源 ID、权限条件及其他必须拒绝非法值的参数校验。
+
 ### Success
 
 Successful business operations use HTTP 200:

@@ -9,6 +9,7 @@ import (
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/logcollect"
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/binding"
 
 	"github.com/gin-gonic/gin"
 )
@@ -278,7 +279,7 @@ func (handler *Handler) HostOverview(context *gin.Context) {
 		fingerprint, lastError, lastApplied := row.ConfigFingerprint, row.LastError, row.LastAppliedTime
 		exporters, queryErr := queries.ListMonitorTargetsByHost(context, db.ListMonitorTargetsByHostParams{
 			HostID:       hostID,
-			ExporterType: optionalStringParam(context, "exporter_type"),
+			ExporterType: binding.OptionalStringParam(context, "exporter_type"),
 		})
 		if queryErr != nil {
 			response.Error(context, queryErr)

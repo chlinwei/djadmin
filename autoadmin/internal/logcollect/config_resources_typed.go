@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"strconv"
 	"strings"
 	"time"
 
 	"autoadmin/internal/api/response"
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/binding"
 
 	"github.com/gin-gonic/gin"
 )
@@ -19,40 +19,6 @@ import (
 // （List/Get），因为 sqlc 生成的是编译期固定的 SQL，没法处理"写"那侧运行时可变的动态字段列表。
 // "写"（saveResource/deleteResource）继续走原来的动态 CRUD，JSON 请求体解码出来的 bool 本来就是
 // 正确类型，问题只出在"读"用 Scan 进 interface{} 上。
-
-func optionalBoolParam(context *gin.Context, name string) sql.NullBool {
-	value := strings.TrimSpace(context.Query(name))
-	parsed, err := strconv.ParseBool(value)
-	if value == "" || err != nil {
-		return sql.NullBool{}
-	}
-	return sql.NullBool{Bool: parsed, Valid: true}
-}
-
-func optionalInt64Param(context *gin.Context, name string) sql.NullInt64 {
-	value := strings.TrimSpace(context.Query(name))
-	parsed, err := strconv.ParseInt(value, 10, 64)
-	if value == "" || err != nil {
-		return sql.NullInt64{}
-	}
-	return sql.NullInt64{Int64: parsed, Valid: true}
-}
-
-func optionalStringParam(context *gin.Context, name string) sql.NullString {
-	value := strings.TrimSpace(context.Query(name))
-	if value == "" {
-		return sql.NullString{}
-	}
-	return sql.NullString{String: value, Valid: true}
-}
-
-func searchPatternParam(context *gin.Context) sql.NullString {
-	search := strings.TrimSpace(context.Query("search"))
-	if search == "" {
-		return sql.NullString{}
-	}
-	return sql.NullString{String: "%" + search + "%", Valid: true}
-}
 
 // ---- monitor_log_retention_tier ----
 
@@ -108,7 +74,7 @@ func (handler *Handler) retentionTierResponse(context *gin.Context, row db.Monit
 func (handler *Handler) ListRetentionTiers(context *gin.Context) {
 	page, size := pagination(context)
 	queries := db.New(handler.db)
-	enabled, isDefault, pattern := optionalBoolParam(context, "enabled"), optionalBoolParam(context, "is_default"), searchPatternParam(context)
+	enabled, isDefault, pattern := binding.OptionalBoolParam(context, "enabled"), binding.OptionalBoolParam(context, "is_default"), binding.SearchPatternParam(context)
 	count, err := queries.CountLogRetentionTiers(context, db.CountLogRetentionTiersParams{Enabled: enabled, IsDefault: isDefault, Pattern: pattern})
 	if err != nil {
 		response.Error(context, err)
@@ -195,7 +161,7 @@ func elasticsearchClusterResponseFrom(row db.MonitorElasticsearchCluster) elasti
 func (handler *Handler) ListElasticsearchClusters(context *gin.Context) {
 	page, size := pagination(context)
 	queries := db.New(handler.db)
-	enabled, isDefault, pattern := optionalBoolParam(context, "enabled"), optionalBoolParam(context, "is_default"), searchPatternParam(context)
+	enabled, isDefault, pattern := binding.OptionalBoolParam(context, "enabled"), binding.OptionalBoolParam(context, "is_default"), binding.SearchPatternParam(context)
 	count, err := queries.CountElasticsearchClusters(context, db.CountElasticsearchClustersParams{Enabled: enabled, IsDefault: isDefault, Pattern: pattern})
 	if err != nil {
 		response.Error(context, err)
@@ -279,8 +245,8 @@ func (handler *Handler) processingRuleResponse(context *gin.Context, row db.Moni
 func (handler *Handler) ListProcessingRules(context *gin.Context) {
 	page, size := pagination(context)
 	queries := db.New(handler.db)
-	clusterID, applicationID := optionalInt64Param(context, "cluster"), optionalInt64Param(context, "application")
-	inputFormat, multilineEnabled, pattern := optionalStringParam(context, "input_format"), optionalBoolParam(context, "multiline_enabled"), searchPatternParam(context)
+	clusterID, applicationID := binding.OptionalInt64Param(context, "cluster"), binding.OptionalInt64Param(context, "application")
+	inputFormat, multilineEnabled, pattern := binding.OptionalStringParam(context, "input_format"), binding.OptionalBoolParam(context, "multiline_enabled"), binding.SearchPatternParam(context)
 	count, err := queries.CountLogProcessingRules(context, db.CountLogProcessingRulesParams{
 		ClusterID: clusterID, ApplicationID: applicationID, InputFormat: inputFormat, MultilineEnabled: multilineEnabled, Pattern: pattern,
 	})
@@ -394,7 +360,7 @@ func (handler *Handler) filterRuleResponse(context *gin.Context, row db.MonitorL
 func (handler *Handler) ListFilterRules(context *gin.Context) {
 	page, size := pagination(context)
 	queries := db.New(handler.db)
-	applicationID, enabled, pattern := optionalInt64Param(context, "application"), optionalBoolParam(context, "enabled"), searchPatternParam(context)
+	applicationID, enabled, pattern := binding.OptionalInt64Param(context, "application"), binding.OptionalBoolParam(context, "enabled"), binding.SearchPatternParam(context)
 	count, err := queries.CountLogCollectionFilterRules(context, db.CountLogCollectionFilterRulesParams{
 		ApplicationID: applicationID, Enabled: enabled, SearchPattern: pattern,
 	})

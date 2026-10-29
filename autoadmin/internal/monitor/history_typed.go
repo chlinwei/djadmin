@@ -9,6 +9,7 @@ import (
 
 	"autoadmin/internal/api/response"
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/binding"
 
 	"github.com/gin-gonic/gin"
 )
@@ -136,8 +137,8 @@ func (handler *Handler) installHistories(context *gin.Context, id int64) {
 	if id > 0 {
 		idFilter = sql.NullInt64{Int64: id, Valid: true}
 	}
-	targetID, logCollectionTargetID := optionalInt64Param(context, "target_id"), optionalInt64Param(context, "log_collection_target_id")
-	action, triggerType, status := optionalStringParam(context, "action"), optionalStringParam(context, "trigger_type"), optionalStringParam(context, "status")
+	targetID, logCollectionTargetID := binding.OptionalInt64Param(context, "target_id"), binding.OptionalInt64Param(context, "log_collection_target_id")
+	action, triggerType, status := binding.OptionalStringParam(context, "action"), binding.OptionalStringParam(context, "trigger_type"), binding.OptionalStringParam(context, "status")
 	keyword := optionalLikeParam(context, "keyword")
 	startTime, endTime := optionalTimeParam(context, "start_time"), optionalTimeParam(context, "end_time")
 
@@ -259,13 +260,13 @@ func (handler *Handler) alertHistories(context *gin.Context, id int64) {
 	if id > 0 {
 		idFilter = sql.NullInt64{Int64: id, Valid: true}
 	}
-	state, severity := optionalStringParam(context, "state"), optionalStringParam(context, "severity")
+	state, severity := binding.OptionalStringParam(context, "state"), binding.OptionalStringParam(context, "severity")
 	keyword := optionalLikeParam(context, "keyword")
 	startTime, endTime := optionalTimeParam(context, "start_time"), optionalTimeParam(context, "end_time")
 	// labels 精确过滤：label_key 仅允许字母/数字/下划线（防 JSON path 注入），label_value 精确等值。
 	// 未过滤时 key 兜底为恒存在的安全 path（value 为 NULL，WHERE 短路不会真正比较）。
 	labelKey := labelKeyRegexp.ReplaceAllString(strings.TrimSpace(context.Query("label_key")), "")
-	labelValue := optionalStringParam(context, "label_value")
+	labelValue := binding.OptionalStringParam(context, "label_value")
 	if labelKey == "" {
 		labelKey = "alertname"
 		labelValue = sql.NullString{}

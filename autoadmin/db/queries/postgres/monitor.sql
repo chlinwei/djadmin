@@ -522,12 +522,12 @@ WHERE package_type='exporter' AND name=sqlc.arg(name) AND version=sqlc.arg(versi
 -- ---- 宿主总览（监控纳管情况）----
 
 -- name: ListMonitorHostGroupTree :many
-SELECT g.id, g.name, g.parent_id, COUNT(h.id) AS host_count,
+SELECT g.id, g.name, COUNT(h.id) AS host_count,
        COUNT(CASE WHEN h.id IS NOT NULL AND (EXISTS(SELECT 1 FROM monitor_target t WHERE t.host_id = h.id)
              OR EXISTS(SELECT 1 FROM monitor_log_collection_target l WHERE l.host_id = h.id)) THEN 1 END) AS managed_count
 FROM assets_hostgroup g
 LEFT JOIN assets_host h ON h.group_id = g.id AND h.is_deleted_in_cloud = FALSE
-GROUP BY g.id, g.name, g.parent_id
+GROUP BY g.id, g.name
 ORDER BY g.name, g.id;
 
 -- name: CountMonitorHostTotals :one
@@ -537,10 +537,7 @@ SELECT COUNT(*),
        COUNT(CASE WHEN h.group_id IS NULL THEN 1 END) AS ungrouped
 FROM assets_host h WHERE h.is_deleted_in_cloud = FALSE;
 
--- name: ListMonitorHostGroupParents :many
-SELECT id, parent_id FROM assets_hostgroup;
-
--- 宿主列表的过滤：搜索 / 组（含子组，可变长 IN）/ exporter 纳管状态 / 日志采集纳管状态。
+-- 宿主列表的过滤：搜索 / 单层组 / exporter 纳管状态 / 日志采集纳管状态。
 -- managed_filter 与 filebeat_filter 是 'true'/'false'/NULL 三态，用 CASE 表达"命中/未命中/不过滤"。
 -- name: CountMonitorHosts :one
 SELECT COUNT(*) FROM assets_host h

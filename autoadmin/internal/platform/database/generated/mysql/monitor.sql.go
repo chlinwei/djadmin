@@ -470,7 +470,7 @@ type CountMonitorHostsParams struct {
 	FilebeatFilter interface{}     `json:"filebeat_filter"`
 }
 
-// 宿主列表的过滤：搜索 / 组（含子组，可变长 IN）/ exporter 纳管状态 / 日志采集纳管状态。
+// 宿主列表的过滤：搜索 / 单层组 / exporter 纳管状态 / 日志采集纳管状态。
 // managed_filter 与 filebeat_filter 是 'true'/'false'/NULL 三态，用 CASE 表达"命中/未命中/不过滤"。
 func (q *Queries) CountMonitorHosts(ctx context.Context, arg CountMonitorHostsParams) (int64, error) {
 	query := countMonitorHosts
@@ -4881,55 +4881,22 @@ func (q *Queries) ListManagedLogTargetConfigs(ctx context.Context) ([]ListManage
 	return items, nil
 }
 
-const listMonitorHostGroupParents = `-- name: ListMonitorHostGroupParents :many
-SELECT id, parent_id FROM assets_hostgroup
-`
-
-type ListMonitorHostGroupParentsRow struct {
-	ID       int64         `json:"id"`
-	ParentID sql.NullInt64 `json:"parent_id"`
-}
-
-func (q *Queries) ListMonitorHostGroupParents(ctx context.Context) ([]ListMonitorHostGroupParentsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listMonitorHostGroupParents)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListMonitorHostGroupParentsRow{}
-	for rows.Next() {
-		var i ListMonitorHostGroupParentsRow
-		if err := rows.Scan(&i.ID, &i.ParentID); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listMonitorHostGroupTree = `-- name: ListMonitorHostGroupTree :many
 
-SELECT g.id, g.name, g.parent_id, COUNT(h.id) AS host_count,
+SELECT g.id, g.name, COUNT(h.id) AS host_count,
        COUNT(CASE WHEN h.id IS NOT NULL AND (EXISTS(SELECT 1 FROM monitor_target t WHERE t.host_id = h.id)
              OR EXISTS(SELECT 1 FROM monitor_log_collection_target l WHERE l.host_id = h.id)) THEN 1 END) AS managed_count
 FROM assets_hostgroup g
 LEFT JOIN assets_host h ON h.group_id = g.id AND h.is_deleted_in_cloud = FALSE
-GROUP BY g.id, g.name, g.parent_id
+GROUP BY g.id, g.name
 ORDER BY g.name, g.id
 `
 
 type ListMonitorHostGroupTreeRow struct {
-	ID           int64         `json:"id"`
-	Name         string        `json:"name"`
-	ParentID     sql.NullInt64 `json:"parent_id"`
-	HostCount    int64         `json:"host_count"`
-	ManagedCount int64         `json:"managed_count"`
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	HostCount    int64  `json:"host_count"`
+	ManagedCount int64  `json:"managed_count"`
 }
 
 // ---- 宿主总览（监控纳管情况）----
@@ -4945,7 +4912,6 @@ func (q *Queries) ListMonitorHostGroupTree(ctx context.Context) ([]ListMonitorHo
 		if err := rows.Scan(
 			&i.ID,
 			&i.Name,
-			&i.ParentID,
 			&i.HostCount,
 			&i.ManagedCount,
 		); err != nil {

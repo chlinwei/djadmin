@@ -1,6 +1,7 @@
 <template>
-    <a-row :gutter="16" class="host-page">
-        <a-col :span="6">
+    <a-row :gutter="16" :wrap="false" class="host-page">
+        <!-- 只隐藏而不卸载，保留分组搜索及选中状态。 -->
+        <a-col :id="groupPanelId" v-show="!groupPanelCollapsed" :span="6" class="host-group-panel">
             <a-card title="主机分组" size="small" class="group-card" :body-style="{ padding: '12px' }">
                 <template #extra>
                     <a-space>
@@ -16,25 +17,27 @@
                     class="group-search"
                     placeholder="搜索分组名称"
                     allow-clear
-                    @search="onGroupSearch"
-                    @change="onGroupSearchChange"
                 />
 
                 <div class="group-toolbar">
                     <a-button size="small" block class="all-group-btn" @click="selectAllGroups">全部分组</a-button>
                 </div>
 
-                <a-spin :spinning="groupLoading">
-                    <a-tree
-                        block-node
-                        show-line
-                        :tree-data="filteredGroupTreeData"
-                        :expanded-keys="groupTreeExpandedKeys"
+                <a-spin :spinning="groupLoading" wrapper-class-name="group-list-scroll">
+                    <a-menu
+                        mode="inline"
                         :selected-keys="selectedGroupKeys"
-                        @expand="onGroupExpand"
-                        @select="onGroupSelect"
-                        @rightClick="onGroupRightClick"
-                    />
+                    >
+                        <a-menu-item
+                            v-for="group in filteredGroups"
+                            :key="group.key"
+                            @click="onGroupSelect(group)"
+                            @contextmenu="onGroupRightClick({ event: $event, node: group })"
+                        >
+                            {{ group.name }} ({{ group.host_count }})
+                        </a-menu-item>
+                    </a-menu>
+                    <a-empty v-if="!groupLoading && !filteredGroups.length" description="暂无分组" />
                 </a-spin>
 
                 <!-- 右键上下文菜单 -->
@@ -60,6 +63,7 @@
                         <a-menu-item
                             key="delete"
                             danger
+                            class="delBtn"
                             :disabled="groupContextMenu.node?.key === 0"
                             @click="handleContextDelete"
                         >
@@ -71,7 +75,19 @@
             </a-card>
         </a-col>
 
-        <a-col :span="18">
+        <a-tooltip :title="groupPanelCollapsed ? '展开主机分组' : '收起主机分组'" placement="top">
+            <a-button
+                class="group-panel-toggle"
+                :aria-label="groupPanelCollapsed ? '展开主机分组' : '收起主机分组'"
+                :aria-expanded="!groupPanelCollapsed"
+                :aria-controls="groupPanelId"
+                @click="toggleGroupPanel"
+            >
+                <span aria-hidden="true">{{ groupPanelCollapsed ? '▶' : '◀' }}</span>
+            </a-button>
+        </a-tooltip>
+
+        <a-col flex="1" class="host-list-panel">
             <a-row class="tools" :gutter="16">
                 <a-col :span="7">
                     <a-input-search
@@ -382,9 +398,6 @@
         @update:open="(value) => { groupDialogVisible = value }"
         :item_id="groupDialogId"
         :title="groupDialogTitle"
-        :treeData="groupDialogTreeData"
-        :default_parent_id="groupDialogDefaultParentId"
-        :max_tree_depth="groupMaxTreeDepth"
         @initList="refreshGroups"
     />
 
@@ -416,14 +429,15 @@
                     <a-input v-model:value="form.ip" placeholder="主机的唯一标识，例如：192.168.1.10" />
                 </a-form-item>
                 <a-form-item name="group_id" label="主机分组">
-                    <a-tree-select
+                    <a-select
                         v-model:value="form.group_id"
                         placeholder="请选择分组"
-                        :tree-data="groupTreeSelectData"
+                        :options="groupOptions"
+                        :getPopupContainer="getPopupContainer"
                         :virtual="false"
                         allowClear
                         show-search
-                        treeNodeFilterProp="title"
+                        option-filter-prop="label"
                         :dropdown-style="{ maxHeight: '300px', overflow: 'auto' }"
                     />
                 </a-form-item>
@@ -547,41 +561,6 @@
         </a-form>
     </a-modal>
 
-    <a-modal
-        v-model:open="groupDeleteConfirmVisible"
-        title="确认删除主机分组"
-        ok-text="确认删除"
-        cancel-text="取消"
-        :ok-button-props="{ danger: true }"
-        :confirm-loading="groupDeleteLoading"
-        @ok="confirmDeleteGroupWithPreview"
-    >
-        <a-alert
-            v-if="groupDeleteHostCount > 0"
-            type="warning"
-            show-icon
-            :message="`该分组树下共有 ${groupDeleteHostCount} 台主机，删除前请确认影响清单`"
-            description="提示按分组树展示，便于核对。"
-            style="margin-bottom: 12px"
-        />
-        <a-alert
-            v-else
-            type="info"
-            show-icon
-            message="该分组树下没有主机"
-            description="可直接确认删除分组。"
-            style="margin-bottom: 12px"
-        />
-        <a-tree
-            v-if="groupDeletePreviewTreeData.length"
-            block-node
-            show-line
-            :expanded-keys="groupDeleteExpandedKeys"
-            :auto-expand-parent="true"
-            :tree-data="groupDeletePreviewTreeData"
-            @expand="onGroupDeletePreviewExpand"
-        />
-    </a-modal>
 </template>
 
 <script setup>
@@ -589,7 +568,7 @@ defineOptions({
     name: 'host'
 })
 
-import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, reactive, ref, useId, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { createPagination, tableLocale } from '@/util/tableStyle'
 import { useRoute, useRouter } from 'vue-router'
@@ -608,26 +587,17 @@ import {
     listAgentPackages,
     uploadAgentPackage,
 } from '@/api/assets/agentPackage.js'
-import { getHostGroupTree, batchDeleteHostGroups } from '@/api/assets/hostgroup/index.js'
+import { getHostGroupTree, getHostGroupById, batchDeleteHostGroups } from '@/api/assets/hostgroup/index.js'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig.js'
 import { getBusinessEnvironmentList } from '@/api/assets/application'
 import { batchDeleteMonitorTargets, getSoftwarePackages } from '@/api/monitor.js'
-import { openDeleteConfirm } from '@/util/deleteConfirm'
+import { assertBatchDeleteSucceeded, openDeleteConfirm } from '@/util/deleteConfirm'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import Dialog from './components/HostGroupDialog/index.vue'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
-import {
-    buildDeletePreviewTree,
-    buildGroupTreeSelectData,
-    buildTreeData,
-    collectExpandedKeys,
-    collectTreeKeys,
-    filterGroupTree,
-    findGroupNodeByKey,
-    getHostDisplayName,
-} from './utils/hostGroupTreeUtils'
+import { getHostDisplayName } from './utils/hostGroupUtils'
 import {
     formatDateTimeWithTimezone,
     formatOsInfo,
@@ -637,6 +607,8 @@ import {
 
 const searchText = ref('')
 const groupSearchText = ref('')
+const groupPanelId = useId()
+const groupPanelCollapsed = ref(false)
 const activeSearchText = ref('')
 const hostIdSearchText = ref('')
 const activeHostIdFilter = ref(null)
@@ -646,11 +618,8 @@ const selectedGroupName = ref('全部分组')
 const groupDialogVisible = ref(false)
 const groupDialogTitle = ref('新增分组')
 const groupDialogId = ref(-1)
-const groupDialogDefaultParentId = ref(null)
-const groupMaxTreeDepth = ref(5)
 const loading = ref(false)
 const groupLoading = ref(false)
-const groupDeleteLoading = ref(false)
 const dialogVisible = ref(false)
 const dialogTitle = ref('新增主机')
 const dialogLoading = ref(false)
@@ -690,12 +659,7 @@ const state = reactive({
 })
 
 const rowLoadingStates = reactive({})
-const groupTreeData = ref([])
-const groupDeleteConfirmVisible = ref(false)
-const groupDeletePreviewTreeData = ref([])
-const groupDeleteExpandedKeys = ref([])
-const pendingDeleteGroupNode = ref(null)
-const expandedGroupKeys = ref([])
+const groups = ref([])
 const datasources = ref([])
 const hostListQueryToken = ref(0)
 
@@ -870,7 +834,6 @@ const rules = {
 }
 
 const columns = [
-    { title: 'ID', dataIndex: 'id', key: 'id', width: 90 },
     { title: '实例名', dataIndex: 'instance_name', key: 'instance_name', width: 160 },
     { title: '状态', dataIndex: 'agent_status', key: 'agent_status', width: 110 },
     { title: '主机名称', dataIndex: 'hostname', key: 'hostname', width: 160 },
@@ -887,65 +850,26 @@ const columns = [
 const pagination = reactive(createPagination())
 const hostOrdering = ref('')
 
-const groupDeleteHostCount = computed(() => {
-    const rootNodes = Array.isArray(groupDeletePreviewTreeData.value) ? groupDeletePreviewTreeData.value : []
-    let total = 0
-    const walk = (nodes) => {
-        nodes.forEach((node) => {
-            const children = Array.isArray(node.children) ? node.children : []
-            if (String(node.key || '').startsWith('host-')) {
-                total += 1
-                return
-            }
-            if (children.length) {
-                walk(children)
-            }
-        })
-    }
-    walk(rootNodes)
-    return total
+const filteredGroups = computed(() => {
+    const search = groupSearchText.value.trim().toLowerCase()
+    return groups.value.filter((group) => group.name.toLowerCase().includes(search))
 })
 
-const groupTreeExpandedKeys = computed(() => {
-    return expandedGroupKeys.value
-})
+const groupOptions = computed(() => groups.value.map((group) => ({ label: group.name, value: group.key })))
 
-const onGroupExpand = (expandedKeys) => {
-    expandedGroupKeys.value = Array.isArray(expandedKeys) ? expandedKeys : []
-}
-
-const filteredGroupTreeData = computed(() => {
-    return filterGroupTree(groupTreeData.value, groupSearchText.value)
-})
-
-const groupDialogTreeData = computed(() => {
-    return groupTreeData.value[0]?.children || []
-})
-
-const groupTreeSelectData = computed(() => {
-    const children = groupTreeData.value[0]?.children || []
-    return buildGroupTreeSelectData(children)
-})
-
-const loadGroupTree = async () => {
+const loadGroups = async () => {
     groupLoading.value = true
     try {
         const res = await getHostGroupTree()
         if (res.data.code === 200) {
-            const data = res.data.data || []
-            groupTreeData.value = [
-                {
-                    title: '全部分组',
-                    key: 0,
-                    name: '全部分组',
-                    host_count: null,
-                    children: buildTreeData(data, groupMaxTreeDepth.value, 1),
-                },
-            ]
-            expandedGroupKeys.value = collectExpandedKeys(groupTreeData.value)
+            groups.value = res.data.data.map((group) => ({ ...group, key: group.id }))
+            const selected = groups.value.find((group) => group.key === selectedGroupId.value)
+            if (selected) selectedGroupName.value = selected.name
         } else {
             message.error(res.data.msg || '获取分组失败')
         }
+    } catch (error) {
+        message.error(error?.response?.data?.msg || error?.message || '获取分组失败')
     } finally {
         groupLoading.value = false
     }
@@ -1335,7 +1259,7 @@ const refreshList = async () => {
 }
 
 const refreshGroups = async () => {
-    await loadGroupTree()
+    await loadGroups()
     await refreshList()
 }
 
@@ -1369,29 +1293,9 @@ const closeGroupContextMenu = () => {
     groupContextMenu.visible = false
 }
 
-const loadHostsByGroupTree = async (groupId) => {
-    const allHosts = []
-    const pageSize = 200
-    let page = 1
-    let total = 0
-
-    do {
-        const res = await getHostList({ page, size: pageSize, group_id: groupId })
-        if (res.data.code !== 200) {
-            throw new Error(res.data.msg || '获取主机分组清单失败')
-        }
-        const payload = res.data.data || {}
-        const rows = Array.isArray(payload.results) ? payload.results : []
-        total = Number(payload.count || 0)
-        allHosts.push(...rows)
-        page += 1
-    } while (allHosts.length < total)
-
-    return allHosts
-}
-
-const onGroupDeletePreviewExpand = (expandedKeys) => {
-    groupDeleteExpandedKeys.value = Array.isArray(expandedKeys) ? expandedKeys : []
+const toggleGroupPanel = () => {
+    closeGroupContextMenu()
+    groupPanelCollapsed.value = !groupPanelCollapsed.value
 }
 
 const resolveSelectedHostDeleteItems = () => {
@@ -1424,61 +1328,42 @@ const openDeleteHostConfirm = (record) => {
 }
 
 const openGroupDeleteConfirm = async (groupNode) => {
-    pendingDeleteGroupNode.value = groupNode
-    groupDeleteLoading.value = true
     try {
-        const hosts = await loadHostsByGroupTree(groupNode.key)
-        groupDeletePreviewTreeData.value = buildDeletePreviewTree(groupNode, hosts)
-        groupDeleteConfirmVisible.value = true
+        const res = await getHostGroupById(groupNode.key)
+        if (res.data.code !== 200) throw new Error(res.data.msg || '获取分组详情失败')
+        const group = res.data.data
+        if (group.host_count > 0) {
+            message.warning(`该分组包含 ${group.host_count} 台主机，请先移出主机后再删除`)
+            return
+        }
+        openDeleteConfirm({
+            title: '确认删除主机分组',
+            summary: '仅删除空分组，不会删除主机。',
+            items: [`分组: ${group.name} (ID: ${group.id})`],
+            onConfirm: () => deleteGroup(group.id),
+        })
     } catch (error) {
-        message.error(error?.message || '获取分组主机清单失败')
-    } finally {
-        groupDeleteLoading.value = false
+        message.error(error?.response?.data?.msg || error?.message || '获取分组详情失败')
     }
 }
 
-const confirmDeleteGroupWithPreview = async () => {
-    const node = pendingDeleteGroupNode.value
-    if (!node || Number(node.key) === 0) {
-        groupDeleteConfirmVisible.value = false
-        return
-    }
-
-    groupDeleteLoading.value = true
+const deleteGroup = async (id) => {
+    let res
     try {
-        const res = await batchDeleteHostGroups([node.key])
-        if (res.data.code === 200 || res.status === 204) {
-            message.success('删除成功')
-            groupDeleteConfirmVisible.value = false
-            groupDeletePreviewTreeData.value = []
-            pendingDeleteGroupNode.value = null
-            await loadGroupTree()
-            if (selectedGroupId.value === node.key) {
-                selectedGroupId.value = 0
-                selectedGroupName.value = '全部分组'
-                await refreshList()
-            }
-        } else {
-            message.error(res.data?.msg || '删除失败')
-        }
+        res = await batchDeleteHostGroups([id])
     } catch (error) {
         message.error(error?.response?.data?.msg || error?.message || '删除失败')
-    } finally {
-        groupDeleteLoading.value = false
+        throw error
     }
+    assertBatchDeleteSucceeded(res, [id])
+    message.success('删除成功')
+    await loadGroups()
+    if (selectedGroupId.value === id) await selectAllGroups()
 }
 
-watch(groupDeletePreviewTreeData, (nodes) => {
-    groupDeleteExpandedKeys.value = collectTreeKeys(nodes)
-}, { deep: true })
-
 const handleContextCreate = () => {
-    const node = groupContextMenu.node
     closeGroupContextMenu()
-    groupDialogId.value = -1
-    groupDialogTitle.value = '新增分组'
-    groupDialogDefaultParentId.value = (node && node.key !== 0) ? node.key : null
-    groupDialogVisible.value = true
+    handleCreateGroup()
 }
 
 const handleContextEdit = () => {
@@ -1494,7 +1379,7 @@ const handleContextDelete = async () => {
     const node = groupContextMenu.node
     closeGroupContextMenu()
     if (!node || node.key === 0) return
-    const groupNode = findGroupNodeByKey(groupTreeData.value, node.key)
+    const groupNode = groups.value.find((group) => group.key === node.key)
     if (!groupNode) {
         message.error('分组信息不存在，请刷新后重试')
         return
@@ -1505,31 +1390,15 @@ const handleContextDelete = async () => {
 const handleCreateGroup = () => {
     groupDialogId.value = -1
     groupDialogTitle.value = '新增分组'
-    groupDialogDefaultParentId.value = null
     groupDialogVisible.value = true
 }
 
-const onGroupSearch = () => {}
-
-const onGroupSearchChange = () => {}
-
-const onGroupSelect = async (selectedKeys, info) => {
+const onGroupSelect = async (group) => {
     if (syncingRouteFilters.value) {
         return
     }
-    const isUserTriggered = !!info?.event
-    if (!isUserTriggered) {
-        return
-    }
-    // 再点已选中节点时 antd 会取消选中（v-model 已清空），这里回填点击节点的 key 保持选中
-    if (!selectedKeys || !selectedKeys.length) {
-        const keepKey = info?.node?.key
-        selectedGroupId.value = keepKey || 0
-        return
-    }
-    const key = selectedKeys[0]
-    selectedGroupId.value = key || 0
-    selectedGroupName.value = key === 0 ? '全部分组' : (info?.node?.dataRef?.name || '当前分组')
+    selectedGroupId.value = group.key
+    selectedGroupName.value = group.name
     searchText.value = ''
     activeSearchText.value = ''
     hostIdSearchText.value = ''
@@ -1879,7 +1748,9 @@ const applyRouteFilters = async () => {
 
     const initialGroupId = Number(route.query.group_id || 0)
     selectedGroupId.value = Number.isInteger(initialGroupId) && initialGroupId > 0 ? initialGroupId : 0
-    selectedGroupName.value = selectedGroupId.value > 0 ? '当前分组' : '全部分组'
+    selectedGroupName.value = selectedGroupId.value > 0
+        ? (groups.value.find((group) => group.key === selectedGroupId.value)?.name || '当前分组')
+        : '全部分组'
 
     const initialSearchText = String(route.query.search || '').trim()
 
@@ -1927,12 +1798,8 @@ onMounted(async () => {
     loadAgentPackages()
     const environmentResponse = await getBusinessEnvironmentList({ page: 1, page_size: 1000, enabled: true })
     environmentOptions.value = (environmentResponse?.data?.data?.results || []).map((item) => ({ label: item.name, value: item.id }))
-    // 先加载主机分组最大层级配置，再构建树（buildTreeData 依赖此值）
-    await getConfigByKey(CONFIG_KEYS.HOSTGROUP_MAX_TREE_DEPTH).then(res => {
-        groupMaxTreeDepth.value = resolveConfigIntValue(res, 5)
-    }).catch(() => {})
     await loadHostListRefreshIntervalConfig()
-    await loadGroupTree()
+    await loadGroups()
     startHostListAutoRefresh()
     document.addEventListener('click', closeGroupContextMenu)
 })
@@ -1968,13 +1835,49 @@ onBeforeUnmount(() => {
 }
 
 .host-page {
-    align-items: flex-start;
+    align-items: stretch;
     font-size: 15px;
     padding: 12px 6px 18px;
     background:
         radial-gradient(circle at top left, rgba(15, 23, 42, 0.04), transparent 28%),
         linear-gradient(180deg, #f8fafc 0%, #f4f7fb 100%);
     border-radius: 16px;
+}
+
+/* sticky 列不能随整行拉伸，否则没有可供吸顶的滚动距离。 */
+.host-group-panel {
+    position: sticky;
+    top: 12px;
+    align-self: flex-start;
+}
+
+.group-list-scroll {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+}
+
+.group-panel-toggle {
+    width: 18px;
+    flex: 0 0 18px;
+    height: auto;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #64748b;
+    background: #f8fafc;
+    border: 1px solid #d9e2ef;
+    border-radius: 6px;
+    cursor: pointer;
+    user-select: none;
+    margin: 0 6px 0 2px;
+}
+
+.group-panel-toggle:hover {
+    color: #2563eb;
+    border-color: #93c5fd;
+    background: #eff6ff;
 }
 
 .group-toolbar {
@@ -1996,6 +1899,9 @@ onBeforeUnmount(() => {
 .group-card {
     background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
     border-color: #e2e8f0;
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100dvh - 24px);
 }
 
 .group-card :deep(.ant-card-head) {
@@ -2011,6 +1917,9 @@ onBeforeUnmount(() => {
 .group-card :deep(.ant-card-body) {
     background: rgba(255, 255, 255, 0.96);
     color: #334155;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
 }
 
 .group-card :deep(.ant-card-head),
@@ -2056,32 +1965,6 @@ onBeforeUnmount(() => {
 .host-page :deep(.ant-card-head-title) {
     color: #0f172a;
     font-weight: 700;
-}
-
-.host-page :deep(.ant-tree .ant-tree-treenode) {
-    color: #475569;
-}
-
-.host-page :deep(.ant-tree .ant-tree-node-content-wrapper) {
-    border-radius: 6px;
-    transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
-}
-
-.host-page :deep(.ant-tree .ant-tree-node-content-wrapper:hover) {
-    background: #eef2ff;
-    color: #1e293b;
-}
-
-.host-page :deep(.ant-tree .ant-tree-node-selected),
-.host-page :deep(.ant-tree .ant-tree-node-content-wrapper.ant-tree-node-selected) {
-    background: #eff6ff !important;
-    color: #1d4ed8 !important;
-    font-weight: 600;
-    box-shadow: inset 3px 0 0 #3b82f6;
-}
-
-.host-page :deep(.ant-tree .ant-tree-node-content-wrapper.ant-tree-node-selected .ant-tree-title) {
-    color: #1d4ed8 !important;
 }
 
 .host-page :deep(.ant-tag) {
@@ -2132,7 +2015,7 @@ onBeforeUnmount(() => {
 .host-page :deep(.ant-btn),
 .host-page :deep(.ant-input),
 .host-page :deep(.ant-select-selector),
-.host-page :deep(.ant-tree),
+.host-page :deep(.ant-menu),
 .host-page :deep(.ant-table),
 .host-page :deep(.ant-form-item-label > label),
 .host-page :deep(.ant-modal-title),

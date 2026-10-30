@@ -361,7 +361,6 @@ type AssetsHostgroup struct {
 	UpdateTime time.Time      `json:"update_time"`
 	Remark     sql.NullString `json:"remark"`
 	Name       string         `json:"name"`
-	ParentID   sql.NullInt64  `json:"parent_id"`
 }
 
 type AssetsHosthardware struct {

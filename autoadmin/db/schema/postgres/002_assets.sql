@@ -64,10 +64,8 @@ CREATE TABLE assets_hostgroup (
   update_time timestamp(6) NOT NULL,
   remark text,
   name varchar(128) NOT NULL,
-  parent_id bigint DEFAULT NULL,
   PRIMARY KEY (id),
-  CONSTRAINT assets_hostgroup_name UNIQUE (name),
-  CONSTRAINT assets_hostgroup_parent_fk FOREIGN KEY (parent_id) REFERENCES assets_hostgroup (id)
+  CONSTRAINT assets_hostgroup_name UNIQUE (name)
 );
 
 CREATE TABLE assets_host (
@@ -565,4 +563,3 @@ CREATE INDEX assets_application_service_deployment_deployment_id_idx ON assets_a
 CREATE INDEX assets_application_service_log_setting_log_definition_id_idx ON assets_application_service_log_setting (log_definition_id);
 CREATE INDEX assets_cluster_profile_application_id_idx ON assets_cluster_profile (application_id);
 CREATE INDEX assets_hostcredential_credential_id_idx ON assets_hostcredential (credential_id);
-CREATE INDEX assets_hostgroup_parent_id_idx ON assets_hostgroup (parent_id);

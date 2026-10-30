@@ -94,7 +94,6 @@ type Querier interface {
 	// 否则下面 AND 上项目过滤后优先级会变（`A OR B AND C` ≠ `(A OR B) AND C`）。
 	CountBusinessSystems(ctx context.Context, arg CountBusinessSystemsParams) (int64, error)
 	CountBusinessSystemsByProject(ctx context.Context, projectID sql.NullInt64) (int64, error)
-	CountChildHostGroups(ctx context.Context, parentID sql.NullInt64) (int64, error)
 	CountClusterProfiles(ctx context.Context, arg CountClusterProfilesParams) (int64, error)
 	CountConfigs(ctx context.Context) (int64, error)
 	CountConfigsBySearch(ctx context.Context, arg CountConfigsBySearchParams) (int64, error)
@@ -125,7 +124,7 @@ type Querier interface {
 	CountLogRetentionTiers(ctx context.Context, arg CountLogRetentionTiersParams) (int64, error)
 	CountLoginAudits(ctx context.Context, arg CountLoginAuditsParams) (int64, error)
 	CountMonitorHostTotals(ctx context.Context) (CountMonitorHostTotalsRow, error)
-	// 宿主列表的过滤：搜索 / 组（含子组，可变长 IN）/ exporter 纳管状态 / 日志采集纳管状态。
+	// 宿主列表的过滤：搜索 / 单层组 / exporter 纳管状态 / 日志采集纳管状态。
 	// managed_filter 与 filebeat_filter 是 'true'/'false'/NULL 三态，用 CASE 表达"命中/未命中/不过滤"。
 	CountMonitorHosts(ctx context.Context, arg CountMonitorHostsParams) (int64, error)
 	// 计数用 COUNT(CASE WHEN …) 而不是 SUM(布尔)：PG 里布尔不能求和（同 inspection/automation 的处理）。
@@ -788,7 +787,6 @@ type Querier interface {
 	ListMenuIDsByRoleID(ctx context.Context, roleID int32) ([]int32, error)
 	ListMenus(ctx context.Context) ([]SysMenu, error)
 	ListMenusByUserID(ctx context.Context, userID int32) ([]SysMenu, error)
-	ListMonitorHostGroupParents(ctx context.Context) ([]ListMonitorHostGroupParentsRow, error)
 	// ---- 宿主总览（监控纳管情况）----
 	ListMonitorHostGroupTree(ctx context.Context) ([]ListMonitorHostGroupTreeRow, error)
 	ListMonitorHosts(ctx context.Context, arg ListMonitorHostsParams) ([]ListMonitorHostsRow, error)

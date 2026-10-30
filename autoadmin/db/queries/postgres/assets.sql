@@ -121,32 +121,29 @@ SELECT COUNT(*) FROM assets_hostgroup g
 WHERE COALESCE(g.name, '') LIKE sqlc.narg(pattern) OR COALESCE(g.remark, '') LIKE sqlc.narg(pattern);
 
 -- name: ListHostGroups :many
-SELECT g.*, COALESCE(p.name, '') AS parent_name,
+SELECT g.id, g.create_time, g.update_time, g.remark, g.name,
        (SELECT COUNT(*) FROM assets_host h WHERE h.group_id = g.id) AS host_count
-FROM assets_hostgroup g LEFT JOIN assets_hostgroup p ON p.id = g.parent_id
+FROM assets_hostgroup g
 WHERE COALESCE(g.name, '') LIKE sqlc.narg(pattern) OR COALESCE(g.remark, '') LIKE sqlc.narg(pattern)
 ORDER BY g.id LIMIT $1 OFFSET $2;
 
 -- name: GetHostGroup :one
-SELECT g.*, COALESCE(p.name, '') AS parent_name,
+SELECT g.id, g.create_time, g.update_time, g.remark, g.name,
        (SELECT COUNT(*) FROM assets_host h WHERE h.group_id = g.id) AS host_count
-FROM assets_hostgroup g LEFT JOIN assets_hostgroup p ON p.id = g.parent_id WHERE g.id = $1 LIMIT 1;
+FROM assets_hostgroup g WHERE g.id = $1 LIMIT 1;
 
 -- name: ListAllHostGroups :many
-SELECT g.*, COALESCE(p.name, '') AS parent_name,
+SELECT g.id, g.create_time, g.update_time, g.remark, g.name,
        (SELECT COUNT(*) FROM assets_host h WHERE h.group_id = g.id) AS host_count
-FROM assets_hostgroup g LEFT JOIN assets_hostgroup p ON p.id = g.parent_id
+FROM assets_hostgroup g
 ORDER BY g.id;
 
 -- name: CreateHostGroup :one
-INSERT INTO assets_hostgroup (create_time, update_time, remark, name, parent_id) VALUES ($1, $2, $3, $4, $5)
+INSERT INTO assets_hostgroup (create_time, update_time, remark, name) VALUES ($1, $2, $3, $4)
 RETURNING id;
 
 -- name: UpdateHostGroup :exec
-UPDATE assets_hostgroup SET update_time = $1, remark = $2, name = $3, parent_id = $4 WHERE id = $5;
-
--- name: CountChildHostGroups :one
-SELECT COUNT(*) FROM assets_hostgroup WHERE parent_id = $1;
+UPDATE assets_hostgroup SET update_time = $1, remark = $2, name = $3 WHERE id = $4;
 
 -- name: CountHostsByGroup :one
 SELECT COUNT(*) FROM assets_host WHERE group_id = $1;

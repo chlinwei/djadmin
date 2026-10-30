@@ -62,16 +62,12 @@ type Credential struct {
 }
 
 type HostGroup struct {
-	ID         int64       `json:"id"`
-	CreateTime string      `json:"create_time"`
-	UpdateTime string      `json:"update_time"`
-	Remark     *string     `json:"remark"`
-	Name       string      `json:"name"`
-	Parent     *int64      `json:"parent"`
-	ParentID   *int64      `json:"parent_id"`
-	ParentName string      `json:"parent_name"`
-	HostCount  int64       `json:"host_count"`
-	Children   []HostGroup `json:"children,omitempty"`
+	ID         int64   `json:"id"`
+	CreateTime string  `json:"create_time"`
+	UpdateTime string  `json:"update_time"`
+	Remark     *string `json:"remark"`
+	Name       string  `json:"name"`
+	HostCount  int64   `json:"host_count"`
 }
 
 type HostSystemInfo struct {
@@ -152,7 +148,8 @@ type CredentialInput struct {
 	Remark     *string `json:"remark"`
 }
 type HostGroupInput struct {
-	Name     string  `json:"name"`
+	Name string `json:"name"`
+	// Kept only to reject hierarchy input explicitly; no parent is stored.
 	ParentID *int64  `json:"parent_id"`
 	Remark   *string `json:"remark"`
 }

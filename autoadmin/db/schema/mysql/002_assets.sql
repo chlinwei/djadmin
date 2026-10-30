@@ -67,10 +67,8 @@ CREATE TABLE `assets_hostgroup` (
   `update_time` datetime(6) NOT NULL,
   `remark` longtext,
   `name` varchar(128) NOT NULL,
-  `parent_id` bigint DEFAULT NULL,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `name` (`name`),
-  CONSTRAINT `assets_hostgroup_parent_fk` FOREIGN KEY (`parent_id`) REFERENCES `assets_hostgroup` (`id`)
+  UNIQUE KEY `name` (`name`)
 );
 
 CREATE TABLE `assets_host` (

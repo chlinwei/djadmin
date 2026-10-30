@@ -169,7 +169,7 @@ WHERE group_id = sqlc.arg(group_id) AND enabled = TRUE
 ORDER BY "order", id;
 
 -- name: ListHostGroupTreeNodes :many
-SELECT id, name, parent_id
+SELECT id, name
 FROM assets_hostgroup
 ORDER BY name, id;
 

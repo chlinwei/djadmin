@@ -896,13 +896,12 @@ func (q *Queries) ListAutomationHostAgentIdentities(ctx context.Context, hostIds
 }
 
 const listAutomationHostGroupTree = `-- name: ListAutomationHostGroupTree :many
-SELECT id, name, parent_id FROM assets_hostgroup ORDER BY id
+SELECT id, name FROM assets_hostgroup ORDER BY id
 `
 
 type ListAutomationHostGroupTreeRow struct {
-	ID       int64         `json:"id"`
-	Name     string        `json:"name"`
-	ParentID sql.NullInt64 `json:"parent_id"`
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
 }
 
 func (q *Queries) ListAutomationHostGroupTree(ctx context.Context) ([]ListAutomationHostGroupTreeRow, error) {
@@ -914,7 +913,7 @@ func (q *Queries) ListAutomationHostGroupTree(ctx context.Context) ([]ListAutoma
 	items := []ListAutomationHostGroupTreeRow{}
 	for rows.Next() {
 		var i ListAutomationHostGroupTreeRow
-		if err := rows.Scan(&i.ID, &i.Name, &i.ParentID); err != nil {
+		if err := rows.Scan(&i.ID, &i.Name); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

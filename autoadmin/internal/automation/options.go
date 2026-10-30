@@ -55,24 +55,11 @@ func (handler *Handler) GroupTree(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
-	nodes := make(map[int64]gin.H)
-	ordered := make([]gin.H, 0, len(rows))
+	groups := make([]gin.H, 0, len(rows))
 	for _, row := range rows {
-		node := gin.H{"id": row.ID, "name": row.Name, "parent_id": nullableInt(row.ParentID), "children": []gin.H{}}
-		nodes[row.ID] = node
-		ordered = append(ordered, node)
+		groups = append(groups, gin.H{"id": row.ID, "name": row.Name, "children": []gin.H{}})
 	}
-	roots := make([]gin.H, 0)
-	for _, node := range ordered {
-		parentID, ok := node["parent_id"].(int64)
-		parent, found := nodes[parentID]
-		if !ok || !found {
-			roots = append(roots, node)
-			continue
-		}
-		parent["children"] = append(parent["children"].([]gin.H), node)
-	}
-	response.Success(context, roots)
+	response.Success(context, groups)
 }
 
 func nullableString(value sql.NullString) any {

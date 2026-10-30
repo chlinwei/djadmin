@@ -15,6 +15,7 @@ func TestHostOptionsSerializesNullableInstanceNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	defer pool.Close()
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM assets_host h").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
@@ -61,6 +62,39 @@ func TestHostOptionsSerializesNullableInstanceNames(t *testing.T) {
 	if missing.InstanceName != nil || missing.Hostname != nil || missing.GroupID != nil ||
 		empty.InstanceName == nil || *empty.InstanceName != "" || empty.Hostname == nil || *empty.Hostname != "" {
 		t.Fatalf("nullable names lost null/empty distinction: %s", recorder.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGroupOptionsAreIndependentGroups(t *testing.T) {
+	pool, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	mock.ExpectQuery("SELECT id, name FROM assets_hostgroup ORDER BY id").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
+			AddRow(1, "production").AddRow(2, "testing"))
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/sys/automation/playbooks/group-tree/", nil)
+	(&Handler{db: pool}).GroupTree(ctx)
+	var envelope struct {
+		Code int              `json:"code"`
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusOK || envelope.Code != 200 || len(envelope.Data) != 2 {
+		t.Fatalf("unexpected flat groups: %s", recorder.Body.String())
+	}
+	for _, group := range envelope.Data {
+		if _, found := group["parent_id"]; found || len(group["children"].([]any)) != 0 {
+			t.Fatalf("group nesting must not be exposed: %#v", group)
+		}
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

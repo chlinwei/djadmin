@@ -519,12 +519,10 @@ func (s *Service) DeleteCredentials(ctx context.Context, ids []int64) error {
 }
 
 func hostGroup(row db.ListHostGroupsRow) HostGroup {
-	parent := intValue(row.ParentID)
-	return HostGroup{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Name: row.Name, Parent: parent, ParentID: parent, ParentName: row.ParentName, HostCount: row.HostCount}
+	return HostGroup{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Name: row.Name, HostCount: row.HostCount}
 }
 func hostGroupDetail(row db.GetHostGroupRow) HostGroup {
-	parent := intValue(row.ParentID)
-	return HostGroup{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Name: row.Name, Parent: parent, ParentID: parent, ParentName: row.ParentName, HostCount: row.HostCount}
+	return HostGroup{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Name: row.Name, HostCount: row.HostCount}
 }
 func (s *Service) ListHostGroups(ctx context.Context, search string, page pagination.Page) ([]HostGroup, int64, error) {
 	rows, count, err := s.repository.ListHostGroups(ctx, search, page)
@@ -543,90 +541,34 @@ func (s *Service) HostGroupTree(ctx context.Context) ([]HostGroup, error) {
 	if err != nil {
 		return nil, translate(err)
 	}
-	return buildHostGroupTree(rows), nil
+	return buildHostGroupOptions(rows), nil
 }
 
-func buildHostGroupTree(rows []db.ListAllHostGroupsRow) []HostGroup {
-	children := make(map[int64][]HostGroup)
+func buildHostGroupOptions(rows []db.ListAllHostGroupsRow) []HostGroup {
+	result := make([]HostGroup, 0, len(rows))
 	for _, row := range rows {
-		parent := intValue(row.ParentID)
-		item := HostGroup{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Name: row.Name, Parent: parent, ParentID: parent, ParentName: row.ParentName, HostCount: row.HostCount}
-		parentID := int64(0)
-		if parent != nil {
-			parentID = *parent
-		}
-		children[parentID] = append(children[parentID], item)
+		result = append(result, HostGroup{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Name: row.Name, HostCount: row.HostCount})
 	}
-	var build func(int64, map[int64]bool) ([]HostGroup, int64)
-	build = func(parentID int64, ancestors map[int64]bool) ([]HostGroup, int64) {
-		result := make([]HostGroup, 0, len(children[parentID]))
-		total := int64(0)
-		for _, item := range children[parentID] {
-			if ancestors[item.ID] {
-				continue
-			}
-			next := make(map[int64]bool, len(ancestors)+1)
-			for id := range ancestors {
-				next[id] = true
-			}
-			next[item.ID] = true
-			item.Children, item.HostCount = build(item.ID, next)
-			item.HostCount += directHostCount(rows, item.ID)
-			total += item.HostCount
-			result = append(result, item)
-		}
-		return result, total
-	}
-	tree, _ := build(0, map[int64]bool{})
-	return tree
-}
-
-func directHostCount(rows []db.ListAllHostGroupsRow, id int64) int64 {
-	for _, row := range rows {
-		if row.ID == id {
-			return row.HostCount
-		}
-	}
-	return 0
-}
-func (s *Service) validateGroupParent(ctx context.Context, id int64, parent *int64) error {
-	if parent == nil {
-		return nil
-	}
-	if *parent == id {
-		return ErrGroupCycle
-	}
-	current := *parent
-	for depth := 0; depth < 64; depth++ {
-		row, err := s.repository.GetHostGroup(ctx, current)
-		if err != nil {
-			return ErrInvalidRelation
-		}
-		if !row.ParentID.Valid {
-			return nil
-		}
-		current = row.ParentID.Int64
-		if current == id {
-			return ErrGroupCycle
-		}
-	}
-	return ErrGroupCycle
+	return result
 }
 func (s *Service) CreateHostGroup(ctx context.Context, input HostGroupInput) (HostGroup, error) {
 	if strings.TrimSpace(input.Name) == "" {
 		return HostGroup{}, ErrInvalid
 	}
-	if err := s.validateGroupParent(ctx, 0, input.ParentID); err != nil {
-		return HostGroup{}, err
+	if input.ParentID != nil {
+		return HostGroup{}, ErrGroupParent
 	}
 	now := time.Now().UTC()
-	id, err := s.repository.CreateHostGroup(ctx, db.CreateHostGroupParams{CreateTime: now, UpdateTime: now, Remark: nullString(input.Remark), Name: strings.TrimSpace(input.Name), ParentID: nullInt(input.ParentID)})
+	id, err := s.repository.CreateHostGroup(ctx, db.CreateHostGroupParams{CreateTime: now, UpdateTime: now, Remark: nullString(input.Remark), Name: strings.TrimSpace(input.Name)})
 	if err != nil {
 		return HostGroup{}, translate(err)
 	}
 	return s.GetHostGroup(ctx, id)
 }
 func (s *Service) UpdateHostGroup(ctx context.Context, id int64, input HostGroupInput) (HostGroup, error) {
+	if input.ParentID != nil {
+		return HostGroup{}, ErrGroupParent
+	}
 	current, err := s.repository.GetHostGroup(ctx, id)
 	if err != nil {
 		return HostGroup{}, translate(err)
@@ -637,13 +579,7 @@ func (s *Service) UpdateHostGroup(ctx context.Context, id int64, input HostGroup
 	if input.Remark == nil {
 		input.Remark = stringValue(current.Remark)
 	}
-	if input.ParentID == nil {
-		input.ParentID = intValue(current.ParentID)
-	}
-	if err := s.validateGroupParent(ctx, id, input.ParentID); err != nil {
-		return HostGroup{}, err
-	}
-	err = s.repository.UpdateHostGroup(ctx, db.UpdateHostGroupParams{UpdateTime: time.Now().UTC(), Remark: nullString(input.Remark), Name: strings.TrimSpace(input.Name), ParentID: nullInt(input.ParentID), ID: id})
+	err = s.repository.UpdateHostGroup(ctx, db.UpdateHostGroupParams{UpdateTime: time.Now().UTC(), Remark: nullString(input.Remark), Name: strings.TrimSpace(input.Name), ID: id})
 	if err != nil {
 		return HostGroup{}, translate(err)
 	}

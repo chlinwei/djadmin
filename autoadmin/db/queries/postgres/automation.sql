@@ -146,7 +146,7 @@ ORDER BY h.id
 LIMIT $1 OFFSET $2;
 
 -- name: ListAutomationHostGroupTree :many
-SELECT id, name, parent_id FROM assets_hostgroup ORDER BY id;
+SELECT id, name FROM assets_hostgroup ORDER BY id;
 
 -- name: CreateAutomationInventory :one
 INSERT INTO automation_inventory(create_time, update_time, remark, name, selected_host_ids, enabled,

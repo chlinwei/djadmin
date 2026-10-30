@@ -439,7 +439,6 @@ type ListLogProcessingRulesParams = mysql.ListLogProcessingRulesParams
 type ListLogRetentionTiersParams = mysql.ListLogRetentionTiersParams
 type ListLoginAuditsParams = mysql.ListLoginAuditsParams
 type ListManagedLogTargetConfigsRow = mysql.ListManagedLogTargetConfigsRow
-type ListMonitorHostGroupParentsRow = mysql.ListMonitorHostGroupParentsRow
 type ListMonitorHostGroupTreeRow = mysql.ListMonitorHostGroupTreeRow
 type ListMonitorHostsParams = mysql.ListMonitorHostsParams
 type ListMonitorHostsRow = mysql.ListMonitorHostsRow

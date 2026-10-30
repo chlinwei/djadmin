@@ -121,14 +121,6 @@ func (handler *Handler) ExporterOptions(context *gin.Context) {
 	response.Success(context, options)
 }
 
-type monitorGroup struct {
-	ID           int64
-	Name         string
-	ParentID     sql.NullInt64
-	HostCount    int64
-	ManagedCount int64
-}
-
 func (handler *Handler) HostGroupTree(context *gin.Context) {
 	queries := db.New(handler.db)
 	rows, err := queries.ListMonitorHostGroupTree(context)
@@ -136,10 +128,9 @@ func (handler *Handler) HostGroupTree(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
-	groups := make([]monitorGroup, 0, len(rows))
+	groups := make([]gin.H, 0, len(rows))
 	for _, row := range rows {
-		groups = append(groups, monitorGroup{ID: row.ID, Name: row.Name, ParentID: row.ParentID,
-			HostCount: row.HostCount, ManagedCount: row.ManagedCount})
+		groups = append(groups, gin.H{"id": row.ID, "name": row.Name, "host_count": row.HostCount, "managed_count": row.ManagedCount, "children": []gin.H{}})
 	}
 	totals, err := queries.CountMonitorHostTotals(context)
 	if err != nil {
@@ -147,35 +138,7 @@ func (handler *Handler) HostGroupTree(context *gin.Context) {
 		return
 	}
 	totalHosts, totalManaged, ungrouped := totals.Count, totals.ManagedTotal, totals.Ungrouped
-	children := make(map[int64][]monitorGroup)
-	for _, item := range groups {
-		parentID := int64(0)
-		if item.ParentID.Valid {
-			parentID = item.ParentID.Int64
-		}
-		children[parentID] = append(children[parentID], item)
-	}
-	var build func(int64, map[int64]bool) []gin.H
-	build = func(parentID int64, ancestors map[int64]bool) []gin.H {
-		result := make([]gin.H, 0, len(children[parentID]))
-		for _, item := range children[parentID] {
-			if ancestors[item.ID] {
-				continue
-			}
-			next := make(map[int64]bool, len(ancestors)+1)
-			for id := range ancestors {
-				next[id] = true
-			}
-			next[item.ID] = true
-			var parent any
-			if item.ParentID.Valid {
-				parent = item.ParentID.Int64
-			}
-			result = append(result, gin.H{"id": item.ID, "name": item.Name, "parent_id": parent, "host_count": item.HostCount, "managed_count": item.ManagedCount, "children": build(item.ID, next)})
-		}
-		return result
-	}
-	response.Success(context, gin.H{"groups": build(0, map[int64]bool{}), "total_host_count": totalHosts, "total_managed_count": totalManaged, "ungrouped_host_count": ungrouped})
+	response.Success(context, gin.H{"groups": groups, "total_host_count": totalHosts, "total_managed_count": totalManaged, "ungrouped_host_count": ungrouped})
 }
 
 func (handler *Handler) HostOverview(context *gin.Context) {
@@ -196,18 +159,13 @@ func (handler *Handler) HostOverview(context *gin.Context) {
 	}
 	filter.SearchPattern = sql.NullString{String: pattern, Valid: true}
 	if groupID := strings.TrimSpace(context.Query("group_id")); groupID != "" {
-		groupIDs, err := handler.descendantGroupIDs(context, groupID)
-		if err != nil {
-			response.Error(context, err)
+		id, err := strconv.ParseInt(groupID, 10, 64)
+		if err != nil || id <= 0 {
+			response.BusinessError(context, 400, "invalid group_id", nil)
 			return
 		}
-		if len(groupIDs) > 0 {
-			filter.GroupFilter = groupID
-			filter.GroupIds = make([]sql.NullInt64, 0, len(groupIDs))
-			for _, id := range groupIDs {
-				filter.GroupIds = append(filter.GroupIds, sql.NullInt64{Int64: id, Valid: true})
-			}
-		}
+		filter.GroupFilter = groupID
+		filter.GroupIds = []sql.NullInt64{{Int64: id, Valid: true}}
 	}
 	managedFilter := strings.TrimSpace(context.Query("exporter_managed"))
 	if managedFilter == "" {
@@ -339,36 +297,6 @@ func (handler *Handler) evaluateConfigStates(context *gin.Context, refs []logcol
 		return map[int64]logcollect.LogConfigState{}, nil
 	}
 	return handler.evaluateLogConfigStates(context, refs)
-}
-
-func (handler *Handler) descendantGroupIDs(context *gin.Context, root string) ([]int64, error) {
-	rootID, err := strconv.ParseInt(root, 10, 64)
-	if err != nil || rootID <= 0 {
-		return nil, nil
-	}
-	rows, err := db.New(handler.db).ListMonitorHostGroupParents(context)
-	if err != nil {
-		return nil, err
-	}
-	children := make(map[int64][]int64)
-	for _, row := range rows {
-		id, parent := row.ID, row.ParentID
-		if parent.Valid {
-			children[parent.Int64] = append(children[parent.Int64], id)
-		}
-	}
-	result, pending, seen := make([]int64, 0), []int64{rootID}, map[int64]bool{}
-	for len(pending) > 0 {
-		id := pending[len(pending)-1]
-		pending = pending[:len(pending)-1]
-		if seen[id] {
-			continue
-		}
-		seen[id] = true
-		result = append(result, id)
-		pending = append(pending, children[id]...)
-	}
-	return result, nil
 }
 
 func (handler *Handler) CancelInstallHistory(context *gin.Context) {

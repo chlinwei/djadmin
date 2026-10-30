@@ -426,7 +426,6 @@ type ListLogProcessingRulesParams = postgres.ListLogProcessingRulesParams
 type ListLogRetentionTiersParams = postgres.ListLogRetentionTiersParams
 type ListLoginAuditsParams = postgres.ListLoginAuditsParams
 type ListManagedLogTargetConfigsRow = postgres.ListManagedLogTargetConfigsRow
-type ListMonitorHostGroupParentsRow = postgres.ListMonitorHostGroupParentsRow
 type ListMonitorHostGroupTreeRow = postgres.ListMonitorHostGroupTreeRow
 type ListMonitorHostsRow = postgres.ListMonitorHostsRow
 type ListMonitorTargetsByHostParams = postgres.ListMonitorTargetsByHostParams

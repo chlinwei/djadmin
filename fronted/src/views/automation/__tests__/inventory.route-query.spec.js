@@ -176,6 +176,30 @@ describe('inventory route query auto search', () => {
     wrapper.unmount()
   })
 
+  it('keeps independent groups and host selections in both scope trees', async () => {
+    getAutomationGroupTree.mockResolvedValue({
+      data: { data: [{ id: 1, name: 'production', children: [] }, { id: 2, name: 'testing', children: [] }] },
+    })
+    getAutomationHostOptions.mockResolvedValue({
+      data: { data: { count: 2, next: null, results: [
+        { id: 201, instance_name: 'prod-01', ip: '10.0.0.1', group_id: 1 },
+        { id: 202, instance_name: 'test-01', ip: '10.0.0.2', group_id: 2 },
+      ] } },
+    })
+    const wrapper = mountPage()
+    try {
+      await flushPromises()
+      expect(wrapper.vm.scopeEditTreeData.map((group) => group.key)).toEqual(['group-1', 'group-2'])
+      expect(wrapper.vm.scopeEditTreeData.map((group) => group.children[0].host_id)).toEqual([201, 202])
+      wrapper.vm.openScopeViewer({ name: 'both groups', selected_host_ids: [201, 202] })
+      await nextTick()
+      expect(wrapper.vm.scopeViewTreeData.map((group) => group.children[0].host_id)).toEqual([201, 202])
+      expect(wrapper.vm.scopeViewSummary).toBe('当前范围：2台主机')
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('uses string instance names in both scope trees, search and host navigation', async () => {
     getAutomationGroupTree.mockResolvedValue({
       data: { data: [{ id: 1, name: 'wuhan', children: [] }] },

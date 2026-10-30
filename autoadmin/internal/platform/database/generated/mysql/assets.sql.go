@@ -249,17 +249,6 @@ func (q *Queries) CountBusinessSystemsByProject(ctx context.Context, projectID s
 	return count, err
 }
 
-const countChildHostGroups = `-- name: CountChildHostGroups :one
-SELECT COUNT(*) FROM assets_hostgroup WHERE parent_id = ?
-`
-
-func (q *Queries) CountChildHostGroups(ctx context.Context, parentID sql.NullInt64) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countChildHostGroups, parentID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const countClusterProfiles = `-- name: CountClusterProfiles :one
 SELECT COUNT(*) FROM assets_cluster_profile
 WHERE (? = 0 OR application_id=?)
@@ -1071,7 +1060,7 @@ func (q *Queries) CreateHostDisk(ctx context.Context, arg CreateHostDiskParams) 
 }
 
 const createHostGroup = `-- name: CreateHostGroup :execresult
-INSERT INTO assets_hostgroup (create_time, update_time, remark, name, parent_id) VALUES (?, ?, ?, ?, ?)
+INSERT INTO assets_hostgroup (create_time, update_time, remark, name) VALUES (?, ?, ?, ?)
 `
 
 type CreateHostGroupParams struct {
@@ -1079,7 +1068,6 @@ type CreateHostGroupParams struct {
 	UpdateTime time.Time      `json:"update_time"`
 	Remark     sql.NullString `json:"remark"`
 	Name       string         `json:"name"`
-	ParentID   sql.NullInt64  `json:"parent_id"`
 }
 
 func (q *Queries) CreateHostGroup(ctx context.Context, arg CreateHostGroupParams) (sql.Result, error) {
@@ -1088,7 +1076,6 @@ func (q *Queries) CreateHostGroup(ctx context.Context, arg CreateHostGroupParams
 		arg.UpdateTime,
 		arg.Remark,
 		arg.Name,
-		arg.ParentID,
 	)
 }
 
@@ -2541,9 +2528,9 @@ func (q *Queries) GetHost(ctx context.Context, id int64) (GetHostRow, error) {
 }
 
 const getHostGroup = `-- name: GetHostGroup :one
-SELECT g.id, g.create_time, g.update_time, g.remark, g.name, g.parent_id, COALESCE(p.name, '') AS parent_name,
+SELECT g.id, g.create_time, g.update_time, g.remark, g.name,
        (SELECT COUNT(*) FROM assets_host h WHERE h.group_id = g.id) AS host_count
-FROM assets_hostgroup g LEFT JOIN assets_hostgroup p ON p.id = g.parent_id WHERE g.id = ? LIMIT 1
+FROM assets_hostgroup g WHERE g.id = ? LIMIT 1
 `
 
 type GetHostGroupRow struct {
@@ -2552,8 +2539,6 @@ type GetHostGroupRow struct {
 	UpdateTime time.Time      `json:"update_time"`
 	Remark     sql.NullString `json:"remark"`
 	Name       string         `json:"name"`
-	ParentID   sql.NullInt64  `json:"parent_id"`
-	ParentName string         `json:"parent_name"`
 	HostCount  int64          `json:"host_count"`
 }
 
@@ -2566,8 +2551,6 @@ func (q *Queries) GetHostGroup(ctx context.Context, id int64) (GetHostGroupRow, 
 		&i.UpdateTime,
 		&i.Remark,
 		&i.Name,
-		&i.ParentID,
-		&i.ParentName,
 		&i.HostCount,
 	)
 	return i, err
@@ -2921,9 +2904,9 @@ func (q *Queries) ListAgentHostTargets(ctx context.Context, hostIds []int64) ([]
 }
 
 const listAllHostGroups = `-- name: ListAllHostGroups :many
-SELECT g.id, g.create_time, g.update_time, g.remark, g.name, g.parent_id, COALESCE(p.name, '') AS parent_name,
+SELECT g.id, g.create_time, g.update_time, g.remark, g.name,
        (SELECT COUNT(*) FROM assets_host h WHERE h.group_id = g.id) AS host_count
-FROM assets_hostgroup g LEFT JOIN assets_hostgroup p ON p.id = g.parent_id
+FROM assets_hostgroup g
 ORDER BY g.id
 `
 
@@ -2933,8 +2916,6 @@ type ListAllHostGroupsRow struct {
 	UpdateTime time.Time      `json:"update_time"`
 	Remark     sql.NullString `json:"remark"`
 	Name       string         `json:"name"`
-	ParentID   sql.NullInt64  `json:"parent_id"`
-	ParentName string         `json:"parent_name"`
 	HostCount  int64          `json:"host_count"`
 }
 
@@ -2953,8 +2934,6 @@ func (q *Queries) ListAllHostGroups(ctx context.Context) ([]ListAllHostGroupsRow
 			&i.UpdateTime,
 			&i.Remark,
 			&i.Name,
-			&i.ParentID,
-			&i.ParentName,
 			&i.HostCount,
 		); err != nil {
 			return nil, err
@@ -3889,9 +3868,9 @@ func (q *Queries) ListHostDisks(ctx context.Context, hostID int64) ([]ListHostDi
 }
 
 const listHostGroups = `-- name: ListHostGroups :many
-SELECT g.id, g.create_time, g.update_time, g.remark, g.name, g.parent_id, COALESCE(p.name, '') AS parent_name,
+SELECT g.id, g.create_time, g.update_time, g.remark, g.name,
        (SELECT COUNT(*) FROM assets_host h WHERE h.group_id = g.id) AS host_count
-FROM assets_hostgroup g LEFT JOIN assets_hostgroup p ON p.id = g.parent_id
+FROM assets_hostgroup g
 WHERE COALESCE(g.name, '') LIKE ? OR COALESCE(g.remark, '') LIKE ?
 ORDER BY g.id LIMIT ? OFFSET ?
 `
@@ -3908,8 +3887,6 @@ type ListHostGroupsRow struct {
 	UpdateTime time.Time      `json:"update_time"`
 	Remark     sql.NullString `json:"remark"`
 	Name       string         `json:"name"`
-	ParentID   sql.NullInt64  `json:"parent_id"`
-	ParentName string         `json:"parent_name"`
 	HostCount  int64          `json:"host_count"`
 }
 
@@ -3933,8 +3910,6 @@ func (q *Queries) ListHostGroups(ctx context.Context, arg ListHostGroupsParams) 
 			&i.UpdateTime,
 			&i.Remark,
 			&i.Name,
-			&i.ParentID,
-			&i.ParentName,
 			&i.HostCount,
 		); err != nil {
 			return nil, err
@@ -5399,14 +5374,13 @@ func (q *Queries) UpdateHost(ctx context.Context, arg UpdateHostParams) error {
 }
 
 const updateHostGroup = `-- name: UpdateHostGroup :exec
-UPDATE assets_hostgroup SET update_time = ?, remark = ?, name = ?, parent_id = ? WHERE id = ?
+UPDATE assets_hostgroup SET update_time = ?, remark = ?, name = ? WHERE id = ?
 `
 
 type UpdateHostGroupParams struct {
 	UpdateTime time.Time      `json:"update_time"`
 	Remark     sql.NullString `json:"remark"`
 	Name       string         `json:"name"`
-	ParentID   sql.NullInt64  `json:"parent_id"`
 	ID         int64          `json:"id"`
 }
 
@@ -5415,7 +5389,6 @@ func (q *Queries) UpdateHostGroup(ctx context.Context, arg UpdateHostGroupParams
 		arg.UpdateTime,
 		arg.Remark,
 		arg.Name,
-		arg.ParentID,
 		arg.ID,
 	)
 	return err

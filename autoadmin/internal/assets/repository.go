@@ -223,15 +223,11 @@ func (r *Repository) UpdateHostGroup(ctx context.Context, p db.UpdateHostGroupPa
 }
 func (r *Repository) DeleteHostGroup(ctx context.Context, id int64) error {
 	value := sql.NullInt64{Int64: id, Valid: true}
-	children, err := r.queries.CountChildHostGroups(ctx, value)
-	if err != nil {
-		return err
-	}
 	hosts, err := r.queries.CountHostsByGroup(ctx, value)
 	if err != nil {
 		return err
 	}
-	if children > 0 || hosts > 0 {
+	if hosts > 0 {
 		return ErrDeleteProtected
 	}
 	return r.queries.DeleteHostGroup(ctx, id)

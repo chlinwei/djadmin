@@ -15,7 +15,7 @@ var (
 	ErrDeploymentNameDuplicate    = apperror.New(apperror.CodeInvalidArgument, "同一主机下的部署实例名已存在；不同程序请使用不同实例名，关联已有实例请在逻辑服务成员中选择")
 	ErrInvalidRelation            = apperror.New(apperror.CodeInvalidArgument, "关联资产不存在")
 	ErrDeleteProtected            = apperror.New(apperror.CodeInvalidArgument, "资产仍被其他记录引用，无法删除")
-	ErrGroupCycle                 = apperror.New(apperror.CodeInvalidArgument, "主机分组不能形成循环层级")
+	ErrGroupParent                = apperror.New(apperror.CodeInvalidArgument, "主机分组仅支持一层，不能指定上级分组")
 	ErrQueryInternal              = apperror.New(apperror.CodeInternal, "查询资产失败")
 	ErrAgentUnavailable           = apperror.New(apperror.CodeInvalidArgument, "部署主机 Agent 数据面尚未连接，无法执行应用控制")
 	ErrDeploymentTemplateConflict = apperror.New(apperror.CodeInvalidArgument, "部署实例关联了不同部署模板，无法确定控制配置；请将不同程序拆为独立实例，同一实例仅可关联使用相同模板的逻辑服务")

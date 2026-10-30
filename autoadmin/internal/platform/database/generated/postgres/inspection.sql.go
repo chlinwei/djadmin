@@ -1158,15 +1158,14 @@ func (q *Queries) ListHostBusinessChains(ctx context.Context, hostIds []int64) (
 }
 
 const listHostGroupTreeNodes = `-- name: ListHostGroupTreeNodes :many
-SELECT id, name, parent_id
+SELECT id, name
 FROM assets_hostgroup
 ORDER BY name, id
 `
 
 type ListHostGroupTreeNodesRow struct {
-	ID       int64         `json:"id"`
-	Name     string        `json:"name"`
-	ParentID sql.NullInt64 `json:"parent_id"`
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
 }
 
 func (q *Queries) ListHostGroupTreeNodes(ctx context.Context) ([]ListHostGroupTreeNodesRow, error) {
@@ -1178,7 +1177,7 @@ func (q *Queries) ListHostGroupTreeNodes(ctx context.Context) ([]ListHostGroupTr
 	items := []ListHostGroupTreeNodesRow{}
 	for rows.Next() {
 		var i ListHostGroupTreeNodesRow
-		if err := rows.Scan(&i.ID, &i.Name, &i.ParentID); err != nil {
+		if err := rows.Scan(&i.ID, &i.Name); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

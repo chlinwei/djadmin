@@ -1,3 +1,5 @@
+import { checkPermission } from '@/directives/permission/permission'
+
 export function createWebsshLifecycleController(options) {
     const {
         nextTick,
@@ -9,6 +11,8 @@ export function createWebsshLifecycleController(options) {
     } = options
 
     const handleMounted = async () => {
+        // 直接 URL 访问也必须阻断握手和在线状态轮询，隐藏入口不等于授权。
+        if (!checkPermission('assets:hosts:execute')) return
         const routeHostId = route.query.host_id || route.query.id || route.params.host_id || route.params.id || 0
         state.hostId = Number(routeHostId)
         state.instanceName = String(route.query.instance_name || '')

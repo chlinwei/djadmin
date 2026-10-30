@@ -14,7 +14,7 @@ vi.mock('@/api/assets/application', () => ({
   getApplicationServiceLogConfig: vi.fn(),
 }))
 vi.mock('@/store', () => ({
-  default: { state: { user: { timezone: 'Asia/Shanghai' } } },
+  default: { state: { user: { timezone: 'Asia/Shanghai' }, perms: ['assets:hosts:execute'], role_codes: ['operator'] } },
 }))
 vi.mock('@/api/assets/host', () => ({
   getHostById: vi.fn(() => Promise.resolve({ data: { data: {

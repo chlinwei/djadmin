@@ -2,7 +2,7 @@
   <div class="monitor-media-page">
     <a-card title="媒介" size="small">
       <template #extra>
-        <a-button size="large" @click="openCreateModal">
+        <a-button v-if="checkPermission('monitor:create')" size="large" @click="openCreateModal">
           <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
           <span>&nbsp;新增</span>
         </a-button>
@@ -29,12 +29,12 @@
             <a-row :gutter="6" class="action-row">
               <a-col>
                 <a-tooltip title="测试" placement="top">
-                  <a-button @click="openTestModal(record)">测试</a-button>
+                  <a-button v-if="checkPermission('monitor:execute')" @click="openTestModal(record)">测试</a-button>
                 </a-tooltip>
               </a-col>
               <a-col>
                 <a-tooltip title="编辑" placement="top">
-                  <a-button type="primary" @click="openEditModal(record)">编辑</a-button>
+                  <a-button v-if="checkPermission('monitor:update')" type="primary" @click="openEditModal(record)">编辑</a-button>
                 </a-tooltip>
               </a-col>
               <a-col>
@@ -45,6 +45,7 @@
                     type="primary"
                     :loading="rowDeleteLoading[record.id]"
                     @click="handleDelete(record)"
+                    v-if="checkPermission('monitor:delete')"
                   >删除</a-button>
                 </a-tooltip>
               </a-col>
@@ -141,7 +142,7 @@
 
       <div class="modal-actions">
         <a-button @click="closeCreateModal">取消</a-button>
-        <a-button type="primary" :loading="createLoading" @click="saveMedia">保存</a-button>
+        <a-button v-if="checkPermission(editingId ? 'monitor:update' : 'monitor:create')" type="primary" :loading="createLoading" @click="saveMedia">保存</a-button>
       </div>
     </a-modal>
 
@@ -169,6 +170,7 @@
 
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
+import { checkPermission } from '@/directives/permission/permission'
 import { createPagination, tableLocale } from '@/util/tableStyle'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
@@ -243,12 +245,14 @@ function handleProviderChange(provider) {
 }
 
 function openCreateModal() {
+  if (!checkPermission('monitor:create')) return
   editingId.value = null
   createForm.value = createDefaultForm()
   createModalVisible.value = true
 }
 
 function openEditModal(record) {
+  if (!checkPermission('monitor:update')) return
   const config = record.config || {}
   editingId.value = record.id
   createForm.value = {
@@ -273,6 +277,7 @@ function closeCreateModal() {
 }
 
 function openTestModal(record) {
+  if (!checkPermission('monitor:execute')) return
   testingMediaId.value = record.id
   testForm.value = {
     recipients: '',
@@ -287,6 +292,7 @@ function closeTestModal() {
 }
 
 async function sendTestEmail() {
+  if (!checkPermission('monitor:execute')) return
   const recipients = testForm.value.recipients.split(/[,;，；]/).map((item) => item.trim()).filter(Boolean)
   if (!recipients.length || !testForm.value.subject.trim() || !testForm.value.message.trim()) {
     message.warning('请填写收件人、主题和消息')
@@ -303,6 +309,7 @@ async function sendTestEmail() {
 }
 
 async function saveMedia() {
+  if (!checkPermission(editingId.value ? 'monitor:update' : 'monitor:create')) return
   if (!createForm.value.name || !createForm.value.type) {
     message.warning('请填写名称并选择媒介类型')
     return
@@ -378,6 +385,7 @@ async function loadMedia() {
 }
 
 async function handleDelete(record) {
+  if (!checkPermission('monitor:delete')) return
   await openDeleteConfirm({
     title: '确认删除报警媒介',
     summary: '删除后该媒介将不再接收新的告警通知。',

@@ -8,7 +8,7 @@
     <div class="toolbar">
       <!-- 日志存储为全局单例配置：已存在集群时禁用新增，仅允许编辑/删除现有记录 -->
       <a-tooltip :title="clusters.length ? '仅支持配置一个集群，请直接编辑现有记录' : '新增集群'">
-        <a-button size="large" :disabled="clusters.length > 0" @click="openDialog()">
+        <a-button v-if="checkPermission('monitor:create')" size="large" :disabled="clusters.length > 0" @click="openDialog()">
           <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
           <span>&nbsp;新增集群</span>
         </a-button>
@@ -77,17 +77,17 @@
         <template v-else-if="column.key === 'action'">
           <a-space :size="6">
             <a-tooltip title="连接测试">
-              <a-button :loading="testingId === record.id" @click="testConnection(record)">
+              <a-button v-if="checkPermission('monitor:execute')" :loading="testingId === record.id" @click="testConnection(record)">
                 <FontAwesomeIcon :icon="['fas', 'plug']" />
               </a-button>
             </a-tooltip>
             <a-tooltip title="编辑">
-              <a-button type="primary" @click="openDialog(record)">
+              <a-button v-if="checkPermission('monitor:update')" type="primary" @click="openDialog(record)">
                 <FontAwesomeIcon :icon="['fa', 'edit']" />
               </a-button>
             </a-tooltip>
             <a-tooltip title="删除">
-              <a-button class="delBtn" danger type="primary" @click="confirmDelete(record)">
+              <a-button v-if="checkPermission('monitor:delete')" class="delBtn" danger type="primary" @click="confirmDelete(record)">
                 <FontAwesomeIcon :icon="['fas', 'trash-can']" />
               </a-button>
             </a-tooltip>
@@ -240,6 +240,7 @@ defineOptions({
 })
 
 import { onMounted, reactive, ref, computed } from 'vue'
+import { checkPermission } from '@/directives/permission/permission'
 import { tableLocale } from '@/util/tableStyle'
 import { message, Empty } from 'ant-design-vue'
 import {
@@ -378,6 +379,7 @@ async function loadClusters() {
 }
 
 function openDialog(record = null) {
+  if (!checkPermission(record ? 'monitor:update' : 'monitor:create')) return
   Object.assign(form, emptyForm())
   if (record) {
     Object.assign(form, record)
@@ -388,6 +390,7 @@ function openDialog(record = null) {
 }
 
 async function submit() {
+  if (!checkPermission(form.id ? 'monitor:update' : 'monitor:create')) return
   await formRef.value.validate()
   saving.value = true
   try {
@@ -406,6 +409,7 @@ async function submit() {
 }
 
 async function testConnection(record) {
+  if (!checkPermission('monitor:execute')) return
   testingId.value = record.id
   try {
     const response = await testElasticsearchCluster(record.id)
@@ -420,6 +424,7 @@ async function testConnection(record) {
 }
 
 function confirmDelete(record) {
+  if (!checkPermission('monitor:delete')) return
   openDeleteConfirm({
     title: '删除集群',
     summary: '删除后依赖该集群的日志采集与查询将不可用。',

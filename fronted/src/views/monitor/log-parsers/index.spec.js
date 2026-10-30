@@ -1,7 +1,13 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import Antd from 'ant-design-vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import store from '@/store'
+
+beforeEach(() => {
+  store.state.role_codes = ['operator']
+  store.state.perms = ['monitor:view', 'monitor:create', 'monitor:update', 'monitor:delete']
+})
 
 // 左侧应用筛选框（2026-09-19 加）：应用一多，逐个点太慢。
 //

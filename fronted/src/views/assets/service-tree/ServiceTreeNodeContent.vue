@@ -99,7 +99,7 @@
         <div class="child-section-title">
           <span>主机信息</span>
           <a-tooltip title="打开 WebSSH 终端（新标签页）" placement="top">
-            <a-button v-permission="'assets:hosts:view'" size="small" @click="openWebSSH(detail)">
+            <a-button v-permission="'assets:hosts:execute'" size="small" @click="openWebSSH(detail)">
               <FontAwesomeIcon :icon="['fas', 'terminal']" />
             </a-button>
           </a-tooltip>
@@ -191,7 +191,7 @@
             <template v-else-if="column.key === 'deployment_action'">
               <a-tooltip title="打开 WebSSH 终端（新标签页）" placement="top">
                 <a-button
-                  v-permission="'assets:hosts:view'"
+                  v-permission="'assets:hosts:execute'"
                   size="small"
                   :disabled="!record.host_id && !record.host"
                   @click.stop="openWebSSH(record)"
@@ -262,6 +262,7 @@ import {
 } from '@/api/assets/application'
 import { getHostById } from '@/api/assets/host'
 import { buildDeploymentWebSSHRoute, buildServiceTreeBreadcrumbs } from './navigation'
+import { checkPermission } from '@/directives/permission/permission'
 
 const props = defineProps({
   scope: { type: Object, required: true },
@@ -666,6 +667,7 @@ async function fetchHostInfo(hostId) {
 // WebSSH 复用资产主机页的入口：新标签页打开终端，query 语义与其保持一致
 // （target_user 不传，由 webssh 页自己走默认用户/用户选择）。
 function openWebSSH(deployment) {
+  if (!checkPermission('assets:hosts:execute')) return
   const hostId = deployment?.host_id ?? deployment?.host
   if (!hostId) {
     message.warning('实例未关联主机，无法打开 WebSSH')

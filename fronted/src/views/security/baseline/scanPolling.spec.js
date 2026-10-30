@@ -5,7 +5,7 @@ import BaselinePage from './index.vue'
 import requestUtil from '@/util/request'
 import { message } from 'ant-design-vue'
 
-vi.mock('@/store', () => ({ default: { state: { user: { timezone: 'Asia/Shanghai' } } } }))
+vi.mock('@/store', () => ({ default: { state: { user: { timezone: 'Asia/Shanghai' }, perms: ['baseline:view', 'baseline:scan'], role_codes: ['operator'] } } }))
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('@/util/request', () => ({ default: { get: vi.fn() } }))
 vi.mock('ant-design-vue', () => ({ message: { error: vi.fn() } }))

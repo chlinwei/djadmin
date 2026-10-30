@@ -215,6 +215,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { refreshHostInfo, getHostById } from '@/api/assets/host/index.js'
 import { queryPrometheusRange } from '@/api/monitor'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig'
+import { checkPermission } from '@/directives/permission/permission'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISOStringByUserTimezone } from '@/util/timezoneRange'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
@@ -576,6 +577,7 @@ const resolveConfigIntValue = (response, fallbackValue) => {
 }
 
 const loadCollectDispatchIntervalConfig = async () => {
+    if (!checkPermission('sys:config:list')) return
     try {
         const res = await getConfigByKey(CONFIG_KEYS.HOST_DETAIL_COLLECT_DISPATCH_INTERVAL_SECONDS)
         const configValue = resolveConfigIntValue(res, DEFAULT_COLLECT_DISPATCH_INTERVAL_SECONDS)

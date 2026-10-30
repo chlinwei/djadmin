@@ -57,6 +57,7 @@
                   type="primary"
                   :disabled="record.is_readonly"
                   @click="openEdit(record)"
+                  v-if="checkPermission('sys:config:update')"
                 >
                   编辑
                 </a-button>
@@ -68,7 +69,7 @@
                 @confirm="handleResetDefault(record)"
               >
                 <a-tooltip title="重置默认">
-                  <a-button size="small" :disabled="record.is_readonly">重置默认</a-button>
+                  <a-button v-if="checkPermission('sys:config:update')" size="small" :disabled="record.is_readonly">重置默认</a-button>
                 </a-tooltip>
               </a-popconfirm>
             </a-space>
@@ -115,6 +116,7 @@ import { message } from 'ant-design-vue'
 import { getConfigList, updateConfig, resetConfigDefault } from '@/api/sys/sysconfig'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
+import { checkPermission } from '@/directives/permission/permission'
 
 const filterText = ref('')
 const loading = ref(false)
@@ -253,6 +255,7 @@ const loadConfigs = async () => {
 }
 
 const openEdit = (record) => {
+  if (!checkPermission('sys:config:update')) return
   editForm.id = record.id
   editForm.name = record.name
   editForm.key = record.key
@@ -263,6 +266,7 @@ const openEdit = (record) => {
 }
 
 const saveEdit = () => {
+  if (!checkPermission('sys:config:update')) return
   saveLoading.value = true
   updateConfig(editForm.id, {
     value: editForm.value,
@@ -283,6 +287,7 @@ const saveEdit = () => {
 }
 
 const handleResetDefault = (record) => {
+  if (!checkPermission('sys:config:update')) return
   resetConfigDefault(record.id)
     .then(() => {
       message.success('已重置为默认值')
@@ -311,4 +316,3 @@ onMounted(() => {
   text-align: right;
 }
 </style>
-

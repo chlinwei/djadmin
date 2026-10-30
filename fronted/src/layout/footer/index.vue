@@ -6,10 +6,12 @@
 <script setup>
 import { ref } from 'vue'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig'
+import { checkPermission } from '@/directives/permission/permission'
 
 const systemTitle = ref('Djadmin')
 
-getConfigByKey(CONFIG_KEYS.SYSTEM_TITLE).then(res => {
+// 页脚不依赖系统配置权限；无读取权限时直接使用产品默认标题。
+if (checkPermission('sys:config:list')) getConfigByKey(CONFIG_KEYS.SYSTEM_TITLE).then(res => {
   const v = res.data?.data?.value
   if (v) systemTitle.value = v
 }).catch(() => {})

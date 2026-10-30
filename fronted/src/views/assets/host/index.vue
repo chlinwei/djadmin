@@ -48,7 +48,7 @@
                     @mouseleave="closeGroupContextMenu"
                 >
                     <a-menu>
-                        <a-menu-item key="create" @click="handleContextCreate">
+                        <a-menu-item v-if="checkPermission('assets:hostgroups:create')" key="create" @click="handleContextCreate">
                             <FontAwesomeIcon :icon="['fas', 'fa-plus']" />
                             <span>&nbsp;新增</span>
                         </a-menu-item>
@@ -56,6 +56,7 @@
                             key="edit"
                             :disabled="groupContextMenu.node?.key === 0"
                             @click="handleContextEdit"
+                            v-if="checkPermission('assets:hostgroups:update')"
                         >
                             <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                             <span>&nbsp;修改</span>
@@ -66,6 +67,7 @@
                             class="delBtn"
                             :disabled="groupContextMenu.node?.key === 0"
                             @click="handleContextDelete"
+                            v-if="checkPermission('assets:hostgroups:delete')"
                         >
                             <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                             <span>&nbsp;删除</span>
@@ -251,7 +253,7 @@
                                     </a-col>
                                     <a-col v-permission="'assets:hosts:view'">
                                         <a-tooltip :title="getWebSshActionTooltip(record)">
-                                            <a-button :disabled="!canOpenWebSsh(record)" @click="openWebSsh(record)">
+                                            <a-button v-permission="'assets:hosts:execute'" :disabled="!canOpenWebSsh(record)" @click="openWebSsh(record)">
                                                 <FontAwesomeIcon :icon="['fas', 'terminal']" />
                                             </a-button>
                                         </a-tooltip>
@@ -589,6 +591,7 @@ import {
 } from '@/api/assets/agentPackage.js'
 import { getHostGroupTree, getHostGroupById, batchDeleteHostGroups } from '@/api/assets/hostgroup/index.js'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig.js'
+import { checkPermission } from '@/directives/permission/permission'
 import { getBusinessEnvironmentList } from '@/api/assets/application'
 import { batchDeleteMonitorTargets, getSoftwarePackages } from '@/api/monitor.js'
 import { assertBatchDeleteSucceeded, openDeleteConfirm } from '@/util/deleteConfirm'
@@ -1242,6 +1245,7 @@ const startHostListAutoRefresh = () => {
 }
 
 const loadHostListRefreshIntervalConfig = async () => {
+    if (!checkPermission('sys:config:list')) return
     try {
         const res = await getConfigByKey(CONFIG_KEYS.HOST_MANAGE_REFRESH_INTERVAL_SECONDS)
         const configValue = resolveConfigIntValue(res, DEFAULT_HOST_LIST_REFRESH_INTERVAL_SECONDS)
@@ -1362,11 +1366,13 @@ const deleteGroup = async (id) => {
 }
 
 const handleContextCreate = () => {
+    if (!checkPermission('assets:hostgroups:create')) return
     closeGroupContextMenu()
     handleCreateGroup()
 }
 
 const handleContextEdit = () => {
+    if (!checkPermission('assets:hostgroups:update')) return
     const node = groupContextMenu.node
     closeGroupContextMenu()
     if (!node || node.key === 0) return
@@ -1376,6 +1382,7 @@ const handleContextEdit = () => {
 }
 
 const handleContextDelete = async () => {
+    if (!checkPermission('assets:hostgroups:delete')) return
     const node = groupContextMenu.node
     closeGroupContextMenu()
     if (!node || node.key === 0) return
@@ -1388,6 +1395,7 @@ const handleContextDelete = async () => {
 }
 
 const handleCreateGroup = () => {
+    if (!checkPermission('assets:hostgroups:create')) return
     groupDialogId.value = -1
     groupDialogTitle.value = '新增分组'
     groupDialogVisible.value = true
@@ -1677,6 +1685,7 @@ const openDetail = (id) => {
 }
 
 const openWebSsh = async (record) => {
+    if (!checkPermission('assets:hosts:execute')) return
     if (!canOpenWebSsh(record)) {
         message.warning('该主机未绑定 agent 实例，无法打开 WebSSH')
         return
@@ -1692,6 +1701,7 @@ const openWebSsh = async (record) => {
 }
 
 const confirmOpenWebSshWithUser = async () => {
+    if (!checkPermission('assets:hosts:execute')) return
     const record = webSshPendingHostRecord.value
     if (!record?.id) {
         message.error('主机信息不存在，请刷新后重试')
@@ -1772,6 +1782,7 @@ const getRowClassName = (record) => {
 }
 
 const canOpenWebSsh = (record) => {
+    if (!checkPermission('assets:hosts:execute')) return false
     const hasAgentInstance = Boolean(String(record?.instance_name || '').trim())
     const isAgentOnline = record?.agent_online === true
     return hasAgentInstance && isAgentOnline

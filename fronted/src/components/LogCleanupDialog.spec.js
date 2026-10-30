@@ -1,7 +1,13 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import Antd from 'ant-design-vue'
 import { message } from 'ant-design-vue'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import store from '@/store'
+
+beforeEach(() => {
+  store.state.role_codes = ['operator']
+  store.state.perms = ['monitor:view', 'monitor:logs:delete']
+})
 
 // 数据流清理弹窗（2026-09-19）：与「日志查询」原来那套清理入口**合并成一个**——
 // 那个面板里的按钮已删除，清理统一从数据流列表进（日志中心 → 存储水位，每条流一个）。

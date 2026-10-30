@@ -2,7 +2,7 @@
   <div class="notification-policy-page">
     <a-card title="通知策略" size="small">
       <template #extra>
-        <a-button size="large" @click="openCreateModal(rootPolicy?.id)">
+        <a-button v-if="checkPermission('monitor:create')" size="large" @click="openCreateModal(rootPolicy?.id)">
           <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
           <span>&nbsp;新增子策略</span>
         </a-button>
@@ -45,15 +45,15 @@
               <a-tag v-else color="orange">静音（不投递）</a-tag>
               <span class="policy-node-actions">
                 <a-tooltip title="添加子策略" placement="top">
-                  <a-button size="small" @click="openCreateModal(wrapper.raw.id)">
+                  <a-button v-if="checkPermission('monitor:create')" size="small" @click="openCreateModal(wrapper.raw.id)">
                     <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
                   </a-button>
                 </a-tooltip>
                 <a-tooltip title="编辑" placement="top">
-                  <a-button size="small" type="primary" @click="openEditModal(wrapper.raw)">编辑</a-button>
+                  <a-button v-if="checkPermission('monitor:update')" size="small" type="primary" @click="openEditModal(wrapper.raw)">编辑</a-button>
                 </a-tooltip>
                 <a-tooltip v-if="!wrapper.raw.isRoot" title="删除（含子树）" placement="top">
-                  <a-button size="small" type="primary" danger class="delBtn" @click="handleDelete(wrapper.raw)">删除</a-button>
+                  <a-button v-if="checkPermission('monitor:delete')" size="small" type="primary" danger class="delBtn" @click="handleDelete(wrapper.raw)">删除</a-button>
                 </a-tooltip>
               </span>
             </div>
@@ -157,7 +157,7 @@
 
       <div class="modal-actions">
         <a-button @click="closeModal">取消</a-button>
-        <a-button type="primary" :loading="saveLoading" @click="savePolicy">保存</a-button>
+        <a-button v-if="checkPermission(editingId ? 'monitor:update' : 'monitor:create')" type="primary" :loading="saveLoading" @click="savePolicy">保存</a-button>
       </div>
     </a-modal>
   </div>
@@ -165,6 +165,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { checkPermission } from '@/directives/permission/permission'
 import { message } from 'ant-design-vue'
 import {
   batchDeleteNotificationPolicies,
@@ -355,6 +356,7 @@ async function loadScopeTreeData() {
 }
 
 function openCreateModal(parentId) {
+  if (!checkPermission('monitor:create')) return
   editingId.value = null
   editingIsRoot.value = false
   policyForm.value = createDefaultForm()
@@ -364,6 +366,7 @@ function openCreateModal(parentId) {
 }
 
 function openEditModal(node) {
+  if (!checkPermission('monitor:update')) return
   editingId.value = node.id
   editingIsRoot.value = node.isRoot
   const item = policyItems.value.find((entry) => entry.id === node.id) || {}
@@ -428,6 +431,7 @@ function buildMatchersPayload() {
 }
 
 async function savePolicy() {
+  if (!checkPermission(editingId.value ? 'monitor:update' : 'monitor:create')) return
   const name = policyForm.value.name.trim()
   if (!name) {
     message.warning('请填写策略名称')
@@ -496,6 +500,7 @@ async function loadMedia() {
 }
 
 async function handleDelete(node) {
+  if (!checkPermission('monitor:delete')) return
   await openDeleteConfirm({
     title: '确认删除策略',
     summary: '删除后其子策略一并删除，命中该分支的告警将回退到上级策略路由。',

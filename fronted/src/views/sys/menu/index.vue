@@ -138,7 +138,7 @@ import { getMenuTree,deleteMenuById } from '@/api/menu';
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig.js';
 
 const menuMaxTreeDepth = ref(5)
-getConfigByKey(CONFIG_KEYS.MENU_MAX_TREE_DEPTH).then(res => {
+if (checkPermission('sys:config:list')) getConfigByKey(CONFIG_KEYS.MENU_MAX_TREE_DEPTH).then(res => {
     if (res.data?.value) menuMaxTreeDepth.value = Number(res.data.value) || 5
 }).catch(() => {})
 

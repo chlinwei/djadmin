@@ -1,6 +1,12 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import Antd, { message } from 'ant-design-vue'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import store from '@/store'
+
+beforeEach(() => {
+  store.state.role_codes = ['operator']
+  store.state.perms = ['system:scheduler:view', 'system:scheduler:update', 'system:scheduler:execute', 'sys:config:list']
+})
 
 // 回归（2026-09-19 现场）：在「定时任务」页点历史任务的「立即执行」，只回一句
 // `任务提交失败: 任务 handler 尚未迁移到 Go`——不知道是谁的问题、要不要等、有没有替代。

@@ -1,5 +1,5 @@
 <template>
-    <div ref="websshPageRef" class="webssh-page">
+    <div v-if="checkPermission('assets:hosts:execute')" ref="websshPageRef" class="webssh-page">
         <WebsshHeaderSection
             :host-title="hostTitle"
             :current-log-id="currentLogId"
@@ -107,10 +107,12 @@
             </a-table>
         </a-modal>
     </div>
+    <a-result v-else status="403" title="无终端执行权限" sub-title="打开 WebSSH 需要主机执行权限。" />
 </template>
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { checkPermission } from '@/directives/permission/permission'
 import { useRoute } from 'vue-router'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'

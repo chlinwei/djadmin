@@ -117,6 +117,7 @@
                     size="small"
                     :disabled="!overviewSelectedHostIds.length"
                     @click="openExporterCreateModal"
+                    v-if="canCreateTarget"
                   >
                     <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
                     &nbsp;装（{{ overviewSelectedHostIds.length }}）
@@ -133,6 +134,7 @@
                     :disabled="!exporterSelectedManagedIds.length"
                     :loading="exporterBatchLoading === 'start'"
                     @click="handleExporterBatch('start')"
+                    v-if="checkPermission('monitor:execute')"
                   >
                     <FontAwesomeIcon :icon="['fas', 'play']" />
                     &nbsp;启动
@@ -149,6 +151,7 @@
                     :disabled="!exporterSelectedManagedIds.length"
                     :loading="exporterBatchLoading === 'stop'"
                     @click="handleExporterBatch('stop')"
+                    v-if="checkPermission('monitor:execute')"
                   >
                     <FontAwesomeIcon :icon="['fas', 'stop']" />
                     &nbsp;停止
@@ -166,6 +169,7 @@
                     :disabled="!exporterSelectedManagedIds.length"
                     :loading="exporterBatchLoading === 'delete'"
                     @click="openExporterBatchDeleteConfirm"
+                    v-if="canDeleteTarget"
                   >
                     <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                     &nbsp;删除
@@ -212,6 +216,7 @@
                           size="small"
                           :disabled="!record.host_agent_online"
                           @click="openExporterCreateModal(record)"
+                          v-if="canCreateTarget"
                         >
                           <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
                           &nbsp;Exporter
@@ -234,6 +239,7 @@
                                 :disabled="isManagedTargetActionDisabledByAgent(record)"
                                 :loading="managedRetryLoading[record.id]"
                                 @click="openManagedTargetRetryConfirm(record)"
+                                v-if="checkPermission('monitor:execute')"
                               >
                                 <FontAwesomeIcon :icon="['fas', 'rotate']" />
                                 &nbsp;{{ record.managed_enabled ? '重新安装' : '重新卸载' }}
@@ -265,6 +271,7 @@
                                 :disabled="isManagedTargetActionDisabledByAgent(record) || record.install_status !== 'success'"
                                 :loading="managedStartLoading[record.id]"
                                 @click="handleStartService(record)"
+                                v-if="checkPermission('monitor:execute')"
                               >
                                 <FontAwesomeIcon :icon="['fas', 'play']" />
                                 &nbsp;运行
@@ -281,6 +288,7 @@
                                 :disabled="isManagedTargetActionDisabledByAgent(record) || record.install_status !== 'success'"
                                 :loading="managedStopLoading[record.id]"
                                 @click="handleStopService(record)"
+                                v-if="checkPermission('monitor:execute')"
                               >
                                 <FontAwesomeIcon :icon="['fas', 'stop']" />
                                 &nbsp;停止
@@ -311,6 +319,7 @@
                                 :disabled="!canCancelManagedTarget(record)"
                                 :loading="managedCancelLoading[record.id]"
                                 @click="onCancelManagedTarget(record)"
+                                v-if="checkPermission('monitor:execute')"
                               >
                                 <FontAwesomeIcon :icon="['fas', 'ban']" />
                                 &nbsp;取消
@@ -330,6 +339,7 @@
                                 :disabled="isManagedTargetActionDisabledByAgent(record) || record.managed_enabled || record.install_status === 'pending'"
                                 :loading="managedDeleteLoading[record.id]"
                                 @click="openManagedTargetDeleteConfirm(record)"
+                                v-if="canDeleteTarget"
                               >
                                 <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                                 &nbsp;删除
@@ -352,7 +362,7 @@
               @change="handlePackageTypeFilterChange"
             />
             <a-tooltip :title="packageCreateButtonText">
-              <a-button size="large" @click="openPackageCreateModal">
+              <a-button v-if="checkPermission('monitor:create')" size="large" @click="openPackageCreateModal">
                 <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
                 <span>&nbsp;{{ packageCreateButtonText }}</span>
               </a-button>
@@ -387,12 +397,13 @@
               <template v-else-if="column.key === 'action'">
                 <a-space>
                   <a-tooltip title="编辑">
-                    <a-button type="primary" ghost @click="openPackageEditModal(record)">
+                    <a-button v-if="checkPermission('monitor:update')" type="primary" ghost @click="openPackageEditModal(record)">
                       <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                     </a-button>
                   </a-tooltip>
                   <a-tooltip title="上传">
                     <a-upload
+                      v-if="checkPermission('monitor:update')"
                       accept=".tar.gz,.rpm,.deb"
                       :show-upload-list="false"
                       :before-upload="(file) => beforePackageUpload(file, record)"
@@ -404,7 +415,7 @@
                     </a-upload>
                   </a-tooltip>
                   <a-tooltip v-if="record.name === 'node_exporter'" title="自动更新">
-                    <a-button type="primary" ghost :loading="packageSyncLoading[record.id]" @click="openSyncOfficialModal(record)">
+                    <a-button v-if="checkPermission('monitor:update')" type="primary" ghost :loading="packageSyncLoading[record.id]" @click="openSyncOfficialModal(record)">
                       <FontAwesomeIcon :icon="['fas', 'rotate']" />
                     </a-button>
                   </a-tooltip>
@@ -414,7 +425,7 @@
                     </a-button>
                   </a-tooltip>
                   <a-tooltip title="删除">
-                    <a-button class="delBtn" danger type="primary" :loading="packageRowLoading[record.id]" @click="openPackageDeleteConfirm(record)">
+                    <a-button v-if="checkPermission('monitor:delete')" class="delBtn" danger type="primary" :loading="packageRowLoading[record.id]" @click="openPackageDeleteConfirm(record)">
                       <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                     </a-button>
                   </a-tooltip>
@@ -553,13 +564,14 @@
                 v-model:value="alertHistoryRetentionDays"
                 :min="1"
                 :precision="0"
-                :disabled="alertSettingsLoading"
+                :disabled="alertSettingsLoading || !checkPermission('sys:config:update')"
                 addon-after="天"
                 style="width: 240px"
               />
             </a-form-item>
+            <a-alert v-if="!checkPermission('sys:config:list')" type="info" message="无系统配置读取权限，当前展示默认保留天数，非已保存配置。" show-icon />
             <a-form-item>
-              <a-button type="primary" :loading="alertSettingsSaving" @click="saveAlertSettings">
+              <a-button v-if="checkPermission('sys:config:update')" type="primary" :loading="alertSettingsSaving" @click="saveAlertSettings">
                 <FontAwesomeIcon :icon="['fas', 'floppy-disk']" />
                 <span>&nbsp;保存</span>
               </a-button>
@@ -875,6 +887,10 @@ import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import { copyTextWithFallback } from '@/util/clipboard'
 import store from '@/store'
+import { checkPermission } from '@/directives/permission/permission'
+// 纳管会安装、删除会卸载：资源权限和执行权限必须同时具备，数组权限是 ANY，不能用于这里。
+const canCreateTarget = computed(() => checkPermission('monitor:create') && checkPermission('monitor:execute'))
+const canDeleteTarget = computed(() => checkPermission('monitor:delete') && checkPermission('monitor:execute'))
 import { CONFIG_KEYS, getConfigByKey, updateConfigByKey } from '@/api/sys/sysconfig'
 
 defineOptions({
@@ -1152,6 +1168,7 @@ function handlePackageFormatChange(packageFormat) {
 }
 
 function openPackageCreateModal() {
+  if (!checkPermission('monitor:create')) return
   packageCreateForm.package_type = packageTypeFilter.value
   packageCreateForm.version = ''
   packageCreateForm.os = 'linux'
@@ -1161,6 +1178,7 @@ function openPackageCreateModal() {
 }
 
 async function submitPackageCreate() {
+  if (!checkPermission('monitor:create')) return
   const name = String(packageCreateForm.name || '').trim()
   if (!name) {
     message.error('请填写软件包名称（如 filebeat）')
@@ -1326,12 +1344,14 @@ async function loadPackages() {
 // 避免用户删除后因每次进页自动重建而“删不掉”。
 
 function openSyncOfficialModal(record) {
+  if (!checkPermission('monitor:update')) return
   syncModalTarget.value = record
   syncModalVersion.value = String(record.version || '')
   syncModalVisible.value = true
 }
 
 function openPackageEditModal(record) {
+  if (!checkPermission('monitor:update')) return
   packageEditTarget.value = record
   packageEditForm.default_port = Number(record.default_port || 9100)
   // 平台元数据与新增表单对齐：RPM/DEB 按平台隔离建多条记录，建错平台这里可以直接修正，
@@ -1352,6 +1372,7 @@ function openPackageEditModal(record) {
 }
 
 async function submitPackageEdit() {
+  if (!checkPermission('monitor:update')) return
   const record = packageEditTarget.value
   if (!record) return
   // 服务运行用户为必填项，前端提前拦截空值，避免打到后端才因 allow_blank=False 报错
@@ -1400,6 +1421,7 @@ async function submitPackageEdit() {
 }
 
 async function submitSyncOfficial() {
+  if (!checkPermission('monitor:update')) return
   const record = syncModalTarget.value
   const version = syncModalVersion.value.trim()
   if (!record || !version) {
@@ -1429,6 +1451,7 @@ function handlePackageTableChange(pagination) {
 }
 
 function beforePackageUpload(file, record) {
+  if (!checkPermission('monitor:update')) return false
   const filename = String(file?.name || '')
   if (!['.tar.gz', '.rpm', '.deb'].some((suffix) => filename.toLowerCase().endsWith(suffix))) {
     message.error('仅支持上传 .tar.gz / .rpm / .deb 软件包')
@@ -1458,6 +1481,7 @@ function beforePackageUpload(file, record) {
 }
 
 async function handlePackageUpload(options, record) {
+  if (!checkPermission('monitor:update')) return
   const file = options?.file
   const parsed = parsePackageFilename(file?.name, record)
   if (!parsed) {
@@ -1481,6 +1505,7 @@ async function handlePackageUpload(options, record) {
 }
 
 function openPackageDeleteConfirm(record) {
+  if (!checkPermission('monitor:delete')) return
   openDeleteConfirm({
     title: '确认删除软件包',
     summary: '删除后将无法从本地仓库下发该软件包，agent 端安装会回退到官方下载源。',
@@ -1507,6 +1532,7 @@ function parseApiData(resp) {
 }
 
 async function loadAlertSettings() {
+  if (!checkPermission('sys:config:list')) return
   alertSettingsLoading.value = true
   try {
     const data = parseApiData(await getConfigByKey(CONFIG_KEYS.ALERT_HISTORY_RETENTION_DAYS))
@@ -1519,6 +1545,7 @@ async function loadAlertSettings() {
 }
 
 async function saveAlertSettings() {
+  if (!checkPermission('sys:config:update')) return
   const retentionDays = Number(alertHistoryRetentionDays.value)
   if (!Number.isInteger(retentionDays) || retentionDays < 1) {
     message.warning('历史告警保留天数必须是大于等于 1 的整数')
@@ -1788,6 +1815,7 @@ function exporterStatusInfo(item) {
 }
 
 function openExporterCreateModal(record) {
+  if (!canCreateTarget.value) return
   // 行内按钮传 record，工具栏按钮不传参（事件对象不是行数据，用 host_id 判断）。
   const hostIds = record?.host_id ? [record.host_id] : [...overviewSelectedHostIds.value]
   if (!hostIds.length) {
@@ -1823,6 +1851,7 @@ function reportFilebeatBatchResult(label, data) {
 }
 
 async function submitExporterCreate() {
+  if (!canCreateTarget.value) return
   if (!exporterCreateForm.exporter_type) {
     message.error('请选择 Exporter')
     return
@@ -1867,6 +1896,8 @@ const EXPORTER_BATCH_ACTIONS = {
 }
 
 async function handleExporterBatch(action) {
+  if (!checkPermission('monitor:execute')) return
+  if (action === 'delete' && !canDeleteTarget.value) return
   const config = EXPORTER_BATCH_ACTIONS[action]
   const ids = [...exporterSelectedManagedIds.value]
   if (!config || !ids.length) {
@@ -1891,6 +1922,7 @@ async function handleExporterBatch(action) {
 }
 
 function openExporterBatchDeleteConfirm() {
+  if (!canDeleteTarget.value) return
   if (!exporterFilterType.value) {
     return
   }
@@ -2035,6 +2067,7 @@ function restartRefreshTimer() {
 // “重试失败的任务”和“修复历史遗留问题需要重新执行一次已成功的任务”（如 unit 文件里
 // User/Group 是旧版本 Playbook 生成的、需要用最新 Playbook 重新生成）两种场景。
 async function handleManagedRedispatch(record) {
+  if (!checkPermission('monitor:execute')) return
   managedRetryLoading[record.id] = true
   try {
     const res = await retryManagedTarget(record.id)
@@ -2053,6 +2086,7 @@ async function handleManagedRedispatch(record) {
 }
 
 async function openManagedTargetRetryConfirm(record) {
+  if (!checkPermission('monitor:execute')) return
   if (isManagedTargetActionDisabledByAgent(record)) {
     return
   }
@@ -2074,6 +2108,7 @@ async function openManagedTargetRetryConfirm(record) {
 }
 
 async function onCancelManagedTarget(record) {
+  if (!checkPermission('monitor:execute')) return
   if (!canCancelManagedTarget(record)) {
     return
   }
@@ -2108,6 +2143,7 @@ async function openManagedTargetJobLog(record) {
 // 前置校验（managed_enabled===false 且 install_status!=='pending'）已由按钮 disabled 状态和后端 destroy() 双重把关，
 // 这里的确认弹窗只负责二次确认 + 展示待删除对象，不重复做业务校验。
 function openManagedTargetDeleteConfirm(record) {
+  if (!canDeleteTarget.value) return
   openDeleteConfirm({
     title: '确认删除纳管目标',
     summary: '删除后将无法再追踪该主机这项监控的安装/卸载历史记录，如需重新纳管请到主机编辑页重新开启。',
@@ -2155,6 +2191,7 @@ function refreshServiceStatus(targetId) {
 }
 
 async function handleStartService(record) {
+  if (!checkPermission('monitor:execute')) return
   managedStartLoading[record.id] = true
   try {
     const job = parseApiData(await startManagedTargetService(record.id))
@@ -2174,6 +2211,7 @@ async function handleStartService(record) {
 }
 
 async function handleStopService(record) {
+  if (!checkPermission('monitor:execute')) return
   managedStopLoading[record.id] = true
   try {
     const job = parseApiData(await stopManagedTargetService(record.id))

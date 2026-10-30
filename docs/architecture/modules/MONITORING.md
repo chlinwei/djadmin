@@ -27,6 +27,13 @@ flowchart TD
 安装成功只是软件部署结果，仍需确认服务状态和 Prometheus 抓取结果。
 Filebeat 不在 Exporter 列表中维护，去「日志管理 → 日志采集」。
 
+`monitor:view` 只提供查询。新增、修改/上传、删除分别需要
+`monitor:create`、`monitor:update`、`monitor:delete`，安装、重试、取消、启停和通知测试
+需要 `monitor:execute`。新增或删除监控目标可能安装/卸载服务，必须同时拥有对应资源动作
+与执行权限。Filebeat 采集使用独立的 `monitor:log_collect:*` 动作权限，
+日志数据清理另需 `monitor:logs:delete`，不能用监控查看权限替代。
+完整矩阵与升级要求见 [登录认证与权限](ACCESS.md#只读与动作权限矩阵)。
+
 <a id="rules"></a>
 
 ## 告警规则

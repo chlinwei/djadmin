@@ -103,7 +103,10 @@ BASELINE_SMOKE_DSN='postgres://user@host:5432/db?sslmode=disable&TimeZone=UTC' \
 它存在的理由：sqlmock 用例在两个 tag 下全绿也不代表 PG 可用——`:execlastid`
 （pgx 不实现 `LastInsertId`）与 `decimal` 列的驱动行为都是它抓出来的。
 
-## 接口（/sys/security/baseline，权限 baseline:manage / baseline:scan）
+## 接口（/sys/security/baseline）
+
+基线、详情与扫描记录查看使用 `baseline:view`；标准、类目和策略写入使用
+`baseline:manage`，发起/取消扫描使用 `baseline:scan`。只读角色不授予后两者。
 
 基线保存由 `SaveBaseline` 就地绑定可选字段；策略创建、更新及整组替换共用
 `baselineItemInput`，策略配置统一经过 `opapolicy.Validate` 校验。
@@ -178,14 +181,13 @@ tooltip）。策略工具栏按「类目操作 / 策略操作」分组并自动�
 （`${HOST_IP}`/`${HOST_NAME}`，仅命令/路径展开）+ 采集命令/文件采集区块 +
 Rego 策略（提示与巡检一致：`input.key` 必须与采集 key 一致，保存校验
 `opapolicy.Validate` 强制）。
-菜单由迁移 000008 写入：**「安全中心」为顶层目录**（M，parent_id=0，order 70）→
-「基线扫描」子页（C，component `security/baseline/index`）+ 两个按钮权限（F，
-`baseline:manage` / `baseline:scan`）。注意 `sys_menu.menu_type` 沿用 Django 风格
-M/C/F 枚举（不是 0/1/2），location=1、is_expanded 与现有菜单一致，否则会被前端
-侧边栏过滤不显示。菜单按角色过滤（`sys_role_menu`）：迁移会授权给所有已拥有
-「自动化运维」菜单的角色，其他角色需在角色管理中手动勾选。菜单数据在登录时实时
-读取 `sys_menu`（旧后端二进制也能返回），但基线页面接口需要部署包含 baseline
-路由的新二进制。
+**「安全中心」为顶层目录**（M，parent_id=0，order 70）→「基线扫描」子页
+（C，component `security/baseline/index`，权限 `baseline:view`）+ 两个按钮权限
+（F，`baseline:manage` / `baseline:scan`）。`sys_menu.menu_type` 使用 M/C/F 枚举
+（不是 0/1/2），location=1、is_expanded 与现有菜单一致，否则会被前端侧边栏过滤。
+菜单按角色过滤（`sys_role_menu`），页面查看、标准管理、扫描执行分别授权。
+迁移 000061 将原页面权限调整为查看，并给原管理角色补只读能力，不把仅查看角色提升为管理者。
+菜单与 JWT 权限快照在重新登录时加载，API 与前端需要同步部署。
 
 ## 扫描执行流（scan.go）
 

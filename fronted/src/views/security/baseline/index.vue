@@ -182,7 +182,7 @@
                 </a-tooltip>
                 <a-tooltip v-if="['pending', 'running'].includes(record.status)" title="取消" placement="top">
                   <a-popconfirm title="确定取消该扫描吗？" @confirm="handleCancelScan(record)">
-                    <a-button size="small" danger>取消</a-button>
+                    <a-button v-permission="'baseline:scan'" size="small" danger>取消</a-button>
                   </a-popconfirm>
                 </a-tooltip>
               </a-space>
@@ -314,6 +314,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { checkPermission } from '@/directives/permission/permission'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
@@ -484,6 +485,7 @@ const statusLabel = (status) => ({ pending: '等待中', running: '扫描中', s
 const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red', skipped: 'default', canceled: 'orange' }[status] || 'default')
 
 const handleCancelScan = async (record) => {
+  if (!checkPermission('baseline:scan')) return
   await cancelScan(record.id)
   message.success('扫描已取消')
   await loadScans()
@@ -538,6 +540,7 @@ function handleScanTableChange(pagination) {
   loadScans()
 }
 function openBaselineModal(record) {
+  if (!checkPermission('baseline:manage')) return
   baselineForm.id = record?.id || null
   baselineForm.name = record?.name || ''
   baselineForm.version = record?.version || 'v1'
@@ -548,6 +551,7 @@ function openBaselineModal(record) {
 const baselineForm = reactive({ id: null, name: '', version: 'v1', description: '', enabled: true })
 
 async function submitBaseline() {
+  if (!checkPermission('baseline:manage')) return
   if (!baselineForm.name.trim()) {
     message.warning('请填写基线名称')
     return
@@ -564,6 +568,7 @@ async function submitBaseline() {
   }
 }
 async function confirmDeleteBaseline(record) {
+  if (!checkPermission('baseline:manage')) return
   if (!record) return
   await openDeleteConfirm({
     title: '确认删除基线',
@@ -645,6 +650,7 @@ const updateBaselineItem = (baselineId, itemId, data) => requestUtil.patch(`${ba
 const deleteBaselineItem = (baselineId, itemId) => requestUtil.del(`${baselinePrefix}${baselineId}/items/${itemId}/`)
 
 async function moveItem(record, direction) {
+  if (!checkPermission('baseline:manage')) return
   if (itemsMoving.value) return
   const baselineId = selectedBaseline.value.id
   itemsMoving.value = true
@@ -666,6 +672,7 @@ async function moveItem(record, direction) {
 }
 
 function openItemEditModal(index = null) {
+  if (!checkPermission('baseline:manage')) return
   itemEditIndex.value = index
   Object.assign(itemEditForm, {
     name: '', description: '', severity: 'high', run_user: '', remediation: '',
@@ -676,6 +683,7 @@ function openItemEditModal(index = null) {
 }
 
 async function confirmItemEdit() {
+  if (!checkPermission('baseline:manage')) return
   if (!itemEditForm.name.trim()) {
     message.warning('策略名称不能为空')
     return
@@ -720,6 +728,7 @@ async function confirmItemEdit() {
 }
 
 async function removeItemRow(index) {
+  if (!checkPermission('baseline:manage')) return
   const item = itemForm.value[index]
   if (!item?.id) return
   await openDeleteConfirm({
@@ -736,12 +745,14 @@ async function removeItemRow(index) {
 // ---- 类目管理：新增 / 重命名 / 上下移 / 删除（非空由后端拒绝）。
 
 function openCategoryModal(record) {
+  if (!checkPermission('baseline:manage')) return
   categoryForm.id = record?.id || null
   categoryForm.name = record?.name || ''
   categoryModalOpen.value = true
 }
 
 async function submitCategory() {
+  if (!checkPermission('baseline:manage')) return
   const name = categoryForm.name.trim()
   if (!name) {
     message.warning('请填写类目名称')
@@ -765,6 +776,7 @@ async function submitCategory() {
 }
 
 async function moveCategory(direction) {
+  if (!checkPermission('baseline:manage')) return
   if (!selectedCategory.value) return
   try {
     await updateBaselineCategory(selectedBaseline.value.id, selectedCategory.value.id, { direction })
@@ -783,6 +795,7 @@ async function moveCategory(direction) {
 }
 
 async function confirmDeleteCategory(record) {
+  if (!checkPermission('baseline:manage')) return
   if (!record) return
   await openDeleteConfirm({
     title: '确认删除类目',
@@ -798,6 +811,7 @@ async function confirmDeleteCategory(record) {
 
 // 发起扫描：按项目（×环境）解析主机集合，逐主机执行基线套件。
 async function submitScan() {
+  if (!checkPermission('baseline:scan')) return
   if (scanMode.value === 'project' && !scanForm.project_id) {
     message.warning('请选择项目')
     return
@@ -830,6 +844,7 @@ async function submitScan() {
    } finally { scanning.value = false }
 }
 function openScanModal(record) {
+  if (!checkPermission('baseline:scan')) return
   ++scanScopeRequestId
   scanScopeLoading.value = false
   scanScopeLoaded.value = false

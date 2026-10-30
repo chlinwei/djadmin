@@ -60,6 +60,7 @@
             :disabled="!selectedUnmanaged.length"
             :loading="batchLoading === 'create'"
             @click="handleBatchCreate"
+            v-if="canCreate"
           >
             <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
             &nbsp;装（{{ selectedUnmanaged.length }}）
@@ -73,6 +74,7 @@
             :disabled="!selectedManagedIds.length"
             :loading="batchLoading === 'start'"
             @click="handleBatch('start')"
+            v-if="canExecute"
           >
             <FontAwesomeIcon :icon="['fas', 'play']" />
             &nbsp;启动
@@ -86,6 +88,7 @@
             :disabled="!selectedManagedIds.length"
             :loading="batchLoading === 'stop'"
             @click="handleBatch('stop')"
+            v-if="canExecute"
           >
             <FontAwesomeIcon :icon="['fas', 'stop']" />
             &nbsp;停止
@@ -97,6 +100,7 @@
             :disabled="!selectedManagedIds.length"
             :loading="batchLoading === 'batch-install'"
             @click="handleBatchInstall"
+            v-if="canExecute"
           >
             <FontAwesomeIcon :icon="['fas', 'rotate-right']" />
             &nbsp;批量重新安装
@@ -111,6 +115,7 @@
             :disabled="!selectedManagedIds.length"
             :loading="batchLoading === 'delete'"
             @click="openBatchDeleteConfirm"
+            v-if="canDelete"
           >
             <FontAwesomeIcon :icon="['fas', 'trash-can']" />
             &nbsp;删除
@@ -162,6 +167,7 @@
                 :disabled="!record.host_agent_online"
                 :loading="createLoading[record.host_id]"
                 @click="handleCreateOne(record.filebeat)"
+                v-if="canCreate"
               >
                 <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
                 &nbsp;Filebeat
@@ -182,6 +188,7 @@
                       :disabled="!record.host_agent_online"
                       :loading="retryLoading[record.filebeat.id]"
                       @click="openRetryConfirm(record.filebeat)"
+                      v-if="canExecute"
                     >
                       <FontAwesomeIcon :icon="['fas', 'rotate']" />
                       &nbsp;重新安装
@@ -209,6 +216,7 @@
                       :disabled="!record.host_agent_online || !record.filebeat.agent_installed"
                       :loading="startLoading[record.filebeat.id]"
                       @click="handleStartService(record.filebeat)"
+                      v-if="canExecute"
                     >
                       <FontAwesomeIcon :icon="['fas', 'play']" />
                       &nbsp;运行
@@ -223,6 +231,7 @@
                       :disabled="!record.host_agent_online || !record.filebeat.agent_installed"
                       :loading="stopLoading[record.filebeat.id]"
                       @click="handleStopService(record.filebeat)"
+                      v-if="canExecute"
                     >
                       <FontAwesomeIcon :icon="['fas', 'stop']" />
                       &nbsp;停止
@@ -251,6 +260,7 @@
                       :disabled="!canCancelTarget(record.filebeat)"
                       :loading="cancelLoading[record.filebeat.id]"
                       @click="handleCancelTarget(record.filebeat)"
+                      v-if="canExecute"
                     >
                       <FontAwesomeIcon :icon="['fas', 'ban']" />
                       &nbsp;取消
@@ -266,6 +276,7 @@
                       :disabled="record.filebeat.install_status === 'pending' || (!record.host_agent_online && record.filebeat.agent_installed)"
                       :loading="deleteLoading[record.filebeat.id]"
                       @click="openDeleteConfirmFor(record.filebeat)"
+                      v-if="canDelete"
                     >
                       <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                       &nbsp;删除
@@ -322,6 +333,12 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { checkPermission } from '@/directives/permission/permission'
+const canView = computed(() => checkPermission('monitor:view') && checkPermission('monitor:log_collect:view'))
+// 纳管/删除会在主机上安装/卸载，不能用 ANY 数组代替这组交集权限。
+const canExecute = computed(() => canView.value && checkPermission('monitor:log_collect:execute'))
+const canCreate = computed(() => canExecute.value && checkPermission('monitor:log_collect:create'))
+const canDelete = computed(() => canExecute.value && checkPermission('monitor:log_collect:delete'))
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 
@@ -625,6 +642,7 @@ const BATCH_ACTIONS = {
 }
 
 async function handleBatch(action) {
+  if (!canExecute.value || (action === 'delete' && !canDelete.value)) return
   const config = BATCH_ACTIONS[action]
   const ids = [...selectedManagedIds.value]
   if (!config || !ids.length) return
@@ -654,6 +672,7 @@ function followCreatedInstallBatch(data) {
 // 后端只建作业 + 入队，前端按作业号轮询进度（见 log_batch_job.go）。下发配置已移到日志中心，
 // 这里保留 apply 分支只为兼容/展示仍可能存在的在途 apply 作业，不再有本页入口发起它。
 async function handleStartLogBatch(action, ids) {
+  if (!canExecute.value) return
   batchLoading.value = `batch-${action}`
   try {
     const job = parseApiData(await createLogBatchJob(action, ids))
@@ -669,11 +688,13 @@ async function handleStartLogBatch(action, ids) {
 }
 
 function handleBatchInstall() {
+  if (!canExecute.value) return
   const ids = [...selectedManagedIds.value]
   if (ids.length) handleStartLogBatch('install', ids)
 }
 
 async function handleBatchCreate() {
+  if (!canCreate.value) return
   const hostIds = selectedUnmanaged.value.map((item) => item.host_id)
   if (!hostIds.length) return
   batchLoading.value = 'create'
@@ -692,6 +713,7 @@ async function handleBatchCreate() {
 }
 
 async function handleCreateOne(record) {
+  if (!canCreate.value) return
   createLoading[record.host_id] = true
   try {
     const data = parseApiData(await batchCreateLogCollectionTargets([record.host_id], true))
@@ -706,6 +728,7 @@ async function handleCreateOne(record) {
 }
 
 function openBatchDeleteConfirm() {
+  if (!canDelete.value) return
   const selected = selectedRows.value.filter((item) => item.filebeat?.managed)
   if (!selected.length) return
   openDeleteConfirm({
@@ -717,6 +740,7 @@ function openBatchDeleteConfirm() {
 }
 
 function openDeleteConfirmFor(record) {
+  if (!canDelete.value) return
   const hostLabel = record.host_name || record.host_ip || String(record.host || '-')
   openDeleteConfirm({
     title: '确认删除 Filebeat 目标',
@@ -742,6 +766,7 @@ function openDeleteConfirmFor(record) {
 }
 
 async function handleRetry(record) {
+  if (!canExecute.value) return
   retryLoading[record.id] = true
   try {
     await retryLogCollectionTarget(record.id)
@@ -755,6 +780,7 @@ async function handleRetry(record) {
 }
 
 async function openRetryConfirm(record) {
+  if (!canExecute.value) return
   if (!record?.host_agent_online) return
   const hostLabel = record.host_name || record.host_ip || String(record.host || '-')
   await openDeleteConfirm({
@@ -784,6 +810,7 @@ async function handleCheckStatus(record) {
 }
 
 async function handleStartService(record) {
+  if (!canExecute.value) return
   startLoading[record.id] = true
   try {
     const result = parseApiData(await startLogCollectionService(record.id))
@@ -801,6 +828,7 @@ async function handleStartService(record) {
 }
 
 async function handleStopService(record) {
+  if (!canExecute.value) return
   stopLoading[record.id] = true
   try {
     const result = parseApiData(await stopLogCollectionService(record.id))
@@ -818,6 +846,7 @@ async function handleStopService(record) {
 }
 
 async function handleCancelTarget(record) {
+  if (!canExecute.value) return
   if (!canCancelTarget(record)) return
   cancelLoading[record.id] = true
   try {

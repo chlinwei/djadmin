@@ -2,9 +2,12 @@ import { flushPromises, mount } from '@vue/test-utils'
 import Antd from 'ant-design-vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import store from '@/store'
 
 let panelObserver
 beforeEach(() => {
+  store.state.role_codes = ['operator']
+  store.state.perms = ['monitor:view', 'monitor:log_collect:view', 'monitor:log_collect:execute', 'monitor:logs:delete', 'assets:applications:update']
   vi.stubGlobal('ResizeObserver', class {
     constructor(callback) {
       this.callback = callback
@@ -262,6 +265,31 @@ async function selectConfigRows(wrapper, indexes = [0, 1]) {
 }
 
 describe('日志中心（服务树 + 三个 tab）', () => {
+  it('view-only 从服务树进入工作区仍可查看，但不能保存配置、下发或清理日志', async () => {
+    store.state.perms = ['monitor:view', 'monitor:log_collect:view', 'assets:applications:view']
+    const { applyLogTargetsForService, createLogBatchJob, cleanupLogDataStreamByStream } = await import('@/api/monitor')
+    const { saveApplicationServiceLogSetting, setApplicationServiceLogCollection } = await import('@/api/assets/application')
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+
+    expect(wrapper.vm.logRows.length).toBeGreaterThan(0)
+    expect(wrapper.vm.canApply).toBe(false)
+    expect(wrapper.vm.canEditConfig).toBe(false)
+    expect(wrapper.findAll('button').some((button) => /下发|清理数据/.test(button.text()))).toBe(false)
+    await wrapper.vm.applyService()
+    await wrapper.vm.previewScopeApply()
+    await wrapper.vm.toggleServiceCollect(false)
+    await wrapper.vm.saveOverride({ log_definition: 81 }, { collection_enabled: false })
+    wrapper.vm.cleanupStream({ name: 'logs-test' })
+    expect(applyLogTargetsForService).not.toHaveBeenCalled()
+    expect(createLogBatchJob).not.toHaveBeenCalled()
+    expect(saveApplicationServiceLogSetting).not.toHaveBeenCalled()
+    expect(setApplicationServiceLogCollection).not.toHaveBeenCalled()
+    expect(cleanupLogDataStreamByStream).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it.each([
     [{ nodeType: 'project', projectId: 301, nodeTitle: '订单项目' }, 'query'],
     [{ nodeType: 'businessSystem', businessSystemId: 7, nodeTitle: '订单系统' }, 'config'],

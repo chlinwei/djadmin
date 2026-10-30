@@ -5,7 +5,7 @@
     </div>
 
     <div class="toolbar">
-      <a-button size="large" @click="openCreate">
+      <a-button v-if="checkPermission('monitor:create')" size="large" @click="openCreate">
         <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
         <span>&nbsp;新增档位</span>
       </a-button>
@@ -62,12 +62,12 @@
         <template v-else-if="column.key === 'action'">
           <a-space :size="6">
             <a-tooltip title="编辑">
-              <a-button type="primary" @click="openEdit(record)">
+              <a-button v-if="checkPermission('monitor:update')" type="primary" @click="openEdit(record)">
                 <FontAwesomeIcon :icon="['fa', 'edit']" />
               </a-button>
             </a-tooltip>
             <a-tooltip title="删除">
-              <a-button class="delBtn" danger type="primary" @click="confirmDelete(record)">
+              <a-button v-if="checkPermission('monitor:delete')" class="delBtn" danger type="primary" @click="confirmDelete(record)">
                 <FontAwesomeIcon :icon="['fas', 'trash-can']" />
               </a-button>
             </a-tooltip>
@@ -156,6 +156,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { checkPermission } from '@/directives/permission/permission'
 import { message } from 'ant-design-vue'
 import {
   batchDeleteLogRetentionTiers,
@@ -247,11 +248,13 @@ function resetForm() {
 }
 
 function openCreate() {
+  if (!checkPermission('monitor:create')) return
   resetForm()
   editorOpen.value = true
 }
 
 function openEdit(record) {
+  if (!checkPermission('monitor:update')) return
   resetForm()
   Object.assign(form, {
     id: record.id,
@@ -269,6 +272,7 @@ function openEdit(record) {
 }
 
 async function submit() {
+  if (!checkPermission(form.id ? 'monitor:update' : 'monitor:create')) return
   await formRef.value?.validate()
   saving.value = true
   try {
@@ -284,6 +288,7 @@ async function submit() {
 }
 
 function confirmDelete(record) {
+  if (!checkPermission('monitor:delete')) return
   openDeleteConfirm({
     title: '删除保留档位',
     summary: '删除后该档位对应的 data stream 将不再有新日志写入，已存在的索引不受影响。',

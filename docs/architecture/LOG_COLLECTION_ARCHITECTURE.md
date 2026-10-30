@@ -2111,8 +2111,11 @@ fingerprint 归一化质量。
 - 破坏性操作，前端二次确认（不可恢复提示 + 范围选择）。
 - **范围必填、无服务端默认**：`mode` 是必填参数，`all` 也必须由用户显式选择——计划中"清理不默认全清"
   的结论与现状一致（[LOG_COLLECTION_LIFECYCLE](../plans/LOG_COLLECTION_LIFECYCLE.md) §9 第 3 条）。
-- **权限现状与目标**：当前该接口只继承 `monitor:view`（`router.go:366`），意味着只读权限即可删数据。
-  计划按"破坏性动作整体拆权限"修正（数据清理 / 目标删除 / 停止服务 / 配置下发），见计划文档 §7、§9 第 4 条。
+- **权限**：两个清理入口均要求 `monitor:view` + `monitor:logs:delete`，
+  日志查看不授予数据删除能力，前端清理入口使用相同条件。
+  采集目标的安装、启停、取消与下发另需 `monitor:log_collect:execute`，
+  删除还需 `monitor:log_collect:delete`，不能用日志菜单查看权限替代动作授权。
+  完整矩阵见 [登录认证与权限](modules/ACCESS.md#只读与动作权限矩阵)。
 
 ---
 

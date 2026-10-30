@@ -47,6 +47,7 @@ const LEVEL_BUCKETS = [
 ]
 
 const getElasticsearchClusterList = vi.fn(() => Promise.resolve({ data: { data: { results: [CLUSTER], count: 1 } } }))
+const refreshElasticsearchLogIndex = vi.fn(() => Promise.resolve({ data: { data: { count: 1 } } }))
 const searchElasticsearchLogs = vi.fn(() => Promise.resolve({ data: { data: { results: [LOG_DOC], count: 1, size: 100, offset: 0 } } }))
 const getHostList = vi.fn()
 const emptyLiveTailStatus = () => ({ max_viewers: 5, max_files: 5, user_files: 0, files: [] })
@@ -68,6 +69,7 @@ const searchElasticsearchLogFacetStats = vi.fn((id, params) => {
 })
 
 vi.mock('@/api/monitor', () => ({
+  refreshElasticsearchLogIndex: (...args) => refreshElasticsearchLogIndex(...args),
   getLogLiveTailStatus: (...args) => getLogLiveTailStatus(...args),
   getElasticsearchClusterList: (...args) => getElasticsearchClusterList(...args),
   searchElasticsearchLogs: (...args) => searchElasticsearchLogs(...args),
@@ -87,6 +89,22 @@ function mountPanel(scope = { nodeType: 'all', nodeTitle: '全部业务' }) {
 }
 
 describe('LogQueryPanel（日志中心的日志查询面板）', () => {
+  it('强制刷新索引要求 execute；view-only 仍能查询但不提交 refresh 请求', async () => {
+    store.state.role_codes = []
+    store.state.perms = ['monitor:view']
+    refreshElasticsearchLogIndex.mockClear()
+    const wrapper = mountPanel()
+    await wrapper.setProps({ scope: { nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' } })
+    await flushPromises()
+    await wrapper.vm.refreshIndexAndReload()
+    expect(refreshElasticsearchLogIndex).not.toHaveBeenCalled()
+    store.state.perms.push('monitor:execute')
+    await wrapper.vm.refreshIndexAndReload()
+    expect(refreshElasticsearchLogIndex).toHaveBeenCalledWith(CLUSTER.id, { application_service_id: 42 })
+    wrapper.unmount()
+    store.state.perms = []
+  })
+
   describe('日志表格吸顶与吸底滚动', () => {
     const scope = { nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' }
     const isBody = (element) => element.classList.contains('ant-table-body')
@@ -258,7 +276,8 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
 
     it.each([
       { perms: ['monitor:view'], roles: [], visible: false },
-      { perms: ['assets:hosts:view'], roles: [], visible: true },
+      { perms: ['assets:hosts:view'], roles: [], visible: false },
+      { perms: ['assets:hosts:execute'], roles: [], visible: true },
       { perms: [], roles: ['admin'], visible: true },
     ])('按主机权限展示入口，独立于实时跟踪开关：$perms / $roles', async ({ perms, roles, visible }) => {
       store.state.perms = perms
@@ -284,7 +303,7 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
     })
 
     it('点击时预留独立标签，精确匹配主机并使用主机而非应用的实例名', async () => {
-      store.state.perms = ['assets:hosts:view']
+      store.state.perms = ['assets:hosts:execute']
       searchElasticsearchLogs.mockResolvedValueOnce({
         data: { data: { results: [LOG_DOC], count: 1, live_tail_enabled: true } },
       })
@@ -342,7 +361,7 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
     })
 
     it('搜索结果超过一页时继续定位，不把首屏近似 IP 当作目标', async () => {
-      store.state.perms = ['assets:hosts:view']
+      store.state.perms = ['assets:hosts:execute']
       const firstPage = Array.from({ length: 200 }, (_, index) => ({
         ...host, id: index + 100, ip: `10.1.0.${index + 1}`,
       }))
@@ -374,7 +393,7 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
       { label: '业务失败', response: { data: { code: 400, msg: '主机无权访问' } }, error: '主机无权访问' },
       { label: '响应无效', response: { data: { code: 200, data: { results: null, count: 1 } } }, error: '主机查询响应无效，请刷新后重试' },
     ])('定位失败明确提示并关闭预留标签：$label', async ({ results, response, error }) => {
-      store.state.perms = ['assets:hosts:view']
+      store.state.perms = ['assets:hosts:execute']
       getHostList.mockResolvedValueOnce(response || hostResponse(results))
       const terminalWindow = createTerminalWindow()
       vi.spyOn(window, 'open').mockReturnValue(terminalWindow)
@@ -395,7 +414,7 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
     })
 
     it('请求失败后可重新点击打开，不残留 loading 或空白窗口', async () => {
-      store.state.perms = ['assets:hosts:view']
+      store.state.perms = ['assets:hosts:execute']
       getHostList.mockRejectedValueOnce(new Error('主机查询连接失败')).mockResolvedValueOnce(hostResponse([host]))
       const failedWindow = createTerminalWindow()
       const retryWindow = createTerminalWindow()
@@ -418,7 +437,7 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
     })
 
     it.each(['缺少 IP', '弹窗被阻止'])('%s 时提示且不发主机查询', async (reason) => {
-      store.state.perms = ['assets:hosts:view']
+      store.state.perms = ['assets:hosts:execute']
       if (reason === '缺少 IP') {
         searchElasticsearchLogs.mockResolvedValueOnce({
           data: { data: { results: [{ ...LOG_DOC, host_ip: '' }], count: 1 } },
@@ -443,7 +462,7 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
     })
 
     it.each(['卸载', 'KeepAlive 失活'])('%s 取消尚未完成的打开动作，迟到响应不导航', async (reason) => {
-      store.state.perms = ['assets:hosts:view']
+      store.state.perms = ['assets:hosts:execute']
       let resolveHosts
       getHostList.mockImplementationOnce(() => new Promise((resolve) => { resolveHosts = resolve }))
       const terminalWindow = createTerminalWindow()

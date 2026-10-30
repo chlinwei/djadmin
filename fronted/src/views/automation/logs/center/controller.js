@@ -7,6 +7,7 @@ import { formatTimeWithTimezone } from '@/util/timezone'
 import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISOStringByUserTimezone } from '@/util/timezoneRange'
 import { getToken } from '@/api/user'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig'
+import { checkPermission } from '@/directives/permission/permission'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import store from '@/store'
@@ -249,6 +250,7 @@ function resolveConfigIntValue(response, fallbackValue) {
 }
 
 async function loadAutomationLogsRefreshIntervalConfig() {
+  if (!checkPermission('sys:config:list')) return
   try {
     const res = await getConfigByKey(CONFIG_KEYS.AUTOMATION_LOGS_REFRESH_INTERVAL_SECONDS)
     const configValue = resolveConfigIntValue(res, 5)

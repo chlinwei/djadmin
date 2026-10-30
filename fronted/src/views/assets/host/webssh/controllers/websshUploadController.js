@@ -1,3 +1,5 @@
+import { checkPermission } from '@/directives/permission/permission'
+
 export function createWebsshUploadController(options) {
     const {
         getHostId,
@@ -27,6 +29,7 @@ export function createWebsshUploadController(options) {
     const maxUploadBytes = 500 * 1024 * 1024
 
     const startUpload = async (task, callbacks = {}) => {
+        if (!checkPermission('assets:hosts:update')) return
         const { onSuccess, onError, onProgress } = callbacks
         if (!task?.file) {
             message.error('无可上传文件')
@@ -132,6 +135,7 @@ export function createWebsshUploadController(options) {
     }
 
     const uploadRawFileToPath = async (rawFile, targetPath, callbacks = {}) => {
+        if (!checkPermission('assets:hosts:update')) return
         const { onSuccess, onError, onProgress } = callbacks
         if (!rawFile) {
             message.error('请选择文件')

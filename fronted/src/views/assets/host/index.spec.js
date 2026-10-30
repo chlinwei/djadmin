@@ -88,6 +88,8 @@ vi.mock('@/util/timezone', () => ({
 vi.mock('@/store', () => ({
   default: {
     state: {
+      perms: ['assets:hosts:view', 'assets:hosts:update', 'assets:hosts:execute', 'assets:hostgroups:create', 'assets:hostgroups:update', 'assets:hostgroups:delete', 'sys:config:list'],
+      role_codes: ['operator'],
       user: {
         timezone: 'Asia/Shanghai',
       },

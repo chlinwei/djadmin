@@ -18,8 +18,8 @@
                 :disabled="!fileOperationsEnabled"
                 @update:value="emit('update:file-filter-keyword', $event)"
             />
-            <a-button size="small" :disabled="!fileOperationsEnabled" @click="emit('create-directory')">新建目录</a-button>
-            <a-upload :show-upload-list="false" :disabled="!fileOperationsEnabled" :custom-request="(options) => emit('upload-file', options)">
+            <a-button v-if="checkPermission('assets:hosts:update')" size="small" :disabled="!fileOperationsEnabled" @click="emit('create-directory')">新建目录</a-button>
+            <a-upload v-if="checkPermission('assets:hosts:update')" :show-upload-list="false" :disabled="!fileOperationsEnabled" :custom-request="(options) => emit('upload-file', options)">
                 <a-button size="small" :disabled="!fileOperationsEnabled">上传文件</a-button>
             </a-upload>
         </div>
@@ -91,6 +91,7 @@
 
 <script setup>
 import { tableLocale } from '@/util/tableStyle'
+import { checkPermission } from '@/directives/permission/permission'
 const emit = defineEmits([
     'update:file-filter-keyword',
     'update:file-path-input',

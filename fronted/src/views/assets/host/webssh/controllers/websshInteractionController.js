@@ -1,3 +1,5 @@
+import { checkPermission } from '@/directives/permission/permission'
+
 export function createWebsshInteractionController(options) {
     const {
         getHostId,
@@ -16,6 +18,7 @@ export function createWebsshInteractionController(options) {
     } = options
 
     const createDirectory = async () => {
+        if (!checkPermission('assets:hosts:update')) return
         if (!ensureFileOperationsEnabled()) return
         const name = window.prompt('请输入目录名', '')
         if (!name || !name.trim()) return
@@ -99,6 +102,7 @@ export function createWebsshInteractionController(options) {
     }
 
     const handleDirectoryDragOver = (path) => {
+        if (!checkPermission('assets:hosts:update')) return
         refs.dragUploadDirPath.value = path
     }
 
@@ -109,6 +113,7 @@ export function createWebsshInteractionController(options) {
     }
 
     const handleDirectoryDrop = async (event, targetPath) => {
+        if (!checkPermission('assets:hosts:update')) return
         const normalizedPath = String(targetPath || '.')
         const droppedFiles = Array.from(event?.dataTransfer?.files || [])
         refs.dragUploadDirPath.value = ''
@@ -129,6 +134,7 @@ export function createWebsshInteractionController(options) {
 
     // 右键上传：通过临时 file input 触发选择，上传到所选文件/文件夹所在的目录（父目录）。
     const triggerContextUpload = (record) => {
+        if (!checkPermission('assets:hosts:update')) return
         const targetDir = helpers.resolveFileParentDirectory(record.path)
         if (!targetDir) {
             message.error('目录路径无效，上传失败')
@@ -154,6 +160,7 @@ export function createWebsshInteractionController(options) {
     }
 
     const renameFile = async (record) => {
+        if (!checkPermission('assets:hosts:update')) return
         const nextName = window.prompt('请输入新文件名', record.name || '')
         if (!nextName || !nextName.trim() || nextName.trim() === record.name) return
         try {
@@ -166,6 +173,7 @@ export function createWebsshInteractionController(options) {
     }
 
     const deleteFile = async (record) => {
+        if (!checkPermission('assets:hosts:update')) return
         const confirmText = record.is_dir ? `确定删除目录 ${record.name}（含子文件）吗？` : `确定删除文件 ${record.name} 吗？`
         if (!window.confirm(confirmText)) return
         try {

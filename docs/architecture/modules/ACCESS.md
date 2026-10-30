@@ -99,6 +99,42 @@ flowchart LR
 目录也需要授权；只授权子页面而缺少父目录，菜单树可能无法展示对应入口。
 用户组用于通知收件范围，不是角色权限的替代品。
 
+## 只读与动作权限矩阵
+
+只读角色仅选择目录、页面及 `:view` / `:list` 权限点，不选择新增、编辑、删除、管理、
+执行等权限。后端不按 `readonly` 角色名特判；同一账号如果再分配写权限角色，权限会合并，
+便不再是只读账号。`admin` 用户不用于验证普通角色的权限边界。
+
+| 功能 | 查看 | 修改或管理 | 执行或破坏性动作 |
+|---|---|---|---|
+| 主机 | `assets:hosts:view` | CRUD 沿用对应 `create/update/delete` | 两个 WebSSH 入口使用 `assets:hosts:execute`；文件写仍需 `assets:hosts:update` |
+| 调度 | `system:scheduler:view` | Cron、启停及全局调度开关用 `system:scheduler:update` | 立即运行用 `system:scheduler:execute` |
+| 系统参数 | `sys:config:list`（含按 key 读取） | 更新、按 key 更新、恢复默认均用 `sys:config:update` | 不因已登录而允许修改全局参数 |
+| 基线与扫描记录 | `baseline:view` | 标准、类目、策略写入用 `baseline:manage` | 发起/取消扫描用 `baseline:scan` |
+| 监控与日志配置资源 | `monitor:view` | 新增 `monitor:create`、修改/上传/同步 `monitor:update`、删除 `monitor:delete` | 测试通知、连接探测、安装重试、取消、启停用 `monitor:execute` |
+| 监控目标 | `monitor:view` | 编辑用 `monitor:update` | 新建同时需 `monitor:create` + `monitor:execute`；删除同时需 `monitor:delete` + `monitor:execute` |
+| 日志采集 | `monitor:view` + `monitor:log_collect:view` | 纳管还需 `monitor:log_collect:create` + `monitor:log_collect:execute` | 安装、重试、取消、启停、配置下发用 `monitor:log_collect:execute`；删除另需 `monitor:log_collect:delete` |
+| 日志数据清理 | `monitor:view` 只能检索/查看 | 不沿用普通配置删除权限 | 两个清理入口均另需 `monitor:logs:delete` |
+
+监控及日志采集的动作权限保留上述查看权限作为共同前提，多码必须全部具备。
+配置预览、状态观测、日志查询和实时文件查看不提供启动终端或下发配置能力。
+用户的自助资料、头像、旧密码验证后的改密和自身通知绑定不属于全局管理权限；
+内容校验及不发布的 Pipeline 模拟也不作为业务写动作。后端拒绝未授权请求，
+前端同步控制行内开关、批量按钮、上传、弹窗与跨页面动作，不能仅隐藏导航。
+
+### 升级与授权
+
+迁移 `000061_readonly_permissions` 注册动作权限点并把基线页面查看改为 `baseline:view`；
+原基线管理角色仅补相应读取能力。迁移不按已有 `view/list` 给普通角色补授写/执行权限，
+管理员需按职责重新勾选动作权限。两侧数据库均通过同一权限码授权，不新增业务表/列。
+升级必须先验证数据库迁移，再部署 API 和前端；只升级菜单或前端不能修复旧 API 的授权边界。
+旧 JWT 内的查看码在新 API 上也不能满足新增动作权限；角色授权变化仍需重新登录才能取得新码。
+数据库迁移回滚只用于回到对应旧版本程序，不作为恢复旧只读安全性的手段。
+
+回归使用非 admin 用户：读取成功；写入、执行及两个终端入口只带查看码时返回权限拒绝；
+完整动作码可进入参数/业务校验，缺少任意必需码仍拒绝。后端全路由守卫遍历业务写路由，
+只允许逐入口登记的自助/校验例外，防止新增模块再次把查看权限用作写权限。
+
 ## 常见问题
 
 | 现象 | 优先检查 |
@@ -113,5 +149,5 @@ flowchart LR
 
 后端：`identity.Service.Login`、`VerifyPassword`、`TokenManager`、
 `middleware.Authenticate`、`middleware.RequirePermission`。
-前端：登录页、用户会话存储与统一请求拦截器。未改变任何认证或权限行为。
+前端：登录页、用户会话存储、统一请求拦截器及各页面动作权限门禁。
 接口信封见 [开发约定](../CONVENTIONS.md#api-contract)。

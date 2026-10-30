@@ -1,3 +1,5 @@
+import { checkPermission } from '@/directives/permission/permission'
+
 export function createWebsshSessionController(options) {
     const {
         nextTick,
@@ -222,6 +224,7 @@ export function createWebsshSessionController(options) {
     const decreaseTerminalFontSize = () => applyTerminalFontDelta(-TERMINAL_FONT_ZOOM_STEP)
 
     const connectWebSsh = async () => {
+        if (!checkPermission('assets:hosts:execute')) return
         if (!getHostId()) {
             messageText.value = '缺少 host_id 参数'
             messageType.value = 'error'

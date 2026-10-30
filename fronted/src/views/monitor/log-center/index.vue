@@ -36,7 +36,7 @@
           <div v-if="!serviceId" class="apply-bar">
             <span>{{ scope.nodeTitle || '全部业务' }}</span>
             <a-tooltip title="下发当前节点下有差异或从未下发的采集配置" placement="top">
-              <a-button size="large" :loading="scopeApplyLoading" :disabled="levelLoading || applying" @click="previewScopeApply">
+              <a-button v-if="canApply" size="large" :loading="scopeApplyLoading" :disabled="levelLoading || applying" @click="previewScopeApply">
                 <CloudUploadOutlined />
                 下发差异采集配置
               </a-button>
@@ -125,7 +125,7 @@
                     <a-switch
                       :checked="serviceCollectEnabled === true"
                       :loading="configLoading || savingServiceCollect"
-                      :disabled="serviceCollectEnabled === null"
+                      :disabled="!canEditConfig || serviceCollectEnabled === null"
                       checked-children="采集"
                       un-checked-children="停采"
                       @change="toggleServiceCollect"
@@ -158,6 +158,7 @@
                     :loading="applying"
                     :disabled="!applyManagedCount"
                     @click="applyService"
+                    v-if="canApply"
                   >
                     下发本服务的采集配置
                   </a-button>
@@ -204,6 +205,7 @@
                     :loading="batchAction === 'collect-on'"
                     :disabled="Boolean(batchAction) && batchAction !== 'collect-on'"
                     @click="batchSetCollection(true)"
+                    v-if="canEditConfig"
                   >
                     打开采集
                   </a-button>
@@ -216,12 +218,13 @@
                     :loading="batchAction === 'collect-off'"
                     :disabled="Boolean(batchAction) && batchAction !== 'collect-off'"
                     @click="batchSetCollection(false)"
+                    v-if="canEditConfig"
                   >
                     停止采集
                   </a-button>
                 </a-tooltip>
-                <a-button size="small" :disabled="Boolean(batchAction)" @click="openBatchTier">设置保留档位</a-button>
-                <a-button size="small" :disabled="Boolean(batchAction)" @click="openBatchFilter">设置采集过滤</a-button>
+                <a-button v-if="canEditConfig" size="small" :disabled="Boolean(batchAction)" @click="openBatchTier">设置保留档位</a-button>
+                <a-button v-if="canEditConfig" size="small" :disabled="Boolean(batchAction)" @click="openBatchFilter">设置采集过滤</a-button>
                 <a-tooltip title="对勾选的每一条日志按同一次认证依据逐一认证（逐条走主机取样例，慢但真实）；没挂解析规则的日志会被跳过。" placement="top">
                   <a-button size="small" :disabled="Boolean(batchAction)" @click="openBatchVerify">格式认证</a-button>
                 </a-tooltip>
@@ -325,6 +328,7 @@
                   <a-tooltip :title="`关闭表示本服务不再采集这条日志（同一模板下其他服务不受影响）。${pendingHint}`" placement="top">
                     <a-switch
                       :checked="isLogCollected(record)"
+                      :disabled="!canEditConfig"
                       :loading="Boolean(savingRows[record.log_definition])"
                       checked-children="采"
                       un-checked-children="不采"
@@ -358,6 +362,7 @@
                   <a-tooltip :title="`改档位会写入新流（旧流停止写入、按原档位保留到期，不迁移数据）。当前生效：${effectiveTierLabel(record)}。${pendingHint}`" placement="top">
                     <a-select
                       :value="record.retention_tier ?? null"
+                      :disabled="!canEditConfig"
                       :options="[{ label: inheritedTierLabel(), value: null }, ...retentionTierOptions]"
                       :loading="Boolean(savingRows[record.log_definition])"
                       :get-popup-container="getPopupContainer"
@@ -376,6 +381,7 @@
                   >
                     <a-select
                       :value="record.collection_filter_rule_id ?? null"
+                      :disabled="!canEditConfig"
                       :options="[{ label: inheritedFilterLabel(record.template_filter_include_rule_id), value: null }, ...filterRuleOptions('include')]"
                       :loading="Boolean(savingRows[record.log_definition])"
                       :get-popup-container="getPopupContainer"
@@ -393,6 +399,7 @@
                   >
                     <a-select
                       :value="record.collection_exclude_filter_rule_id ?? null"
+                      :disabled="!canEditConfig"
                       :options="[{ label: inheritedFilterLabel(record.template_filter_exclude_rule_id), value: null }, ...filterRuleOptions('exclude')]"
                       :loading="Boolean(savingRows[record.log_definition])"
                       :get-popup-container="getPopupContainer"
@@ -412,6 +419,7 @@
                       size="small"
                       :danger="extraProcessorsEnabled(record)"
                       @click="openExtraProcessors(record)"
+                      :disabled="!canEditConfig"
                     >
                       {{ extraProcessorsEnabled(record) ? '已配置' : '配置' }}
                     </a-button>
@@ -636,12 +644,12 @@
                      全量视图下只给清理（清理按服务维度执行，服务 id 由 dims 映射得到，不需要选中）。 -->
                 <template v-if="isHistoricalTier(record) && serviceId && !record.shared_source_id">
                   <a-tooltip title="把这条日志的档位改回该档位，写入会继续进入这条流（不会新建）；改完需要重新下发才在主机上生效。" placement="top">
-                    <a-button type="link" size="small" @click="openSwitchTier(record)">切回该档位</a-button>
+                    <a-button v-if="canEditConfig" type="link" size="small" @click="openSwitchTier(record)">切回该档位</a-button>
                   </a-tooltip>
                 </template>
                 <a-tooltip :title="streamCleanupTooltip(record)" placement="top">
                   <a-button
-                    v-if="streamCleanupTarget(record)"
+                    v-if="checkPermission('monitor:logs:delete') && streamCleanupTarget(record)"
                     type="link"
                     size="small"
                     danger
@@ -883,7 +891,7 @@
             返回条件模式
           </a-button>
           <a-button @click="extraDialog.open = false">取消</a-button>
-          <a-button type="primary" :loading="extraDialog.saving" @click="saveExtraProcessors">保存</a-button>
+          <a-button v-if="canEditConfig" type="primary" :loading="extraDialog.saving" @click="saveExtraProcessors">保存</a-button>
         </template>
       </a-modal>
       <!-- 配置差异：期望片段 vs 主机上已下发的 inputs.d（差异内容要读主机才有，库里只落指纹）。 -->
@@ -915,6 +923,10 @@
 
 <script setup>
 import { computed, onUnmounted, reactive, ref, watch } from 'vue'
+import { checkPermission } from '@/directives/permission/permission'
+// 服务配置仍由资产域管理；下发是日志采集执行，两者授权不能相互代替。
+const canEditConfig = computed(() => checkPermission('assets:applications:update'))
+const canApply = computed(() => checkPermission('monitor:view') && checkPermission('monitor:log_collect:view') && checkPermission('monitor:log_collect:execute'))
 import { message } from 'ant-design-vue'
 import { ReloadOutlined, SearchOutlined, CloseOutlined, CloudUploadOutlined } from '@ant-design/icons-vue'
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons-vue'
@@ -1523,6 +1535,7 @@ function extraProcessorsEnabled(record) {
 }
 
 function openExtraProcessors(record) {
+  if (!canEditConfig.value) return
   extraDialog.record = record
   const items = Array.isArray(record.extra_processors) ? record.extra_processors : []
   const parsed = parseDropRule(items)
@@ -1585,6 +1598,7 @@ function switchExtraToCard() {
 }
 
 async function saveExtraProcessors() {
+  if (!canEditConfig.value) return
   const record = extraDialog.record
   if (!record) return
   let processors
@@ -1653,6 +1667,7 @@ const FILTER_DIRECTIONS = {
 
 // 逐条采集开关：默认采，只有"关"才落库；关闭=这条日志不再采集（同模板其他服务不受影响）。
 async function confirmLogCollectChange(record, checked) {
+  if (!canEditConfig.value) return
   if (checked) {
     // 打开就是回到默认（不落覆盖行），无需确认——它不会让任何东西停止采集。
     await saveOverride(record, { collection_enabled: null })
@@ -1671,6 +1686,7 @@ async function confirmLogCollectChange(record, checked) {
 
 // 保留档位：改档位会写入**新**流，旧流停止写入并按原档位保留到期（不迁移数据）。
 async function confirmTierChange(record, value) {
+  if (!canEditConfig.value) return
   // "继承"要写清继承到哪一档，否则确认框等于没说。
   const name = value === null
     ? inheritedTierLabel()
@@ -1687,6 +1703,7 @@ async function confirmTierChange(record, value) {
 }
 
 async function confirmFilterChange(record, direction, value) {
+  if (!canEditConfig.value) return
   const meta = FILTER_DIRECTIONS[direction] || FILTER_DIRECTIONS.include
   const ruleName = value > 0 ? (filterRuleRecords.value.find((item) => item.id === value)?.name || `规则 #${value}`) : ''
   const target = value === null
@@ -1707,6 +1724,7 @@ async function confirmFilterChange(record, direction, value) {
 }
 
 async function saveOverride(record, patch) {
+  if (!canEditConfig.value) return
   const key = record.log_definition
   savingRows[key] = true
   try {
@@ -1738,6 +1756,7 @@ async function saveOverride(record, patch) {
 // 成功后必须重拉配置与下发态：覆盖值改了，页头"待下发"计数与链路的「主机配置」层结论都变了
 // （与 saveOverride 同一个理由，见那里的注释）。
 async function runBatchOverrides(patch, action) {
+  if (!canEditConfig.value) return
   const rows = selectedLogRows.value
   if (!rows.length) {
     message.warning('请先勾选要调整的日志')
@@ -1773,6 +1792,7 @@ async function runBatchOverrides(patch, action) {
 // 批量采集开关：与逐条同一口径——打开 = 回到默认（清掉覆盖值，不会让任何东西停止采集），
 // 所以不确认；停止采集是"有后果的改动"，先确认一次。
 async function batchSetCollection(checked) {
+  if (!canEditConfig.value) return
   const rows = selectedLogRows.value
   if (!rows.length) {
     message.warning('请先勾选要调整的日志')
@@ -1798,6 +1818,7 @@ const batchTierLabel = computed(() => (batchTierValue.value === null
   : (retentionTierOptions.value.find((item) => item.value === batchTierValue.value)?.label || `档位 #${batchTierValue.value}`)))
 
 function openBatchTier() {
+  if (!canEditConfig.value) return
   if (!selectedLogRows.value.length) {
     message.warning('请先勾选要调整的日志')
     return
@@ -1808,6 +1829,7 @@ function openBatchTier() {
 }
 
 async function submitBatchTier() {
+  if (!canEditConfig.value) return
   if (await runBatchOverrides({ retention_tier: batchTierValue.value ?? null }, 'tier')) batchTierOpen.value = false
 }
 
@@ -1819,6 +1841,7 @@ const batchFilterOptions = computed(() => [
 ])
 
 function openBatchFilter() {
+  if (!canEditConfig.value) return
   if (!selectedLogRows.value.length) {
     message.warning('请先勾选要调整的日志')
     return
@@ -1830,6 +1853,7 @@ function openBatchFilter() {
 }
 
 async function submitBatchFilter() {
+  if (!canEditConfig.value) return
   const value = batchFilterForm.value ?? null
   const patch = batchFilterForm.direction === 'include'
     ? { collection_filter_rule: value }
@@ -1869,6 +1893,7 @@ const switchTierCandidates = computed(() => {
 })
 
 function openSwitchTier(stream) {
+  if (!canEditConfig.value) return
   switchTierTarget.value = stream
   switchTierSelected.value = switchTierCandidates.value.map((row) => row.log_definition)
   switchTierOpen.value = true
@@ -1877,6 +1902,7 @@ function openSwitchTier(stream) {
 // 逐条按行提交：每条是独立的覆盖值改动（不同日志的档位本就互不相干），失败逐条累计汇报，
 // 不做"全成功/全失败"的假原子性。
 async function submitSwitchTier() {
+  if (!canEditConfig.value) return
   const target = switchTierTarget.value?.tier
   const tierId = tierIdByCode(target)
   if (!target || !tierId) {
@@ -1931,6 +1957,7 @@ function streamCleanupTooltip(stream) {
 // 清理：打开共享清理弹窗（与「日志查询」原来那个是**同一个**：范围可选保留 N 小时/N 天/全部清空）。
 // 弹窗展示和提交同一个完整流名，包含档位缺失的异常流。
 function cleanupStream(stream) {
+  if (!checkPermission('monitor:logs:delete')) return
   const target = streamCleanupTarget(stream)
   if (!target) return
   const sharedImpact = stream.shared_source_id ? '；共享源数据，清理影响所有关联服务' : ''
@@ -1959,6 +1986,7 @@ async function loadApplyState() {
 
 // 切换服务级总开关。不做乐观更新：值来自后端（serviceCollectEnabled），失败就保持原样。
 async function toggleServiceCollect(checked) {
+  if (!canEditConfig.value) return
   // 先把开关弹回原位（控件值由 serviceCollectEnabled 派生），确认后才真的写——
   // 否则用户取消时开关会停在"已改"的状态上，界面与库不一致。
   const confirmed = await confirmConfigChange({
@@ -1989,6 +2017,7 @@ async function toggleServiceCollect(checked) {
 }
 
 async function applyService() {
+  if (!canApply.value) return
   applying.value = true
   try {
     const response = await applyLogTargetsForService(serviceId.value)
@@ -2005,6 +2034,7 @@ async function applyService() {
 }
 
 async function previewScopeApply() {
+  if (!canApply.value) return
   if (scopeApplyLoading.value || applying.value) return
   scopeApplyLoading.value = true
   const selectedScope = { ...scope.value }
@@ -2039,6 +2069,7 @@ async function previewScopeApply() {
 }
 
 async function applyScope() {
+  if (!canApply.value) return
   // 空 ids 在批量接口代表全局待下发，必须在页面显式拦截空清单。
   if (applying.value || !scopeApplyTargets.value.length) return
   applying.value = true

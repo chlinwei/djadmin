@@ -3,6 +3,7 @@
     :open="open"
     :title="title"
     :confirm-loading="submitting"
+    :ok-button-props="{ disabled: !checkPermission('monitor:logs:delete') }"
     ok-text="确认清理"
     cancel-text="取消"
     centered
@@ -49,6 +50,7 @@ import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 
 import { cleanupLogDataStream, cleanupLogDataStreamByStream } from '@/api/monitor'
+import { checkPermission } from '@/directives/permission/permission'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -78,6 +80,7 @@ watch(() => props.open, (visible) => {
 })
 
 async function submit() {
+  if (!checkPermission('monitor:logs:delete')) return
   const scope = props.scope
   if (submitting.value || !scope || !['service', 'stream'].includes(scope.kind) || (scope.kind === 'service' && !scope.serviceId) || (scope.kind === 'stream' && !scope.stream?.trim())) return
   const selectedMode = mode.value

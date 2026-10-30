@@ -19,7 +19,7 @@
         </div>
         <a-space>
           <a-tooltip v-if="queryReady" title="强制刷新当前查询范围内各服务采集中的 data stream 索引后再查询。ES 的 refresh_interval 是 10s，刚写进来的日志默认要等一会才可搜，点这个立即可见。">
-            <a-button :loading="indexRefreshing" @click="refreshIndexAndReload">
+            <a-button v-if="checkPermission('monitor:execute')" :loading="indexRefreshing" @click="refreshIndexAndReload">
               <FontAwesomeIcon :icon="['fas', 'database']" />
               <span>&nbsp;刷新索引并查询</span>
             </a-button>
@@ -457,7 +457,7 @@ function refreshVisibleLiveTailStatus() {
   if (document.visibilityState === 'visible') void refreshLiveTailStatus()
 }
 const router = useRouter()
-const canOpenWebSsh = computed(() => checkPermission('assets:hosts:view'))
+const canOpenWebSsh = computed(() => checkPermission('assets:hosts:execute'))
 const webSshOpeningLogId = ref(null)
 let webSshRequestId = 0
 let pendingWebSshWindow = null
@@ -1000,6 +1000,7 @@ function reload() {
 // 强制刷新该服务采集中的 data stream 索引，然后重新查询：ES refresh_interval=10s，
 // 刚写入的日志默认要等一会才可搜，这个按钮把"已写入未刷新"的部分立即变得可查。
 async function refreshIndexAndReload() {
+  if (!checkPermission('monitor:execute')) return
   if (indexRefreshing.value) return
   indexRefreshing.value = true
   try {

@@ -1,6 +1,12 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import Antd from 'ant-design-vue'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import store from '@/store'
+
+beforeEach(() => {
+  store.state.role_codes = ['operator']
+  store.state.perms = ['monitor:view', 'monitor:create', 'monitor:update', 'monitor:delete']
+})
 
 // 保留档位的「值 + 单位」（迁移 000045）：这一页是唯一能改保留期的地方，所以接线必须钉住——
 //  1. 列表按单位显示（12 小时 / 30 天），不再一律"天"；

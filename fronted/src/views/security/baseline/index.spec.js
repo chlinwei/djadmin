@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import BaselinePage from './index.vue'
 import requestUtil from '@/util/request'
 
-vi.mock('@/store', () => ({ default: { state: { user: { timezone: 'Asia/Shanghai' } } } }))
+vi.mock('@/store', () => ({ default: { state: { user: { timezone: 'Asia/Shanghai' }, perms: ['baseline:view', 'baseline:manage', 'baseline:scan'], role_codes: ['operator'] } } }))
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('@/util/request', () => ({ default: { get: vi.fn(), patch: vi.fn(), post: vi.fn() } }))
 

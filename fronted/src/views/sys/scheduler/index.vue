@@ -70,7 +70,7 @@
           <template v-if="column.key === 'enabled'">
             <a-switch
               :checked="record.enabled === true"
-              :disabled="record.is_running"
+              :disabled="!checkPermission('system:scheduler:update') || record.is_running"
               @change="(checked) => toggleEnable(record, checked)"
             />
           </template>
@@ -107,7 +107,7 @@
           <template v-else-if="column.key === 'action'">
             <a-space>
               <a-tooltip title="编辑">
-                <a-button size="small" type="primary" @click="openEditModal(record)">
+                <a-button v-if="checkPermission('system:scheduler:update')" size="small" type="primary" @click="openEditModal(record)">
                   <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                 </a-button>
               </a-tooltip>
@@ -124,6 +124,7 @@
                   type="primary"
                   ghost
                   @click="runNow(record)"
+                  v-if="checkPermission('system:scheduler:execute')"
                   :loading="runningTaskId === record.id"
                   :disabled="record.is_running || record.is_pending || runningTaskId === record.id || record.supported === false"
                 >
@@ -337,6 +338,7 @@ import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig'
 import { getMenuTree } from '@/api/menu'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
+import { checkPermission } from '@/directives/permission/permission'
 
 const filterText = ref('')
 const filterEnabled = ref(undefined)
@@ -781,6 +783,7 @@ const goToMenu = (record) => {
 }
 
 const openEditModal = (record) => {
+  if (!checkPermission('system:scheduler:update')) return
   editForm.id = record.id
   editForm.name = record.name
   editForm.code = record.code
@@ -794,6 +797,7 @@ const openEditModal = (record) => {
 }
 
 const submitTask = () => {
+  if (!checkPermission('system:scheduler:update')) return
   if (!editForm.name || !String(editForm.name).trim()) {
     message.error('请输入任务名称')
     return
@@ -832,6 +836,7 @@ const submitTask = () => {
 }
 
 const toggleEnable = (record, enable) => {
+  if (!checkPermission('system:scheduler:update')) return
   const action = enable ? enableTask : disableTask
   action(record.id)
     .then((res) => {
@@ -852,6 +857,8 @@ const pollInterval = ref(3000)   // default 3s, overridden by sys config
 const pollMaxCount = ref(1200)   // default 1200, overridden by sys config
 
 // Load poll config from system parameters
+// 配置读取独立授权；无配置权限时保留本页默认轮询值，不发送必然被拒绝的请求。
+if (checkPermission('sys:config:list')) {
 getConfigByKey(CONFIG_KEYS.TASK_POLL_INTERVAL).then(res => {
   const v = parseInt(res.data.data?.value)
   if (!isNaN(v) && v > 0) pollInterval.value = v
@@ -860,6 +867,7 @@ getConfigByKey(CONFIG_KEYS.TASK_POLL_MAX_COUNT).then(res => {
   const v = parseInt(res.data.data?.value)
   if (!isNaN(v) && v > 0) pollMaxCount.value = v
 }).catch(() => {})
+}
 
 const startPollingTaskStatus = (taskId, taskName, hideLoading) => {
   let pollCount = 0
@@ -929,6 +937,7 @@ function stopAllTaskPolling() {
 }
 
 const runNow = (record) => {
+  if (!checkPermission('system:scheduler:execute')) return
   const taskName = record.name
   if (!record.enabled) {
     message.error(`任务「${taskName}」已禁用，请先启用`)

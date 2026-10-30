@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import LogStoragePage from './index.vue'
 
-vi.mock('@/store', () => ({ default: { state: { user: { timezone: 'Asia/Shanghai' } } } }))
+vi.mock('@/store', () => ({ default: { state: { user: { timezone: 'Asia/Shanghai' }, perms: ['monitor:view', 'monitor:create', 'monitor:update', 'monitor:delete', 'monitor:execute'], role_codes: ['operator'] } } }))
 
 const CLUSTER = {
   id: 1,

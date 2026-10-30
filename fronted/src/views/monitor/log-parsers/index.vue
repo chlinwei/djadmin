@@ -42,7 +42,7 @@
         <a-tabs v-model:active-key="catalogTab">
           <a-tab-pane key="processing" tab="解析规则">
             <div class="toolbar">
-          <a-button size="large" :disabled="!selectedClusterId" @click="openCreate">
+          <a-button v-if="checkPermission('monitor:create')" size="large" :disabled="!selectedClusterId" @click="openCreate">
             <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
             <span>&nbsp;新增规则</span>
           </a-button>
@@ -97,7 +97,7 @@
             <template v-else-if="column.key === 'action'">
               <a-space :size="6">
                 <a-tooltip title="编辑">
-                  <a-button type="primary" @click="openEdit(record)">
+                  <a-button v-if="checkPermission('monitor:update')" type="primary" @click="openEdit(record)">
                     <FontAwesomeIcon :icon="['fa', 'edit']" />
                   </a-button>
                 </a-tooltip>
@@ -107,7 +107,7 @@
                   </a-button>
                 </a-tooltip>
                 <a-tooltip title="删除">
-                  <a-button class="delBtn" danger type="primary" @click="confirmDelete(record)">
+                  <a-button v-if="checkPermission('monitor:delete')" class="delBtn" danger type="primary" @click="confirmDelete(record)">
                     <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                   </a-button>
                 </a-tooltip>
@@ -118,7 +118,7 @@
           </a-tab-pane>
           <a-tab-pane key="filter" tab="采集过滤规则">
             <div class="toolbar">
-              <a-button size="large" @click="openFilterCreate"><FontAwesomeIcon :icon="['fas', 'plus-circle']" /><span>&nbsp;新增过滤规则</span></a-button>
+              <a-button v-if="checkPermission('monitor:create')" size="large" @click="openFilterCreate"><FontAwesomeIcon :icon="['fas', 'plus-circle']" /><span>&nbsp;新增过滤规则</span></a-button>
               <a-tooltip title="刷新"><a-button size="large" @click="loadFilterRules"><FontAwesomeIcon :icon="['fas', 'rotate']" /><span>&nbsp;刷新</span></a-button></a-tooltip>
             </div>
             <a-table size="small" row-key="id" :columns="filterColumns" :data-source="visibleFilterRules" :loading="filterLoading" :pagination="false" :scroll="{ x: 1000 }" :locale="{ emptyText: '当前应用暂无采集过滤规则' }">
@@ -128,7 +128,7 @@
                 <template v-else-if="column.key === 'description'"><span style="white-space: pre-wrap; overflow-wrap: anywhere">{{ record.description || '-' }}</span></template>
                 <template v-else-if="column.key === 'pattern'"><code>{{ record.pattern }}</code></template>
                 <template v-else-if="column.key === 'enabled'"><a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag></template>
-                <template v-else-if="column.key === 'action'"><a-space :size="6"><a-tooltip title="编辑"><a-button type="primary" @click="openFilterEdit(record)"><FontAwesomeIcon :icon="['fa', 'edit']" /></a-button></a-tooltip><a-tooltip title="删除"><a-button class="delBtn" danger type="primary" @click="confirmDeleteFilter(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip></a-space></template>
+                <template v-else-if="column.key === 'action'"><a-space :size="6"><a-tooltip title="编辑"><a-button v-if="checkPermission('monitor:update')" type="primary" @click="openFilterEdit(record)"><FontAwesomeIcon :icon="['fa', 'edit']" /></a-button></a-tooltip><a-tooltip title="删除"><a-button v-if="checkPermission('monitor:delete')" class="delBtn" danger type="primary" @click="confirmDeleteFilter(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip></a-space></template>
               </template>
             </a-table>
           </a-tab-pane>
@@ -186,6 +186,7 @@
       ok-text="发布"
       cancel-text="取消"
       @ok="publishPipeline"
+      :ok-button-props="{ disabled: !checkPermission(form.id ? 'monitor:update' : 'monitor:create') }"
     >
       <a-tabs v-model:activeKey="activeTab">
         <a-tab-pane key="preprocess" tab="发送前处理（Filebeat）">
@@ -420,6 +421,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { checkPermission } from '@/directives/permission/permission'
 import { message } from 'ant-design-vue'
 import { RightOutlined } from '@ant-design/icons-vue'
 import { useRouter } from 'vue-router'
@@ -827,6 +829,7 @@ function resetEditor() {
 }
 
 function openCreate() {
+  if (!checkPermission('monitor:create')) return
   resetEditor()
   // 从左侧已选应用入口新建时直接带入归属，避免再手选一次
   const selectedApplicationId = Number(selectedApplicationKey.value)
@@ -853,6 +856,7 @@ function openTest(record) {
 }
 
 function openFilterCreate() {
+  if (!checkPermission('monitor:create')) return
   filterSample.value = ''
   Object.assign(filterForm, { id: null, name: '', application: null, description: '', pattern: '', rule_type: 'include', enabled: true })
   const selectedApplicationId = Number(selectedApplicationKey.value)
@@ -861,6 +865,7 @@ function openFilterCreate() {
 }
 
 function openFilterEdit(record) {
+  if (!checkPermission('monitor:update')) return
   Object.assign(filterForm, record)
   // 迁移前建的规则没有类型字段，一律按 include（白名单）处理。
   if (!filterForm.rule_type) filterForm.rule_type = 'include'
@@ -888,6 +893,7 @@ const filterFormRules = {
 }
 
 async function saveFilterRule() {
+  if (!checkPermission(filterForm.id ? 'monitor:update' : 'monitor:create')) return
   try {
     await filterFormRef.value?.validate()
   } catch {
@@ -907,6 +913,7 @@ async function saveFilterRule() {
 }
 
 async function publishPipeline() {
+  if (!checkPermission(form.id ? 'monitor:update' : 'monitor:create')) return
   try {
     await formRef.value?.validate()
   } catch {
@@ -1049,6 +1056,7 @@ async function simulate() {
 }
 
 function confirmDelete(record) {
+  if (!checkPermission('monitor:delete')) return
   openDeleteConfirm({
     title: '删除解析规则',
     summary: '删除后，引用该 Pipeline 的日志将无法完成解析。',
@@ -1062,6 +1070,7 @@ function confirmDelete(record) {
 }
 
 function confirmDeleteFilter(record) {
+  if (!checkPermission('monitor:delete')) return
   openDeleteConfirm({
     title: '删除过滤规则',
     summary: '删除后，逻辑服务将不能再选择该规则。',

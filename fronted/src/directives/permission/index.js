@@ -1,5 +1,5 @@
 import { checkPermission } from "./permission"
-export  default {
+export default {
     // 仅通过 display 控制显隐，避免直接删除节点导致虚拟 DOM 与真实 DOM 不一致
     mounted(el, binding) {
         applyPermissionVisibility(el, binding)

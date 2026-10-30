@@ -1,0 +1,4 @@
+DROP TABLE assets_service_dependency;
+DROP TABLE assets_service_dependency_type;
+ALTER TABLE assets_application_service DROP CONSTRAINT assets_service_dependency_identity;
+ALTER TABLE assets_business_system DROP CONSTRAINT assets_business_project_identity;

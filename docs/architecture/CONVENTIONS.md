@@ -90,7 +90,8 @@ Copilot 运行时通过仓库级 [browser-approval.json](../../.github/hooks/bro
 ### 前端运行入口与动态引用边界
 
 - `fronted/src/main.js` 注册路由、Vuex、权限指令、Ant Design Vue、FontAwesome 和全局 `SvgIcon`。
-- 路由同时包含静态入口和菜单驱动入口；`src/router/index.js` 通过 `import.meta.glob("../views/**")`
+- 路由同时包含静态入口和菜单驱动入口；`src/router/index.js` 通过 `import.meta.glob`
+  扫描 `../views/**`，排除 `*.spec.js/ts`、`*.test.js/ts`，避免组件测试及测试框架进入生产懒加载包。
   按菜单的 `component` 字段解析页面，不能仅凭缺少显式 import 判定视图未使用。
 - SVG 图标由 Vite 的 `createSvgIconsPlugin` 扫描 `src/assets/icons/svg`，通过
   `virtual:svg-icons-register` 注册；图标名属于运行时引用，不以单个 SVG 的 import 数量判定存活。

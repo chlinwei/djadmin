@@ -27,6 +27,14 @@ func (r *Repository) beginServiceDeletion(ctx context.Context, id int64) (bool, 
 		}
 		return false, err
 	}
+	// Check before tombstoning or external cleanup, sharing the endpoint lock with dependency writes.
+	count, err := q.CountServiceDependenciesForService(ctx, db.CountServiceDependenciesForServiceParams{SourceServiceID: id, TargetServiceID: id})
+	if err != nil {
+		return false, err
+	}
+	if count > 0 {
+		return false, ErrServiceHasDependencies
+	}
 	businessID, err := q.GetServiceDeletionBusinessSystem(ctx, id)
 	if err != nil {
 		return false, err

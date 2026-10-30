@@ -122,6 +122,9 @@ func translate(err error) error {
 // 注意先判 code 约束，因为它的名字包含 name 约束名，作为子串会被误命中。
 func duplicateError(err error) error {
 	message := err.Error()
+	if strings.Contains(message, "assets_dependency_scope_uniq") {
+		return ErrDependencyDuplicate
+	}
 	if strings.Contains(message, "unique_host_application_instance") {
 		return ErrDeploymentNameDuplicate
 	}

@@ -15,6 +15,7 @@ vi.mock('@/util/deleteConfirm', () => ({
 vi.mock('echarts', () => ({
   init: vi.fn(() => ({ setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn() })),
 }))
+vi.mock('@/directives/permission/permission', () => ({ checkPermission: vi.fn(() => true) }))
 
 import * as applicationApi from '@/api/assets/application'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
@@ -57,6 +58,12 @@ const ApplicationServiceDialogStub = {
   props: ['open', 'serviceId', 'initialBusinessSystemId', 'initialEnvironmentId'],
   template: '<div class="application-service-dialog-stub" />',
 }
+const ServiceDependencyWorkspaceStub = {
+  name: 'ServiceDependencyWorkspace',
+  props: ['scope'],
+  template: '<div class="dependency-workspace-stub" />',
+  methods: { refresh: vi.fn() },
+}
 
 async function mountPage(query = {}) {
   const router = createRouter({
@@ -73,6 +80,7 @@ async function mountPage(query = {}) {
         ServiceTreeNodeContent: ServiceTreeNodeContentStub,
         BusinessSystemDialog: BusinessSystemDialogStub,
         ApplicationServiceDialog: ApplicationServiceDialogStub,
+        ServiceDependencyWorkspace: ServiceDependencyWorkspaceStub,
         FontAwesomeIcon: true,
       },
       directives: {
@@ -83,6 +91,23 @@ async function mountPage(query = {}) {
 }
 
 describe('service-tree capacity charts', () => {
+  it('opens dependencies in the existing tree scope and unmounts status-checking details while hidden', async () => {
+    const wrapper = await mountPage()
+    const tree = wrapper.findComponent(ServiceTreeStub)
+    tree.vm.$emit('select', { nodeType: 'service', applicationServiceId: 21, businessSystemId: 10, environment: 3 })
+    await flushPromises()
+    const tabs = wrapper.findAll('[role="tab"]')
+    await tabs.find((tab) => tab.text() === '依赖关系').trigger('click')
+    await flushPromises()
+    expect(wrapper.findComponent(ServiceTreeNodeContentStub).exists()).toBe(false)
+    expect(wrapper.findComponent(ServiceDependencyWorkspaceStub).props('scope').applicationServiceId).toBe(21)
+    expect(wrapper.findComponent(ServiceTreeStub).vm).toBe(tree.vm)
+    await tabs.find((tab) => tab.text() === '服务信息').trigger('click')
+    await flushPromises()
+    expect(wrapper.findComponent(ServiceDependencyWorkspaceStub).exists()).toBe(false)
+    expect(wrapper.findComponent(ServiceTreeNodeContentStub).props('scope').applicationServiceId).toBe(21)
+    wrapper.unmount()
+  })
   it('refreshes the new scope instead of requesting the deleted service', async () => {
     const wrapper = await mountPage()
     await flushPromises()

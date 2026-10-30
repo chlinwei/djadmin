@@ -25,6 +25,7 @@ CREATE TABLE assets_business_system (
   PRIMARY KEY (id),
   CONSTRAINT unique_project_business_system_name UNIQUE (project_id, name),
   CONSTRAINT unique_project_business_system_code UNIQUE (project_id, code),
+  CONSTRAINT assets_business_project_identity UNIQUE (id, project_id),
   CONSTRAINT assets_business_system_project_fk FOREIGN KEY (project_id) REFERENCES assets_project (id)
 );
 
@@ -335,6 +336,7 @@ CREATE TABLE assets_application_service (
   PRIMARY KEY (id),
   CONSTRAINT unique_business_environment_service_code UNIQUE (business_system_id, environment_id, code),
   CONSTRAINT unique_business_environment_service UNIQUE (business_system_id, environment_id, name),
+  CONSTRAINT assets_service_dependency_identity UNIQUE (id, business_system_id, environment_id),
   CONSTRAINT assets_application_service_application_fk FOREIGN KEY (application_id) REFERENCES assets_application (id),
   CONSTRAINT assets_application_service_version_fk FOREIGN KEY (application_version_id) REFERENCES assets_application_version (id),
   CONSTRAINT assets_application_service_template_fk FOREIGN KEY (deployment_template_id) REFERENCES assets_application_deployment_template (id),

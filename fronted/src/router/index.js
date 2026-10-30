@@ -1,7 +1,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { getToken } from '@/api/user/index.js'
 import { getMenuList } from '@/api/menu/index.js'
-export const modules = import.meta.glob("../views/**");
+// 菜单动态入口不包含测试文件，避免组件测试及 Vitest 被打入生产懒加载包。
+export const modules = import.meta.glob(["../views/**", "!../views/**/*.{spec,test}.{js,ts}"]);
 
 export const staticRouterMap = [
     {

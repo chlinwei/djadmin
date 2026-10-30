@@ -276,6 +276,11 @@ export function patch(url, params = {}) {
     });
 }
 
+// 完整替换接口仍经过相同的鉴权与业务错误拦截链，不另建请求实例。
+export function put(url, params = {}) {
+    return httpService({ url, method: 'put', data: params })
+}
+
 export function download(url, params = {}, timeout = null) {
     return new Promise((resolve, reject) => {
         const config = {
@@ -305,5 +310,6 @@ export default {
     getWebSocketBaseUrl,
     getTransferServerUrl,
     patch,
+    put,
     download,
 }

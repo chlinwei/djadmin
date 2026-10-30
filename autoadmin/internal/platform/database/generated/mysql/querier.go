@@ -152,6 +152,10 @@ type Querier interface {
 	// 不再硬编码排除 cleanup_alert_histories：那条过滤曾把它从列表里藏起来，后果是"历史上从来没被
 	// 清理过"这件事没人看得见（2026-09-19 才发现）。要隐藏某个任务请在业务上退役它（删行 + 写文档）。
 	CountScheduledTasks(ctx context.Context, arg CountScheduledTasksParams) (int64, error)
+	CountServiceDependencies(ctx context.Context, arg CountServiceDependenciesParams) (int64, error)
+	CountServiceDependenciesByType(ctx context.Context, id int64) (int64, error)
+	CountServiceDependenciesForService(ctx context.Context, arg CountServiceDependenciesForServiceParams) (int64, error)
+	CountServiceDependencyTypes(ctx context.Context, arg CountServiceDependencyTypesParams) (int64, error)
 	CountSharedLogSourceRuleReferences(ctx context.Context, id int64) (int64, error)
 	CountSharedLogSourceTierReferences(ctx context.Context, id int64) (int64, error)
 	// ---- P2-3：监控软件包管理（读取复用 GetSoftwarePackageTyped；写路径见下）----
@@ -258,6 +262,8 @@ type Querier interface {
 	CreateScheduledTaskLog(ctx context.Context, arg CreateScheduledTaskLogParams) error
 	CreateSchedulerExecution(ctx context.Context, arg CreateSchedulerExecutionParams) error
 	CreateServiceDeletionTombstone(ctx context.Context, arg CreateServiceDeletionTombstoneParams) error
+	CreateServiceDependency(ctx context.Context, arg CreateServiceDependencyParams) (int64, error)
+	CreateServiceDependencyType(ctx context.Context, arg CreateServiceDependencyTypeParams) (int64, error)
 	CreateServiceDeployment(ctx context.Context, arg CreateServiceDeploymentParams) error
 	// 服务级日志覆盖：**只有采集开关、保留档位、采集过滤规则**。
 	// 解析规则不在这张表里——它只由模板日志定义决定（迁移 000035 删掉了 processing_rule_id）。
@@ -355,6 +361,8 @@ type Querier interface {
 	DeleteRoleByID(ctx context.Context, id int32) error
 	DeleteRoleMenus(ctx context.Context, roleID int32) error
 	DeleteRoleUsers(ctx context.Context, roleID int32) error
+	DeleteServiceDependency(ctx context.Context, id int64) error
+	DeleteServiceDependencyType(ctx context.Context, id int64) error
 	DeleteServiceDeployments(ctx context.Context, serviceID int64) error
 	DeleteServiceLogSettings(ctx context.Context, serviceID int64) error
 	// 删日志定义前先清掉引用它们的服务级覆盖行：外键没有 ON DELETE CASCADE，不清就删不掉；
@@ -590,6 +598,9 @@ type Querier interface {
 	GetScheduledTaskLog(ctx context.Context, id int64) (GetScheduledTaskLogRow, error)
 	GetServiceDeletionBusinessSystem(ctx context.Context, id int64) (int64, error)
 	GetServiceDeletionTombstone(ctx context.Context, serviceID int64) (AssetsServiceDeletion, error)
+	GetServiceDependency(ctx context.Context, id int64) (GetServiceDependencyRow, error)
+	GetServiceDependencyContext(ctx context.Context, id int64) (GetServiceDependencyContextRow, error)
+	GetServiceDependencyType(ctx context.Context, id int64) (AssetsServiceDependencyType, error)
 	GetSoftwarePackageTyped(ctx context.Context, id int64) (GetSoftwarePackageTypedRow, error)
 	GetTargetHostAddress(ctx context.Context, id int64) (GetTargetHostAddressRow, error)
 	// ---- 安装/卸载下发 ----
@@ -667,6 +678,8 @@ type Querier interface {
 	ListClusterProfiles(ctx context.Context, arg ListClusterProfilesParams) ([]ListClusterProfilesRow, error)
 	ListConfigs(ctx context.Context, arg ListConfigsParams) ([]SysConfig, error)
 	ListCredentials(ctx context.Context, arg ListCredentialsParams) ([]AssetsCredential, error)
+	ListDependencyTopologyInstances(ctx context.Context, arg ListDependencyTopologyInstancesParams) ([]ListDependencyTopologyInstancesRow, error)
+	ListDependencyTopologyNodes(ctx context.Context, arg ListDependencyTopologyNodesParams) ([]ListDependencyTopologyNodesRow, error)
 	ListDeploymentControlActions(ctx context.Context, templateID int64) ([]ListDeploymentControlActionsRow, error)
 	ListDeploymentControlContexts(ctx context.Context, id int64) ([]ListDeploymentControlContextsRow, error)
 	ListDeploymentTemplates(ctx context.Context, arg ListDeploymentTemplatesParams) ([]ListDeploymentTemplatesRow, error)
@@ -838,6 +851,8 @@ type Querier interface {
 	ListServiceDeletionClusterIDs(ctx context.Context) ([]int64, error)
 	ListServiceDeletionDeployments(ctx context.Context, serviceID int64) ([]int64, error)
 	ListServiceDeletionTombstones(ctx context.Context) ([]AssetsServiceDeletion, error)
+	ListServiceDependencies(ctx context.Context, arg ListServiceDependenciesParams) ([]ListServiceDependenciesRow, error)
+	ListServiceDependencyTypes(ctx context.Context, arg ListServiceDependencyTypesParams) ([]AssetsServiceDependencyType, error)
 	ListServiceDeploymentIDs(ctx context.Context, serviceID int64) ([]int64, error)
 	ListServiceDeploymentLinks(ctx context.Context, deploymentIds []int64) ([]ListServiceDeploymentLinksRow, error)
 	// 服务模板下的全部日志都需要包装，包括没有服务覆盖行的日志。
@@ -929,6 +944,9 @@ type Querier interface {
 	LockHistoricalStreamTiers(ctx context.Context) ([]int64, error)
 	LockSchedulerConfig(ctx context.Context) (SysConfig, error)
 	LockSchedulerTask(ctx context.Context, id int64) (SchedulerScheduledtask, error)
+	LockServiceDependency(ctx context.Context, id int64) (AssetsServiceDependency, error)
+	LockServiceDependencyDeletionTombstone(ctx context.Context, serviceID int64) (AssetsServiceDeletion, error)
+	LockServiceDependencyType(ctx context.Context, id int64) (AssetsServiceDependencyType, error)
 	// Serialize creation with tombstoning even when the unique service row is removed.
 	LockServiceIdentityDomain(ctx context.Context, id int64) (int64, error)
 	LockSharedLogSource(ctx context.Context, id int64) (MonitorSharedLogSource, error)
@@ -1055,6 +1073,8 @@ type Querier interface {
 	UpdateProject(ctx context.Context, arg UpdateProjectParams) error
 	UpdateRole(ctx context.Context, arg UpdateRoleParams) error
 	UpdateScheduledTask(ctx context.Context, arg UpdateScheduledTaskParams) error
+	UpdateServiceDependency(ctx context.Context, arg UpdateServiceDependencyParams) error
+	UpdateServiceDependencyType(ctx context.Context, arg UpdateServiceDependencyTypeParams) error
 	UpdateSharedLogSource(ctx context.Context, arg UpdateSharedLogSourceParams) error
 	UpdateSharedLogSourceRevocation(ctx context.Context, arg UpdateSharedLogSourceRevocationParams) error
 	UpdateSoftwarePackageConfig(ctx context.Context, arg UpdateSoftwarePackageConfigParams) error

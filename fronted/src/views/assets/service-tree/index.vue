@@ -14,7 +14,11 @@
         />
       </template>
       <main class="service-tree-content">
-        <div class="service-tree-detail-toolbar">
+        <a-tabs v-model:active-key="activePanel">
+          <a-tab-pane key="info" tab="服务信息" />
+          <a-tab-pane key="dependencies" tab="依赖关系" />
+        </a-tabs>
+        <div v-if="activePanel === 'info'" class="service-tree-detail-toolbar">
           <a-tooltip v-if="serviceScope.nodeType === 'all' || serviceScope.nodeType === 'project'" title="新增业务系统">
             <a-button v-permission="'assets:service-tree:manage'" type="primary" @click="openBusinessSystem()">
               <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
@@ -34,7 +38,7 @@
             </a-button>
           </a-tooltip>
         </div>
-        <section v-show="showResourceStats" class="service-tree-right-stats">
+        <section v-show="activePanel === 'info' && showResourceStats" class="service-tree-right-stats">
           <div class="service-tree-right-stats-header">
             <span>资源占比</span>
           </div>
@@ -58,7 +62,9 @@
             </div>
           </div>
         </section>
+        <!-- 卸载详情以停止状态检查轮询，依赖页只读已有快照。 -->
         <ServiceTreeNodeContent
+          v-if="activePanel === 'info'"
           ref="nodeContentRef"
           :scope="serviceScope"
           :host-snapshots="hostSnapshots"
@@ -69,6 +75,10 @@
           @copy-service="copyApplicationService"
           @delete-service="confirmDeleteService"
         />
+        <template v-else>
+          <ServiceDependencyWorkspace v-if="canViewDependencies" ref="dependencyWorkspaceRef" :scope="serviceScope" />
+          <a-alert v-else type="warning" show-icon message="没有查看服务依赖的权限（assets:applications:view）。" />
+        </template>
       </main>
     </ServiceTreeLayout>
 
@@ -92,19 +102,28 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
-import { message } from 'ant-design-vue'
+import { Alert, message, Spin } from 'ant-design-vue'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import ServiceTreeLayout from '@/components/ServiceTreeLayout.vue'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { batchDeleteBusinessSystems, batchDeleteApplicationServices } from '@/api/assets/application'
+import { checkPermission } from '@/directives/permission/permission'
 import ServiceTree from '../application/components/ServiceTree.vue'
 import ServiceTreeNodeContent from './ServiceTreeNodeContent.vue'
 import BusinessSystemDialog from '../application/components/BusinessSystemDialog.vue'
 import ApplicationServiceDialog from '../application/components/ApplicationServiceDialog.vue'
 
+const ServiceDependencyWorkspace = defineAsyncComponent({
+  loader: () => import('./ServiceDependencyWorkspace.vue'),
+  loadingComponent: { render: () => h(Spin) },
+  errorComponent: { render: () => h(Alert, { type: 'error', showIcon: true, message: '依赖工作台加载失败，请刷新页面重试' }) },
+})
+const activePanel = ref('info')
+const dependencyWorkspaceRef = ref(null)
+const canViewDependencies = computed(() => checkPermission('assets:applications:view'))
 const serviceScope = ref({ nodeType: 'all', nodeTitle: '全部业务' })
 const hostSnapshots = ref([])
 const route = useRoute()
@@ -204,7 +223,9 @@ async function refreshServiceTree() {
   try {
     await Promise.all([
       serviceTreeRef.value?.refresh(),
-      nodeContentRef.value?.refresh(),
+      activePanel.value === 'dependencies'
+        ? dependencyWorkspaceRef.value?.refresh()
+        : nodeContentRef.value?.refresh(),
     ])
   } finally {
     refreshing.value = false
@@ -288,7 +309,7 @@ function confirmDeleteService(record) {
 }
 
 watch(
-  () => [statsData.value.cpuRows, statsData.value.memoryRows, showResourceStats.value],
+  () => [statsData.value.cpuRows, statsData.value.memoryRows, showResourceStats.value, activePanel.value],
   async () => {
     await nextTick()
     renderCharts()

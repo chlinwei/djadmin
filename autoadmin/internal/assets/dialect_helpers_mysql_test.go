@@ -58,6 +58,15 @@ func expectServiceIdentityCreate(mock sqlmock.Sqlmock, id int64) {
 		WillReturnResult(sqlmock.NewResult(id, 1))
 }
 
+func expectDependencyInsert(mock sqlmock.Sqlmock, args []driver.Value, id int64, insertErr error) {
+	expected := mock.ExpectExec("INSERT INTO assets_service_dependency ").WithArgs(args...)
+	if insertErr != nil {
+		expected.WillReturnError(insertErr)
+		return
+	}
+	expected.WillReturnResult(sqlmock.NewResult(id, 1))
+}
+
 func expectTemplatePortCreate(mock sqlmock.Sqlmock, id int64) {
 	mock.ExpectExec("INSERT INTO assets_application_deployment_template").
 		WillReturnResult(sqlmock.NewResult(id, 1))

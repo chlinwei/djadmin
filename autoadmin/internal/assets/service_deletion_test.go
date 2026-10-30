@@ -128,6 +128,8 @@ func TestServiceDeletionFailureKeepsServiceForRetry(t *testing.T) {
 		mock.ExpectBegin()
 		mock.ExpectQuery("SELECT id FROM assets_application_service").
 			WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(7))
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM assets_service_dependency").
+			WithArgs(int64(7), int64(7)).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 		mock.ExpectQuery("SELECT business_system_id FROM assets_application_service").
 			WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"business_system_id"}).AddRow(1))
 		mock.ExpectQuery("SELECT id FROM assets_business_system").
@@ -157,6 +159,8 @@ func TestServiceDeletionFailureKeepsServiceForRetry(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT id FROM assets_application_service").
 		WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(7))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM assets_service_dependency").
+		WithArgs(int64(7), int64(7)).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery("SELECT business_system_id FROM assets_application_service").
 		WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"business_system_id"}).AddRow(1))
 	mock.ExpectQuery("SELECT id FROM assets_business_system").

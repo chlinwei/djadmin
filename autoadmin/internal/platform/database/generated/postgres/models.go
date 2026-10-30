@@ -450,6 +450,34 @@ type AssetsServiceDeletion struct {
 	ServiceCode        string `json:"service_code"`
 }
 
+type AssetsServiceDependency struct {
+	ID                int64     `json:"id"`
+	CreateTime        time.Time `json:"create_time"`
+	UpdateTime        time.Time `json:"update_time"`
+	SourceServiceID   int64     `json:"source_service_id"`
+	TargetServiceID   int64     `json:"target_service_id"`
+	SourceBusinessID  int64     `json:"source_business_id"`
+	TargetBusinessID  int64     `json:"target_business_id"`
+	ProjectID         int64     `json:"project_id"`
+	EnvironmentID     int64     `json:"environment_id"`
+	InteractionTypeID int64     `json:"interaction_type_id"`
+	Strength          string    `json:"strength"`
+	Protocol          string    `json:"protocol"`
+	FunctionScope     string    `json:"function_scope"`
+	FailureImpact     string    `json:"failure_impact"`
+	FallbackPlan      string    `json:"fallback_plan"`
+}
+
+type AssetsServiceDependencyType struct {
+	ID          int64     `json:"id"`
+	CreateTime  time.Time `json:"create_time"`
+	UpdateTime  time.Time `json:"update_time"`
+	Code        string    `json:"code"`
+	Name        string    `json:"name"`
+	Enabled     bool      `json:"enabled"`
+	Description string    `json:"description"`
+}
+
 type AssetsWebsshSessionLog struct {
 	ID                   int64         `json:"id"`
 	UserID               sql.NullInt32 `json:"user_id"`

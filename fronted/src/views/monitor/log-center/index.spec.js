@@ -1,5 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import Antd from 'ant-design-vue'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 let panelObserver
@@ -199,11 +200,20 @@ function logStatusSummaryPayload(serviceIds = []) {
   }
 }
 
-async function mountPage() {
+async function mountPage(query = {}, hash = '') {
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/monitor/logging/center', component: LogCenter },
+      { path: '/other', component: { template: '<div />' } },
+    ],
+  })
+  await router.push({ path: '/monitor/logging/center', query, hash })
+  await router.isReady()
   const wrapper = mount(LogCenter, {
     attachTo: document.body,
     global: {
-      plugins: [Antd],
+      plugins: [Antd, router],
       stubs: {
         // 树与查询面板各有一整套自己的数据流与 spec，这里只验证本页的接线（scope → 各 tab 的数据）。
         ServiceTree: { name: 'ServiceTree', props: ['selectedScope'], emits: ['select', 'stats-change'], template: '<div class="stub-tree" />' },
@@ -252,6 +262,70 @@ async function selectConfigRows(wrapper, indexes = [0, 1]) {
 }
 
 describe('日志中心（服务树 + 三个 tab）', () => {
+  it.each([
+    [{ nodeType: 'project', projectId: 301, nodeTitle: '订单项目' }, 'query'],
+    [{ nodeType: 'businessSystem', businessSystemId: 7, nodeTitle: '订单系统' }, 'config'],
+    [{ nodeType: 'environment', businessSystemId: 7, environment: 10, nodeTitle: 'poc' }, 'storage'],
+    [{ nodeType: 'environment', businessSystemId: 7, environment: null, nodeTitle: '未配置环境' }, 'config'],
+    [{ nodeType: 'service', applicationServiceId: 15, nodeTitle: 'nginx' }, 'query'],
+    [{ nodeType: 'service', applicationServiceId: 15, nodeTitle: 'nginx' }, 'config'],
+    [{ nodeType: 'service', applicationServiceId: 15, nodeTitle: 'nginx' }, 'storage'],
+    [{ nodeType: 'deployment', applicationServiceId: 15, deploymentId: 13, nodeTitle: 'tomcat-1' }, 'storage'],
+  ])('restores selected node %j and tab %s after reopening its URL', async (selectedScope, tab) => {
+    const { getApplicationServiceLogConfig } = await import('@/api/assets/application')
+    let wrapper = await mountPage({ unrelated: 'keep' }, '#location')
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', selectedScope)
+    await flushPromises()
+    await wrapper.get(`[role="tab"][id$="-tab-${tab}"]`).trigger('click')
+    await flushPromises()
+    const query = { ...wrapper.vm.$router.currentRoute.value.query }
+    expect(query).toMatchObject({ node_type: selectedScope.nodeType, unrelated: 'keep' })
+    expect(query.panel).toBe(tab === 'query' ? undefined : tab)
+    expect(wrapper.vm.$router.currentRoute.value.hash).toBe('#location')
+    wrapper.unmount()
+
+    getApplicationServiceLogConfig.mockClear()
+    wrapper = await mountPage(query)
+    expect(wrapper.findComponent({ name: 'ServiceTree' }).props('selectedScope')).toMatchObject(selectedScope)
+    expect(wrapper.vm.activeTab).toBe(tab)
+    if (selectedScope.applicationServiceId) {
+      expect(getApplicationServiceLogConfig).toHaveBeenCalledWith(selectedScope.applicationServiceId)
+    }
+    if (tab === 'query') {
+      expect(wrapper.findComponent({ name: 'LogQueryPanel' }).props('scope')).toMatchObject(selectedScope)
+    }
+    wrapper.unmount()
+  })
+
+  it('updates links when drilling down and clears stale node IDs at the root', async () => {
+    const wrapper = await mountPage({ application_service_id: '15', panel: 'storage' })
+    wrapper.vm.drillDown({ nodeType: 'businessSystem', businessSystemId: 7, nodeTitle: '订单系统' })
+    await flushPromises()
+    expect(wrapper.vm.$router.currentRoute.value.query).toMatchObject({ node_type: 'businessSystem', business_system_id: '7', panel: 'storage' })
+    expect(wrapper.vm.$router.currentRoute.value.query.application_service_id).toBeUndefined()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', { nodeType: 'all', nodeTitle: '全部业务' })
+    await flushPromises()
+    expect(wrapper.vm.$router.currentRoute.value.query).toEqual({ panel: 'storage' })
+    wrapper.unmount()
+  })
+
+  it('handles new links on the cached page and ignores route changes on other pages', async () => {
+    const wrapper = await mountPage()
+    await wrapper.vm.$router.push({
+      path: '/monitor/logging/center', query: { application_service_id: '15', panel: 'config' },
+    })
+    await flushPromises()
+    expect(wrapper.vm.scope.applicationServiceId).toBe(15)
+    expect(wrapper.vm.activeTab).toBe('config')
+    await wrapper.vm.$router.push({
+      path: '/other', query: { application_service_id: '99', panel: 'storage' },
+    })
+    await flushPromises()
+    expect(wrapper.vm.scope.applicationServiceId).toBe(15)
+    expect(wrapper.vm.activeTab).toBe('config')
+    wrapper.unmount()
+  })
+
   it('supports the shared panel controls without resetting scope, query instance or tab', async () => {
     const wrapper = await mountPage()
     Object.defineProperty(wrapper.get('.log-center').element, 'clientWidth', { value: 1200 })

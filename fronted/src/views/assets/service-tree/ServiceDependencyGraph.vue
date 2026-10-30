@@ -5,6 +5,7 @@
       <a-space wrap>
         <a-button :loading="layoutLoading" :disabled="!nodes.length" @click="arrange(true)">重新布局</a-button>
         <a-button :disabled="!layoutKey || !flowNodes.length || layoutLoading || (layoutSaved && !hasLayoutChanges)" @click="saveLayout"><FontAwesomeIcon :icon="['fas', 'floppy-disk']" /><span>保存布局</span></a-button>
+        <a-button :disabled="!flowNodes.length || layoutLoading || !hasLayoutChanges" @click="restoreLayout">还原布局</a-button>
         <a-tag v-if="flowNodes.length && !layoutLoading" role="status" aria-live="polite" :color="hasLayoutChanges ? 'orange' : layoutSaved ? 'green' : 'default'">{{ hasLayoutChanges ? '有未保存的修改' : layoutSaved ? '已保存' : '尚未保存' }}</a-tag>
         <a-button :disabled="!flowNodes.length" @click="fit">适应画布</a-button>
         <a-button :loading="fullscreenPending" :aria-pressed="isFullscreen" @click="toggleFullscreen">
@@ -101,6 +102,7 @@ const imageAction = ref('')
 const copyPreviewUrl = ref('')
 const layoutSaved = ref(false)
 const baselinePositions = shallowRef(new Map())
+const initialPositions = shallowRef(new Map())
 const hasLayoutChanges = computed(() => flowNodes.value.some((node) => {
   const baseline = baselinePositions.value.get(node.id)
   return !baseline || node.position.x !== baseline.x || node.position.y !== baseline.y
@@ -174,6 +176,22 @@ function saveLayout() {
     message.success('布局已保存到当前浏览器')
   } catch (error) {
     storageError.value = `保存布局失败：${error.message}。当前位置未丢失，请重试。`
+  }
+}
+
+async function restoreLayout() {
+  cancelLabelDrag()
+  // Newly added services have no saved coordinates; restore their initial placement without overwriting storage.
+  flowElements.value = flowElements.value.map((element) => {
+    if ('source' in element) return element
+    const position = baselinePositions.value.get(element.id) || initialPositions.value.get(element.id)
+    return { ...element, position: { ...position } }
+  })
+  labelOffsets.value = Object.fromEntries(Object.entries(baselineLabelOffsets.value).map(([id, offset]) => [id, { ...offset }]))
+  try {
+    await fit()
+  } catch (error) {
+    message.error(`还原布局后适应画布失败：${error.message}`)
   }
 }
 
@@ -370,6 +388,7 @@ async function arrange(force = false) {
     }
     if (!force && !sameNodes) positions = restorePositions(positions)
     if (!force && !sameNodes) {
+      initialPositions.value = new Map(positions.map((node) => [node.id, { ...node.position }]))
       // Vue Flow mutates coordinates while dragging; the comparison baseline must not share those objects.
       baselinePositions.value = layoutSaved.value
         ? new Map(savedPositions)

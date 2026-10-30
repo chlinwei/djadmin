@@ -93,6 +93,41 @@ async function clickControl(text) {
 }
 
 describe('dependency graph with the real Vue Flow engine', () => {
+  it('restores nodes and label routes in place without saving or changing dependencies', async () => {
+    const layoutKey = '[1,3,null,null]'
+    const flow = await create({ layoutKey })
+    await flow.vm.$.exposed.setViewport({ x: 0, y: 0, zoom: 1 })
+    await flushPromises()
+    expect(wrapper.findComponent(Spin).props('spinning')).toBe(false)
+    const initialLabel = labelFor(1).element.style.transform
+    await drag(labelFor(1), 60, 40)
+    expect(labelFor(1).element.style.transform).not.toBe(initialLabel)
+    await clickControl('还原布局')
+    expect(labelFor(1).element.style.transform).toBe(initialLabel)
+    expect(status()).toBe('尚未保存')
+
+    await flow.vm.$.exposed.setViewport({ x: 0, y: 0, zoom: 1 })
+    await drag(labelFor(1), 80, 50)
+    await clickControl('保存布局')
+    const savedLabel = labelFor(1).element.style.transform
+    const savedNodes = storedNodes(flow).map((node) => ({ ...node.position }))
+    const saved = localStorage.getItem(`service-dependency-layout:v1:${layoutKey}`)
+    await drag(labelFor(1), 100, 60)
+    flow.vm.$emit('update:modelValue', flow.props('modelValue').map((item) => 'source' in item
+      ? item : { ...item, position: { x: item.position.x, y: item.position.y + 150 } }))
+    await flushPromises()
+    expect(status()).toBe('有未保存的修改')
+    await clickControl('还原布局')
+
+    expect(storedNodes(flow).map((node) => node.position)).toEqual(savedNodes)
+    expect(labelFor(1).element.style.transform).toBe(savedLabel)
+    expect(status()).toBe('已保存')
+    expect(storedEdges(flow).map((edge) => [edge.source, edge.target])).toEqual([['24', '23']])
+    expect(localStorage.getItem(`service-dependency-layout:v1:${layoutKey}`)).toBe(saved)
+    expect(wrapper.emitted('select-edge')).toBeUndefined()
+    expect(missingEndpointWarnings()).toEqual([])
+  })
+
   it('registers both endpoints, renders the directed edge and finishes initialization without a loading deadlock', async () => {
     const flow = await create()
     expect(storedNodes(flow).map((node) => node.id)).toEqual(['24', '23'])

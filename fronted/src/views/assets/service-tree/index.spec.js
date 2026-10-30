@@ -68,7 +68,10 @@ const ServiceDependencyWorkspaceStub = {
 async function mountPage(query = {}) {
   const router = createRouter({
     history: createMemoryHistory(),
-    routes: [{ path: '/assets/service-tree', component: ServiceTreePage }],
+    routes: [
+      { path: '/assets/service-tree', component: ServiceTreePage },
+      { path: '/other', component: { template: '<div />' } },
+    ],
   })
   router.push({ path: '/assets/service-tree', query })
   await router.isReady()
@@ -394,6 +397,69 @@ describe('service-tree/index.vue 逻辑服务 CRUD 入口', () => {
 })
 
 describe('service-tree/index.vue 深链定位', () => {
+  it.each([
+    { nodeType: 'project', projectId: 1, projectName: '项目', nodeTitle: '项目' },
+    { nodeType: 'businessSystem', projectId: 1, businessSystemId: 7, nodeTitle: '订单系统' },
+    { nodeType: 'environment', businessSystemId: 7, environment: 72, nodeTitle: '测试环境' },
+    { nodeType: 'environment', businessSystemId: 7, environment: null, nodeTitle: '未配置环境' },
+    { nodeType: 'service', applicationServiceId: 21, businessSystemId: 7, environment: 72, nodeTitle: '订单 API' },
+    { nodeType: 'deployment', applicationServiceId: 21, deploymentId: 31, nodeTitle: '订单实例' },
+  ])('restores selected $nodeType and dependency panel from the updated URL', async (scope) => {
+    let wrapper = await mountPage({ unrelated: 'keep' })
+    wrapper.findComponent(ServiceTreeStub).vm.$emit('select', scope)
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]').find((tab) => tab.text() === '依赖关系').trigger('click')
+    await flushPromises()
+    const query = { ...wrapper.vm.$router.currentRoute.value.query }
+    expect(query).toMatchObject({ node_type: scope.nodeType, panel: 'dependencies', unrelated: 'keep' })
+    wrapper.unmount()
+
+    wrapper = await mountPage(query)
+    await flushPromises()
+    expect(wrapper.findComponent(ServiceTreeNodeContentStub).exists()).toBe(false)
+    expect(wrapper.findComponent(ServiceDependencyWorkspaceStub).props('scope')).toMatchObject(scope)
+    wrapper.unmount()
+  })
+
+  it('updates location for detail navigation and removes stale IDs when returning to the root', async () => {
+    const wrapper = await mountPage({ application_service_id: '21', service_name: '订单 API' })
+    wrapper.findComponent(ServiceTreeNodeContentStub).vm.$emit('navigate', {
+      nodeType: 'businessSystem', businessSystemId: 7, nodeTitle: '订单系统',
+    })
+    await flushPromises()
+    expect(wrapper.vm.$router.currentRoute.value.query).toMatchObject({ node_type: 'businessSystem', business_system_id: '7' })
+    expect(wrapper.vm.$router.currentRoute.value.query.application_service_id).toBeUndefined()
+    wrapper.findComponent(ServiceTreeStub).vm.$emit('select', { nodeType: 'all', nodeTitle: '全部业务' })
+    await flushPromises()
+    expect(wrapper.vm.$router.currentRoute.value.query).toEqual({})
+    wrapper.unmount()
+  })
+
+  it('keeps temporary root filters when synchronizing a panel change', async () => {
+    const wrapper = await mountPage()
+    const scope = { nodeType: 'all', nodeTitle: '全部业务', projectIds: [1], environmentIds: [72] }
+    wrapper.findComponent(ServiceTreeStub).vm.$emit('select', scope)
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]').find((tab) => tab.text() === '依赖关系').trigger('click')
+    await flushPromises()
+    expect(wrapper.findComponent(ServiceDependencyWorkspaceStub).props('scope')).toEqual(scope)
+    wrapper.unmount()
+  })
+
+  it('applies changed links on the same cached page but ignores other routes', async () => {
+    const wrapper = await mountPage()
+    await wrapper.vm.$router.push({
+      path: '/assets/service-tree',
+      query: { application_service_id: '22', panel: 'dependencies' },
+    })
+    await flushPromises()
+    expect(wrapper.findComponent(ServiceDependencyWorkspaceStub).props('scope').applicationServiceId).toBe(22)
+    await wrapper.vm.$router.push({ path: '/other', query: { application_service_id: '99' } })
+    await flushPromises()
+    expect(wrapper.findComponent(ServiceDependencyWorkspaceStub).props('scope').applicationServiceId).toBe(22)
+    wrapper.unmount()
+  })
+
   it('带 application_service_id query 挂载时直接定位到该服务节点', async () => {
     const wrapper = await mountPage({
       application_service_id: '21',

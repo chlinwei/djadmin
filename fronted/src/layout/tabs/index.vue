@@ -40,7 +40,8 @@ const activeKey = computed({
 })
 
 watch(activeKey, (newPath) => {
-  router.push(newPath)
+  // Route-driven query updates already navigated; do not start a second navigation from the tab watcher.
+  if (vueRouter.currentRoute.value.fullPath !== newPath) router.push(newPath)
 })
 
 // 如果点击返回

@@ -4,10 +4,15 @@
 
 ## 数据流
 
-1. 菜单点击 / 路由变化 → `store.state.tabs` 追加 `{title, key}`，`key` 为路由 `fullPath`（可能带 query）。
+1. 菜单点击 / 路由变化 → `store.state.tabs` 记录 `{title, key}`，`key` 为路由 `fullPath`（可能带 query）。
+   服务树 `/assets/service-tree/index` 与日志中心 `/monitor/logging/center` 按页面路径复用各自已有标签，并更新为最新完整链接，
+   避免用 query 保存选中节点与页签时不断新增标签；其他页面仍按完整地址区分。
 2. `layout/index.vue` 的 `tab_includes` 计算 `KeepAlive` 的 `include` 名单。
 3. `layout/tabs/index.vue` 渲染标签，关闭标签时提交 `remove_tab` / `close_all_tabs`，并由 `activeKey` 的 watcher 触发 `router.push`。
 4. 路由组件（所有 `views/**` 页面）由 `router/index.js` 的 `stampKeepAliveNames` / `withKeepAliveName` 在懒加载解析后盖上按路由定义路径生成的唯一 `name`，即 `keepAliveNameOf(route.path)`。
+
+路由变化已经到达目标完整地址时，`activeKey` 的 watcher 不再发起重复导航；
+用户主动切换到其他标签时才 push 对应地址。
 
 ## 关键决策
 

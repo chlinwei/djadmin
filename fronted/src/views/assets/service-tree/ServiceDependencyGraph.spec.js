@@ -80,7 +80,52 @@ async function clickText(text) {
 }
 const layoutStatus = () => wrapper.get('.graph-controls [role="status"]')
 const saveButton = () => wrapper.findAll('button').find((button) => button.text().includes('保存布局'))
+const restoreButton = () => wrapper.findAll('button').find((button) => button.text() === '还原布局')
 describe('dependency graph interactions', () => {
+  it('restores initial coordinates without saving or changing scope and can be used repeatedly', async () => {
+    const flow = await create()
+    const initial = flowNodes(flow).map((node) => ({ ...node.position }))
+    expect(restoreButton().attributes('disabled')).toBeDefined()
+    const write = vi.spyOn(Storage.prototype, 'setItem')
+    for (let i = 0; i < 2; i++) {
+      flowNodes(flow)[0].position.x += 120
+      await flushPromises()
+      expect(restoreButton().attributes('disabled')).toBeUndefined()
+      await clickText('还原布局')
+      expect(flowNodes(flow).map((node) => node.position)).toEqual(initial)
+      expect(layoutStatus().text()).toBe('尚未保存')
+      expect(restoreButton().attributes('disabled')).toBeDefined()
+    }
+    expect(write).not.toHaveBeenCalled()
+    expect(wrapper.props('layoutKey')).toBe(layoutKey)
+    expect(layoutDependencyNodes).toHaveBeenCalledTimes(1)
+  })
+  it('restores saved positions after relayout without overwriting storage', async () => {
+    const flow = await create()
+    flowNodes(flow)[0].position.y = 240
+    await flushPromises()
+    await clickText('保存布局')
+    const saved = localStorage.getItem(storageKey)
+    await clickText('重新布局')
+    expect(layoutStatus().text()).toBe('有未保存的修改')
+    await clickText('还原布局')
+    expect(flowNodes(flow)[0].position).toEqual({ x: 0, y: 240 })
+    expect(layoutStatus().text()).toBe('已保存')
+    expect(localStorage.getItem(storageKey)).toBe(saved)
+    expect(saveButton().attributes('disabled')).toBeDefined()
+  })
+  it('restores new unsaved nodes to their initial placement alongside saved nodes', async () => {
+    const flow = await create()
+    await clickText('保存布局')
+    await wrapper.setProps({ nodes: [record(1), record(2), record(3)] })
+    await flushPromises()
+    const initial = flowNodes(flow).map((node) => ({ ...node.position }))
+    flowNodes(flow)[2].position.y = 400
+    await flushPromises()
+    await clickText('还原布局')
+    expect(flowNodes(flow).map((node) => node.position)).toEqual(initial)
+    expect(JSON.parse(localStorage.getItem(storageKey)).positions[3]).toBeUndefined()
+  })
   it('keeps the line legend without displaying a bottom help paragraph', async () => {
     await create()
     expect(wrapper.find('.graph-help').exists()).toBe(false)

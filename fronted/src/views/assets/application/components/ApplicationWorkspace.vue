@@ -297,7 +297,7 @@ const runtimeRefreshing = ref(false)
 const deploymentControlLoading = reactive({})
 const paginationState = reactive({ current: 1, pageSize: 10, total: 0 })
 
-const categoryLabels = { web_container: 'Web 容器', database: '数据库', middleware: '中间件', business: '业务应用', other: '其他' }
+const categoryLabels = { web_container: 'Web 容器', database: '数据库', cache: '缓存', message_queue: '消息中间件', middleware: '中间件', business: '业务应用', other: '其他' }
 const controlTypeLabels = { systemd: 'Systemd', command: '命令行', external_ha: '外部 HA', docker: 'Docker', docker_compose: 'Docker Compose' }
 const clusterTypeLabels = { ha: 'HA 集群', custom: '自定义集群' }
 const controlTypeColors = { systemd: 'blue', command: 'orange', external_ha: 'gold', docker: 'cyan', docker_compose: 'geekblue' }

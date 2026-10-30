@@ -19,10 +19,13 @@ export default createStore({
     getters: {},
     mutations: {
         add_tab: (state, tab) => {
+            // 服务树与日志中心用 query 保存当前位置；节点切换仍属于同一工作台，不能每次新增标签。
+            const pagePath = tab.key.split(/[?#]/)[0]
+            const workspaceTab = ['/assets/service-tree/index', '/monitor/logging/center'].includes(pagePath)
             //如果点击的菜单，已经是active的tab,则直接返回
             //查看是否已经存在
             let flag = state.tabs.findIndex(e => {
-                return e.key == tab.key;
+                return e.key == tab.key || (workspaceTab && e.key.split(/[?#]/)[0] === pagePath);
             })
             if (flag === -1) {
                 //不存在，则添加
@@ -32,6 +35,8 @@ export default createStore({
                         key: tab.key
                     }
                 );
+            } else if (workspaceTab) {
+                state.tabs[flag] = { title: tab.title, key: tab.key };
             }
             state.activeKey = tab.key;
             state.selectedKeys = [tab.key];
@@ -107,6 +112,3 @@ export default createStore({
     actions: {},
     modules: {}
 })
-
-
-

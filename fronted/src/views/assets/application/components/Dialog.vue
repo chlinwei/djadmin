@@ -43,6 +43,8 @@ const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(trigge
 const categoryOptions = [
     { label: 'Web 容器', value: 'web_container' },
     { label: '数据库', value: 'database' },
+    { label: '缓存', value: 'cache' },
+    { label: '消息中间件', value: 'message_queue' },
     { label: '中间件', value: 'middleware' },
     { label: '业务应用', value: 'business' },
     { label: '其他', value: 'other' },

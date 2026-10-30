@@ -10,11 +10,11 @@
           group-by-project
           @stats-change="handleStatsChange"
           @hosts-loaded="hostSnapshots = $event"
-          @select="serviceScope = $event"
+          @select="selectScope"
         />
       </template>
       <main class="service-tree-content">
-        <a-tabs v-model:active-key="activePanel">
+        <a-tabs v-model:active-key="activePanel" @change="syncLocation">
           <a-tab-pane key="info" tab="服务信息" />
           <a-tab-pane key="dependencies" tab="依赖关系" />
         </a-tabs>
@@ -68,7 +68,7 @@
           ref="nodeContentRef"
           :scope="serviceScope"
           :host-snapshots="hostSnapshots"
-          @navigate="serviceScope = $event"
+          @navigate="selectScope"
           @edit-business-system="openBusinessSystem"
           @delete-business-system="confirmDeleteBusinessSystem"
           @edit-service="openApplicationService"
@@ -103,12 +103,12 @@
 
 <script setup>
 import { computed, defineAsyncComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
 import { Alert, message, Spin } from 'ant-design-vue'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import ServiceTreeLayout from '@/components/ServiceTreeLayout.vue'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
+import { useServiceTreeLocation } from '@/util/serviceTreeLocation'
 import { batchDeleteBusinessSystems, batchDeleteApplicationServices } from '@/api/assets/application'
 import { checkPermission } from '@/directives/permission/permission'
 import ServiceTree from '../application/components/ServiceTree.vue'
@@ -126,7 +126,6 @@ const dependencyWorkspaceRef = ref(null)
 const canViewDependencies = computed(() => checkPermission('assets:applications:view'))
 const serviceScope = ref({ nodeType: 'all', nodeTitle: '全部业务' })
 const hostSnapshots = ref([])
-const route = useRoute()
 const serviceTreeRef = ref(null)
 const nodeContentRef = ref(null)
 const refreshing = ref(false)
@@ -255,7 +254,7 @@ function confirmDeleteBusinessSystem(record) {
       message.success('删除成功')
       // 删的正是当前选中的节点时，节点已经不存在了，退回全部业务，避免详情停留在一个已删除的节点上。
       if (serviceScope.value.nodeType === 'businessSystem' && serviceScope.value.businessSystemId === record.id) {
-        serviceScope.value = { nodeType: 'all', nodeTitle: '全部业务' }
+        selectScope({ nodeType: 'all', nodeTitle: '全部业务' })
       }
       await refreshServiceTree()
     },
@@ -299,7 +298,7 @@ function confirmDeleteService(record) {
       }
       message.success('删除成功')
       if (serviceScope.value.nodeType === 'service' && serviceScope.value.applicationServiceId === record.id) {
-        serviceScope.value = { nodeType: 'all', nodeTitle: '全部业务' }
+        selectScope({ nodeType: 'all', nodeTitle: '全部业务' })
       }
       // 先让子组件收到新范围，再刷新，避免仍按已删除的服务 ID 请求详情。
       await nextTick()
@@ -320,37 +319,11 @@ watch(
 
 onMounted(() => {
   window.addEventListener('resize', resizeCharts)
-  applyQueryScope()
 })
 
-// 深链定位：日志处理规则页「影响服务数」弹窗点服务名会带 query 跳过来
-// （application_service_id 必填，其余用于面包屑）。只设 serviceScope——树组件会按
-// scopeKey 反推选中态高亮对应节点。
-function applyQueryScope() {
-  const query = route.query
-  const serviceId = Number(query.application_service_id)
-  if (!Number.isInteger(serviceId) || serviceId <= 0) return
-  const environmentId = Number(query.environment_id)
-  serviceScope.value = {
-    nodeType: 'service',
-    applicationServiceId: serviceId,
-    nodeTitle: String(query.service_name || `服务 ${serviceId}`),
-    businessSystemId: Number(query.business_system_id) || undefined,
-    environment: Number.isInteger(environmentId) && environmentId > 0 ? environmentId : null,
-    environmentName: String(query.environment_name || ''),
-    projectId: Number(query.project_id) || undefined,
-    projectName: String(query.project_name || ''),
-    businessSystemName: String(query.business_system_name || ''),
-    serviceName: String(query.service_name || `服务 ${serviceId}`),
-  }
-  const deploymentId = Number(query.deployment_id)
-  if (Number.isInteger(deploymentId) && deploymentId > 0) {
-    serviceScope.value = {
-      ...serviceScope.value, nodeType: 'deployment', deploymentId,
-      nodeTitle: `部署 ${deploymentId}`,
-    }
-  }
-}
+const { selectScope, syncLocation } = useServiceTreeLocation(serviceScope, activePanel, {
+  panels: ['info', 'dependencies'], label: '服务树',
+})
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resizeCharts)

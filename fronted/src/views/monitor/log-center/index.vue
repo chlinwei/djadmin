@@ -9,7 +9,7 @@
         :selected-scope="scope"
         :show-stats="false"
         group-by-project
-        @select="scope = $event"
+        @select="selectScope"
       />
     </template>
     <main class="log-center-content">
@@ -22,7 +22,7 @@
         </div>
       </header>
 
-      <a-tabs v-model:active-key="activeTab">
+      <a-tabs v-model:active-key="activeTab" @change="syncLocation">
         <!-- 日志查询最常用，放第一个 tab，也是默认打开的那个。 -->
         <a-tab-pane key="query" tab="日志查询">
           <!-- 非服务节点进入**跨服务查询**：与服务级检索同一套界面（LogQueryPanel），
@@ -932,6 +932,7 @@ import { FORMAT_STATE_COLOR, FORMAT_STATE_LABEL, canVerifyLogFormat, formatActio
 import { fetchAllPages } from '@/util/fetchAllPages'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
+import { useServiceTreeLocation } from '@/util/serviceTreeLocation'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { DROP_FIELD_SUGGESTIONS, DROP_OPERATORS, compileDropRule, parseDropRule } from '@/util/logDropRules'
 import { buildStorageUsagePieOption } from '@/util/storageUsagePie'
@@ -957,6 +958,9 @@ const scope = ref({ nodeType: 'all', nodeTitle: '全部业务' })
 const serviceId = computed(() => scope.value?.applicationServiceId || null)
 
 const activeTab = ref('query')
+const { selectScope, syncLocation } = useServiceTreeLocation(scope, activeTab, {
+  panels: ['query', 'config', 'storage'], label: '日志中心',
+})
 const configLoading = ref(false)
 const configError = ref('')
 const logRows = ref([])
@@ -2237,7 +2241,7 @@ async function loadQueryEnvironmentNames() {
 // 所以这里只要把 scope 指过去，树的高亮会自动跟上，不需要另外通知树。
 function drillDown(target) {
   if (!target?.nodeType) return
-  scope.value = target
+  selectScope(target)
 }
 
 // 加载层级视图的成员名单与日志状态汇总。选中服务时清空（那些数据只有层级视图用得上）。

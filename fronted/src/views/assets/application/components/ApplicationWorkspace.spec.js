@@ -133,6 +133,25 @@ describe('ApplicationWorkspace tab switching', () => {
     wrapper.unmount()
   })
 
+  it('displays cache and message queue category labels', async () => {
+    applicationApi.getApplicationList.mockResolvedValueOnce({
+      data: { data: { results: [
+        { id: 2, name: 'Redis', category: 'cache', versions: [], enabled: true },
+        { id: 3, name: 'IBM MQ', category: 'message_queue', versions: [], enabled: true },
+      ], count: 2 } },
+    })
+    const wrapper = mountWorkspace()
+    await flushPromises()
+
+    const labels = wrapper.findAll('.ant-tag').map((tag) => tag.text())
+    expect(labels).toContain('缓存')
+    expect(labels).toContain('消息中间件')
+    expect(labels).not.toContain('cache')
+    expect(labels).not.toContain('message_queue')
+
+    wrapper.unmount()
+  })
+
   it('creates a cluster directly from a built-in profile', async () => {
     const wrapper = mountWorkspace()
     await flushPromises()

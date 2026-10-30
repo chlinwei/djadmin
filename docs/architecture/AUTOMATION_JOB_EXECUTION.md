@@ -91,6 +91,12 @@ pending ──(worker 消费/内联派发)──> running ──┬──> succe
   `template_content_format_snapshot` 存形态；改模板形态/内容不影响在途作业（包装只在执行时发生，幂等）。
 - agent 安装专用模板（`category=agent`）等内容由系统维护的模板仍按对应流程校验，不受此影响。
 
+`GET /sys/automation/playbooks/:id/download/` 按当前模板的 `content_format` 导出原始内容：
+Playbook 使用 `.yml` 与 `text/yaml; charset=utf-8`，Shell 使用 `.sh` 与
+`text/x-shellscript; charset=utf-8`。Shell 导出不做 YAML 包装，也不改写换行或脚本内容。
+后端清洗模板名称并通过 `Content-Disposition` 提供文件名；
+前端优先采用该文件名，响应未提供文件名时才按列表记录的形态选择相同后缀。
+
 ## 超时语义
 
 | 项 | 值 |
@@ -196,6 +202,12 @@ Inventory 预检沿用 `automation:inventory:view` 权限，任务预检沿用�
 `software_package`（监控软件仓库的安装/卸载）与 `agent`（Agent 安装/更新）是系统托管模板，
 由各自域按分类定位并派发，带自己的参数与生命周期；在自动化任务里手动选它们会绕过这些约定。
 模板管理页仍可查看/编辑这些分类，只是不进入任务选择列表。
+
+模板管理列表铺满容器，不限制表格最大宽度，采用固定表格布局：名称 280px、类型 110px、
+分类 150px、更新时间 180px、操作 180px，描述列自适应剩余宽度。
+窄屏以 1200px 为横向滚动基准，不将整张表限宽后在右侧留白。
+名称与描述单行省略，顶部 Tooltip 展示完整内容，名称及更新时间排序保留；
+右侧操作列固定，按钮样式、权限和交互不变。
 
 任务列表采用固定表格布局，任务名、Inventory 名和模板名保留现有列宽，
 名称单行省略并通过顶部 Tooltip 展示完整值，不允许长名称溢出遮挡相邻的执行超时或状态列。

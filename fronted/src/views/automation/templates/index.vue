@@ -46,6 +46,9 @@
     <a-card title="Playbook模板" size="small" class="block-card">
       <a-table
         :columns="columns"
+        table-layout="fixed"
+        style="width: 100%"
+        :scroll="{ x: 1200 }"
         :data-source="rows"
         :loading="loading"
         :pagination="pagination"
@@ -55,7 +58,12 @@
         @change="handleTableChange"
       >
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'category'">
+          <template v-if="column.key === 'name' || column.key === 'description'">
+            <a-tooltip :title="record[column.key]" placement="top">
+              <span class="template-cell-text">{{ record[column.key] }}</span>
+            </a-tooltip>
+          </template>
+          <template v-else-if="column.key === 'category'">
             <a-tooltip v-if="record.category === 'software_package'" title="由监控软件仓库自动管理，如需修改内容请前往对应软件包编辑页">
               <a-tag color="purple">软件包安装/卸载专用</a-tag>
             </a-tooltip>
@@ -374,12 +382,12 @@ function reportValidationWarnings(warnings) {
 const lineNumberGutterRef = ref(null)
 
 const columns = [
-  { title: '名称', dataIndex: 'name', key: 'name', sorter: true },
+  { title: '名称', dataIndex: 'name', key: 'name', width: 280, ellipsis: { showTitle: false }, sorter: true },
   { title: '类型', key: 'content_format', width: 110 },
   { title: '分类', key: 'category', width: 150 },
-  { title: '描述', dataIndex: 'description', key: 'description' },
+  { title: '描述', dataIndex: 'description', key: 'description', ellipsis: { showTitle: false } },
   { title: '更新时间', dataIndex: 'update_time', key: 'update_time', width: 180, sorter: true },
-  { title: '操作', key: 'action', width: 180 },
+  { title: '操作', key: 'action', fixed: 'right', width: 180 },
 ]
 const categoryFilterOptions = [
   { label: '分类：通用', value: 'general' },
@@ -558,7 +566,8 @@ async function downloadTemplate(record) {
     const res = await playbookConfig.download(record.id)
     const headers = res?.headers || {}
     const contentDisposition = headers['content-disposition'] || headers['Content-Disposition']
-    const fallbackName = `${record.name || 'template'}.yml`
+    const extension = record.content_format === 'shell' ? '.sh' : '.yml'
+    const fallbackName = `${record.name || 'template'}${extension}`
     const filename = parseDownloadFilename(contentDisposition, fallbackName)
     triggerFileDownload(res.data, filename)
   } finally {
@@ -678,6 +687,14 @@ onMounted(async () => {
 
 .block-card {
   margin-bottom: 12px;
+}
+
+.template-cell-text {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .upload-tip {

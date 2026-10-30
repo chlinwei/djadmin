@@ -17,7 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Playbook 模板文件上传/下载，对应 Django PlaybookTemplateManage.upload_file/download_file。
+// Playbook / Shell 模板文件上传与下载。
 // 内容仍存 automation_playbook_template.content 列，不落文件系统。
 
 var playbookFilenamePattern = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
@@ -86,7 +86,7 @@ func (handler *Handler) UploadFile(context *gin.Context) {
 	handler.GetByID(context, id)
 }
 
-// DownloadFile 以 text/yaml 附件形式下发模板内容，文件名由模板 name 清洗而来。
+// DownloadFile 按模板形态导出原始内容；Shell 下载不包含执行时的 Playbook 包装。
 func (handler *Handler) DownloadFile(context *gin.Context) {
 	id, err := strconv.ParseInt(context.Param("id"), 10, 64)
 	if err != nil {
@@ -102,7 +102,11 @@ func (handler *Handler) DownloadFile(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
-	filename := playbookFilenamePattern.ReplaceAllString(playbook.Name, "-") + ".yml"
+	extension, contentType := ".yml", "text/yaml; charset=utf-8"
+	if playbook.ContentFormat == playbookFormatShell {
+		extension, contentType = ".sh", "text/x-shellscript; charset=utf-8"
+	}
+	filename := playbookFilenamePattern.ReplaceAllString(playbook.Name, "-") + extension
 	context.Header("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(filename))
-	context.Data(http.StatusOK, "text/yaml; charset=utf-8", []byte(playbook.Content))
+	context.Data(http.StatusOK, contentType, []byte(playbook.Content))
 }

@@ -99,40 +99,44 @@ func TestPlaybookUploadFile(t *testing.T) {
 	}
 }
 
-// 下载回归：text/yaml 附件、filename* 按 RFC 5987 编码。
+// 下载按形态区分后缀与 MIME，原始内容保持逐字节一致。
 func TestPlaybookDownloadFile(t *testing.T) {
-	// 下载走的是取行查询（原先只取 name/content，现复用 GetAutomationPlaybook）。
 	selectQuery := regexp.QuoteMeta(`SELECT id, create_time, update_time, remark, name, description, content, content_format, category`)
-	database, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("create sql mock: %v", err)
+	cases := []struct {
+		format, content, extension, contentType string
+	}{
+		{playbookFormatPlaybook, "- hosts: all\n", ".yml", "text/yaml; charset=utf-8"},
+		{playbookFormatShell, "#!/usr/bin/env bash\r\nprintf '%s\\n' \"你好 $HOME\"\r\n", ".sh", "text/x-shellscript; charset=utf-8"},
 	}
-	defer database.Close()
-	engine := newPlaybookFileServer(t, database)
-
-	mock.ExpectQuery(selectQuery).WithArgs(int64(3)).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "create_time", "update_time", "remark", "name", "description", "content", "content_format", "category"}).
-			AddRow(int64(3), time.Now().UTC(), time.Now().UTC(), nil, "deploy main v2", "", "- hosts: all\n", "playbook", "general"))
-	recorder := httptest.NewRecorder()
-	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/playbooks/3/download/", nil))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("download status=%d", recorder.Code)
-	}
-	if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/yaml") {
-		t.Fatalf("content-type=%q", got)
-	}
-	disposition := recorder.Header().Get("Content-Disposition")
-	if !strings.HasPrefix(disposition, "attachment; filename*=UTF-8''") {
-		t.Fatalf("disposition=%q", disposition)
-	}
-	expected := url.PathEscape("deploy-main-v2.yml")
-	if !strings.Contains(disposition, expected) {
-		t.Fatalf("filename missing %q in %q", expected, disposition)
-	}
-	if !strings.Contains(recorder.Body.String(), "- hosts: all") {
-		t.Fatalf("content missing: %s", recorder.Body.String())
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unmet expectations: %v", err)
+	for _, testCase := range cases {
+		t.Run(testCase.format, func(t *testing.T) {
+			database, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("create sql mock: %v", err)
+			}
+			defer database.Close()
+			engine := newPlaybookFileServer(t, database)
+			mock.ExpectQuery(selectQuery).WithArgs(int64(3)).
+				WillReturnRows(sqlmock.NewRows([]string{"id", "create_time", "update_time", "remark", "name", "description", "content", "content_format", "category"}).
+					AddRow(int64(3), time.Now().UTC(), time.Now().UTC(), nil, "deploy main v2", "", testCase.content, testCase.format, "general"))
+			recorder := httptest.NewRecorder()
+			engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/playbooks/3/download/", nil))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("download status=%d", recorder.Code)
+			}
+			if got := recorder.Header().Get("Content-Type"); got != testCase.contentType {
+				t.Fatalf("content-type=%q, want %q", got, testCase.contentType)
+			}
+			expected := "attachment; filename*=UTF-8''" + url.PathEscape("deploy-main-v2"+testCase.extension)
+			if got := recorder.Header().Get("Content-Disposition"); got != expected {
+				t.Fatalf("disposition=%q, want %q", got, expected)
+			}
+			if recorder.Body.String() != testCase.content {
+				t.Fatalf("download must preserve raw %s content: %q", testCase.format, recorder.Body.String())
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("unmet expectations: %v", err)
+			}
+		})
 	}
 }

@@ -49,6 +49,12 @@ const LEVEL_BUCKETS = [
 const getElasticsearchClusterList = vi.fn(() => Promise.resolve({ data: { data: { results: [CLUSTER], count: 1 } } }))
 const searchElasticsearchLogs = vi.fn(() => Promise.resolve({ data: { data: { results: [LOG_DOC], count: 1, size: 100, offset: 0 } } }))
 const getHostList = vi.fn()
+const emptyLiveTailStatus = () => ({ max_viewers: 5, max_files: 5, user_files: 0, files: [] })
+const getLogLiveTailStatus = vi.fn(async () => ({ data: { data: emptyLiveTailStatus() } }))
+afterEach(() => {
+  getLogLiveTailStatus.mockReset().mockImplementation(async () => ({ data: { data: emptyLiveTailStatus() } }))
+  searchElasticsearchLogs.mockClear()
+})
 const resolveWebSshRoute = vi.fn(() => ({ href: '/assets/hosts/webssh?host_id=11' }))
 vi.mock('@/api/assets/host', () => ({
   getHostList: (...args) => getHostList(...args),
@@ -62,6 +68,7 @@ const searchElasticsearchLogFacetStats = vi.fn((id, params) => {
 })
 
 vi.mock('@/api/monitor', () => ({
+  getLogLiveTailStatus: (...args) => getLogLiveTailStatus(...args),
   getElasticsearchClusterList: (...args) => getElasticsearchClusterList(...args),
   searchElasticsearchLogs: (...args) => searchElasticsearchLogs(...args),
   searchElasticsearchLogFacetStats: (...args) => searchElasticsearchLogFacetStats(...args),
@@ -289,8 +296,8 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
       try {
         await flushPromises()
         expect(wrapper.vm.columns.find((column) => column.key === 'action'))
-          .toMatchObject({ fixed: 'right', width: 260 })
-        expect(wrapper.findComponent(Table).props('scroll')).toEqual({ x: 1830 })
+          .toMatchObject({ fixed: 'right', width: 320 })
+        expect(wrapper.findComponent(Table).props('scroll')).toEqual({ x: 1890 })
         const row = wrapper.get('tr[data-row-key="doc-1"]')
         const tooltip = row.findAllComponents(Tooltip)
           .find((item) => item.find('button[aria-label="Web SSH"]').exists())
@@ -488,8 +495,8 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
       const row = wrapper.get('tr[data-row-key="doc-1"]')
       expect(row.findAll('button').some((button) => button.text().replace(/\s/g, '') === '实时跟踪')).toBe(visible)
       const actionColumn = wrapper.vm.columns.find((column) => column.key === 'action')
-      expect(actionColumn).toMatchObject({ fixed: 'right', width: visible ? 200 : 100 })
-      expect(wrapper.findComponent(Table).props('scroll')).toEqual({ x: visible ? 1770 : 1670 })
+      expect(actionColumn).toMatchObject({ fixed: 'right', width: visible ? 260 : 100 })
+      expect(wrapper.findComponent(Table).props('scroll')).toEqual({ x: visible ? 1830 : 1670 })
       wrapper.vm.openDetail(LOG_DOC)
       await flushPromises()
       const button = [...document.querySelectorAll('.ant-drawer button')]
@@ -539,7 +546,7 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
       const button = tooltip.get('button')
       expect(button.isVisible()).toBe(true)
       vi.useFakeTimers()
-      await button.trigger('mouseenter')
+      await tooltip.get('span').trigger('mouseenter')
       await vi.advanceTimersByTimeAsync(200)
       expect(document.body.querySelector('.ant-tooltip-inner')?.textContent).toBe('查看日志')
       await button.trigger('click')
@@ -547,7 +554,7 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
       expect(start).toHaveBeenLastCalledWith(secondLog, scope.nodeType === 'all' ? '第二个服务' : 'tomcat服务')
       expect(wrapper.vm.detailOpen).toBe(false)
       expect(wrapper.findComponent(Table).props('scroll').x).toBe(wrapper.vm.tableScrollX)
-      expect(wrapper.vm.tableScrollX).toBe(scope.nodeType === 'all' ? 2290 : 1770)
+      expect(wrapper.vm.tableScrollX).toBe(scope.nodeType === 'all' ? 2350 : 1830)
       wrapper.vm.openDetail(secondLog)
       await flushPromises()
       const detailButton = [...document.querySelectorAll('.ant-drawer-content button')]
@@ -607,6 +614,206 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
       wrapper.unmount()
       searchElasticsearchLogs.mockClear()
     }
+  })
+
+  describe('实时跟踪占用状态', () => {
+    const record = { ...LOG_DOC, service_id: '42' }
+    const scope = { nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' }
+    const occupancy = (viewers, currentUser = false, userFiles = 0) => ({
+      ...emptyLiveTailStatus(), user_files: userFiles,
+      files: [{ host_ip: record.host_ip, log_path: record.log_path, viewers, current_user: currentUser }],
+    })
+    const enableRows = (rows = [record]) => searchElasticsearchLogs.mockResolvedValueOnce({
+      data: { data: { results: rows, count: rows.length, live_tail_enabled: true } },
+    })
+    const rowAction = (wrapper, label, id = record.id) => wrapper.get(`tr[data-row-key="${id}"]`).findAll('button')
+      .find((button) => button.text().replace(/\s/g, '') === label)
+
+    it.each([
+      { viewers: 5, own: true, userFiles: 5, label: '其他页面跟踪中', disabled: false },
+      { viewers: 5, own: false, userFiles: 0, label: '跟踪已满', disabled: true },
+      { viewers: 4, own: false, userFiles: 0, label: '实时跟踪', disabled: false },
+      { viewers: 1, own: false, userFiles: 5, label: '已达上限', disabled: true },
+    ])('列表与详情统一显示 $label，已有占用优先于上限', async ({ viewers, own, userFiles, label, disabled }) => {
+      enableRows()
+      getLogLiveTailStatus.mockResolvedValue({ data: { data: occupancy(viewers, own, userFiles) } })
+      const wrapper = mountPanel(scope)
+      const info = vi.spyOn(message, 'info').mockImplementation(() => {})
+      try {
+        await flushPromises()
+        const start = vi.spyOn(wrapper.vm.liveTailDialog, 'start').mockImplementation(() => {})
+        const button = rowAction(wrapper, label)
+        expect(button.isVisible()).toBe(true)
+        expect(button.element.disabled).toBe(disabled)
+        const tooltip = wrapper.get(`tr[data-row-key="${record.id}"]`).findAllComponents(Tooltip)
+          .find((item) => item.props('title')?.startsWith('查看日志'))
+        expect(tooltip.props('placement')).toBe('top')
+        vi.useFakeTimers()
+        await tooltip.get('span').trigger('mouseenter')
+        await vi.advanceTimersByTimeAsync(200)
+        const hint = [...document.querySelectorAll('.ant-tooltip-inner')].map((node) => node.textContent).join('')
+        expect(hint).toContain('查看日志')
+        if (disabled && label === '跟踪已满') expect(hint).toContain('5/5')
+        await button.trigger('click')
+        if (label === '实时跟踪') expect(start).toHaveBeenCalledOnce()
+        else expect(start).not.toHaveBeenCalled()
+        if (own) expect(info).toHaveBeenCalledWith(expect.stringContaining('请切回'))
+        wrapper.vm.openDetail(record)
+        await flushPromises()
+        const detailButton = [...document.querySelectorAll('.ant-drawer-content button')]
+          .find((item) => item.textContent.replace(/\s/g, '') === label)
+        expect(detailButton).toBeTruthy()
+        expect(detailButton.disabled).toBe(disabled)
+        detailButton.click()
+        await flushPromises()
+        if (label === '实时跟踪') expect(start).toHaveBeenCalledTimes(2)
+        else expect(start).not.toHaveBeenCalled()
+        if (own) expect(info).toHaveBeenCalledTimes(2)
+      } finally {
+        wrapper.unmount()
+        vi.restoreAllMocks()
+        vi.useRealTimers()
+      }
+    })
+
+    it('同主机同路径的多行复用当前标签，停止后仍查看缓存，关闭后恢复入口', async () => {
+      const sockets = []
+      vi.stubGlobal('WebSocket', class {
+        static OPEN = 1
+        readyState = 1
+        send = vi.fn()
+        close = vi.fn()
+        constructor() { sockets.push(this) }
+      })
+      const second = { ...record, id: 'doc-2', service_id: '43', service: 'another-service', log_name: 'alias-name' }
+      enableRows([record, second])
+      const wrapper = mountPanel(scope)
+      const info = vi.spyOn(message, 'info').mockImplementation(() => {})
+      try {
+        await flushPromises()
+        await wrapper.vm.startLiveTail(record)
+        await flushPromises()
+        getLogLiveTailStatus.mockResolvedValue({ data: { data: occupancy(5, true, 5) } })
+        await wrapper.vm.refreshLiveTailStatus()
+        await flushPromises()
+        expect(rowAction(wrapper, '查看跟踪').element.disabled).toBe(false)
+        expect(rowAction(wrapper, '查看跟踪', 'doc-2').element.disabled).toBe(false)
+        await wrapper.vm.startLiveTail(second)
+        expect(sockets).toHaveLength(1)
+        sockets[0].onmessage({ data: JSON.stringify({ type: 'end', message: '已停止' }) })
+        await flushPromises()
+        expect(wrapper.vm.liveTailDialog.getTabState(record)).toMatchObject({ tracking: false })
+        await rowAction(wrapper, '查看跟踪').trigger('click')
+        expect(sockets).toHaveLength(1)
+        expect(info).toHaveBeenCalledWith(expect.stringContaining('此标签已停止'))
+        wrapper.vm.openDetail(second)
+        await flushPromises()
+        const detailButton = [...document.querySelectorAll('.ant-drawer-content button')]
+          .find((item) => item.textContent.replace(/\s/g, '') === '查看跟踪')
+        detailButton.click()
+        await flushPromises()
+        expect(sockets).toHaveLength(1)
+        getLogLiveTailStatus.mockResolvedValue({ data: { data: emptyLiveTailStatus() } })
+        wrapper.vm.liveTailDialog.closeAll()
+        await flushPromises()
+        expect(rowAction(wrapper, '实时跟踪')).toBeTruthy()
+        expect(rowAction(wrapper, '实时跟踪', 'doc-2')).toBeTruthy()
+      } finally {
+        wrapper.unmount()
+        vi.restoreAllMocks()
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('轮询名额释放及窗口重新聚焦时刷新，不按日志行数增加请求', async () => {
+      vi.useFakeTimers()
+      enableRows(Array.from({ length: 10 }, (_, index) => ({ ...record, id: `row-${index}` })))
+      getLogLiveTailStatus.mockResolvedValue({ data: { data: occupancy(5) } })
+      const wrapper = mountPanel(scope)
+      try {
+        await flushPromises()
+        expect(getLogLiveTailStatus).toHaveBeenCalledOnce()
+        expect(rowAction(wrapper, '跟踪已满', 'row-0')).toBeTruthy()
+        getLogLiveTailStatus.mockResolvedValue({ data: { data: occupancy(4) } })
+        await vi.advanceTimersByTimeAsync(5000)
+        await flushPromises()
+        expect(getLogLiveTailStatus).toHaveBeenCalledTimes(2)
+        expect(rowAction(wrapper, '实时跟踪', 'row-0')).toBeTruthy()
+        getLogLiveTailStatus.mockResolvedValue({ data: { data: occupancy(1, true, 1) } })
+        window.dispatchEvent(new Event('focus'))
+        await flushPromises()
+        expect(rowAction(wrapper, '其他页面跟踪中', 'row-0')).toBeTruthy()
+        const calls = getLogLiveTailStatus.mock.calls.length
+        wrapper.unmount()
+        await vi.advanceTimersByTimeAsync(10000)
+        window.dispatchEvent(new Event('focus'))
+        expect(getLogLiveTailStatus).toHaveBeenCalledTimes(calls)
+      } finally {
+        wrapper.unmount()
+        vi.useRealTimers()
+      }
+    })
+
+    it.each(['请求失败', '无效响应'])('%s 明确展示错误，不把失败当作空闲，可重试恢复', async (failure) => {
+      enableRows()
+      if (failure === '请求失败') getLogLiveTailStatus.mockRejectedValue(new Error('网络断开'))
+      else getLogLiveTailStatus.mockResolvedValue({ data: { data: { files: [] } } })
+      const wrapper = mountPanel(scope)
+      const warning = vi.spyOn(message, 'warning').mockImplementation(() => {})
+      try {
+        await flushPromises()
+        expect(wrapper.text()).toContain('无法获取实时跟踪占用状态')
+        const start = vi.spyOn(wrapper.vm.liveTailDialog, 'start').mockImplementation(() => {})
+        await wrapper.vm.startLiveTail(record)
+        expect(warning).toHaveBeenCalledWith(expect.stringContaining('无法确认'))
+        expect(start).not.toHaveBeenCalled()
+        getLogLiveTailStatus.mockResolvedValue({ data: { data: emptyLiveTailStatus() } })
+        await wrapper.vm.startLiveTail(record)
+        expect(start).toHaveBeenCalledOnce()
+        expect(wrapper.text()).not.toContain('无法获取实时跟踪占用状态')
+      } finally {
+        wrapper.unmount()
+        vi.restoreAllMocks()
+      }
+    })
+
+    it('KeepAlive 失活丢弃迟到响应并停止轮询，返回后重新获取，不并发重叠', async () => {
+      vi.useFakeTimers()
+      enableRows()
+      let resolveOld
+      getLogLiveTailStatus.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve }))
+      const visible = ref(true)
+      const root = defineComponent({
+        setup: () => () => h(KeepAlive, null, {
+          default: () => visible.value ? h(LogQueryPanel, { scope }) : null,
+        }),
+      })
+      const wrapper = mount(root, {
+        global: { plugins: [Antd], stubs: { FontAwesomeIcon: true }, provide: { [routerKey]: { resolve: resolveWebSshRoute } } },
+        attachTo: document.body,
+      })
+      try {
+        await flushPromises()
+        const panel = wrapper.findComponent(LogQueryPanel)
+        await vi.advanceTimersByTimeAsync(15000)
+        expect(getLogLiveTailStatus).toHaveBeenCalledOnce()
+        visible.value = false
+        await flushPromises()
+        await vi.advanceTimersByTimeAsync(10000)
+        expect(getLogLiveTailStatus).toHaveBeenCalledOnce()
+        getLogLiveTailStatus.mockResolvedValue({ data: { data: emptyLiveTailStatus() } })
+        visible.value = true
+        await flushPromises()
+        expect(getLogLiveTailStatus).toHaveBeenCalledTimes(2)
+        resolveOld({ data: { data: occupancy(5) } })
+        await flushPromises()
+        expect(panel.vm.liveTailAction(record).label).toBe('实时跟踪')
+        expect(panel.vm.liveTailStatusError).toBe('')
+      } finally {
+        wrapper.unmount()
+        vi.useRealTimers()
+      }
+    })
   })
 
   it('范围内没有逻辑服务时展示空状态，不发起日志查询', async () => {

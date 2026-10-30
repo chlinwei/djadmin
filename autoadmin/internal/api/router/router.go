@@ -484,6 +484,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	batchRunner.SetFormatReconciler(assetsService.StartLogFormatReconciler)
 	logcollectHandler.SetLogBatchRunner(batchRunner)
 	monitorRoutes := engine.Group("/monitor", middleware.Authenticate(tokens), middleware.RequirePermission("monitor:view"))
+	monitorRoutes.GET("/log-tail/status/", logcollectHandler.LiveTailStatus)
 	monitorRoutes.GET("/summary/", monitorHandler.Summary)
 	monitorRoutes.GET("/packages/", monitorHandler.ListPackages)
 	monitorRoutes.POST("/packages/", monitorHandler.CreateSoftwarePackage)

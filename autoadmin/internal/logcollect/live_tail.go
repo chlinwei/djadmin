@@ -34,9 +34,15 @@ type liveSource struct {
 type liveSlot struct {
 	user     int32
 	host     string
+	hostIP   string
 	path     string
 	identity string
 }
+
+const (
+	liveTailMaxFilesPerUser   = 5
+	liveTailMaxViewersPerFile = 5
+)
 
 type liveTailState struct {
 	mu      sync.Mutex
@@ -51,7 +57,7 @@ type liveTailState struct {
 // A path retains its file slot across rotation; inode aliases share that slot.
 // Unioning both identities avoids counting old/new rotation descriptors twice,
 // or treating an additional viewer of an already admitted path as a new file.
-func liveFileCounts(slots []liveSlot) (int, map[string]int) {
+func liveFileGroups(slots []liveSlot) []string {
 	parent := map[string]string{}
 	root := func(key string) string {
 		if _, ok := parent[key]; !ok {
@@ -71,13 +77,20 @@ func liveFileCounts(slots []liveSlot) (int, map[string]int) {
 			parent[inodeRoot] = pathRoot
 		}
 	}
+	groups := make([]string, len(slots))
+	for i, slot := range slots {
+		groups[i] = root(pathKey(slot))
+	}
+	return groups
+}
+
+func liveFileCounts(slots []liveSlot) (int, map[string]int) {
 	seen := map[string]bool{}
 	hosts := map[string]int{}
-	for _, slot := range slots {
-		key := root(pathKey(slot))
+	for i, key := range liveFileGroups(slots) {
 		if !seen[key] {
 			seen[key] = true
-			hosts[slot.host]++
+			hosts[slots[i].host]++
 		}
 	}
 	return len(seen), hosts
@@ -108,19 +121,26 @@ func (state *liveTailState) reserve(id string, slot liveSlot) error {
 		}
 		if current.host == slot.host {
 			hostCount++
-			same := current.path == slot.path || (slot.identity != "" && current.identity == slot.identity)
-			if same {
-				fileCount++
-				if current.user == slot.user {
-					return fmt.Errorf("你已在其他窗口跟踪该文件")
-				}
-			}
 		}
 	}
 	allSlots = append(allSlots, slot)
+	// Use the same transitive path/inode group as status and file capacity:
+	// rotation can otherwise let an alias of the old inode evade the file limit.
+	groups := liveFileGroups(allSlots)
+	for i, current := range allSlots[:len(allSlots)-1] {
+		if groups[i] == groups[len(groups)-1] {
+			fileCount++
+			if current.user == slot.user {
+				return fmt.Errorf("你已在其他窗口跟踪该文件")
+			}
+		}
+	}
 	fileCountTotal, hostFiles := liveFileCounts(allSlots)
-	if userCount >= 5 || fileCount >= 5 {
-		return fmt.Errorf("实时跟踪达到上限：每用户 5 个文件，每文件 5 个用户")
+	if fileCount >= liveTailMaxViewersPerFile {
+		return fmt.Errorf("该文件跟踪已满：最多 %d 个用户同时跟踪", liveTailMaxViewersPerFile)
+	}
+	if userCount >= liveTailMaxFilesPerUser {
+		return fmt.Errorf("已达个人跟踪上限：最多同时跟踪 %d 个文件", liveTailMaxFilesPerUser)
 	}
 	_, updating := state.slots[id]
 	if hostCount >= 20 || hostFiles[slot.host] > 10 ||
@@ -358,7 +378,7 @@ func (handler *Handler) LiveTail(socketContext *gin.Context) {
 		return
 	}
 	id := uuid.NewString()
-	slot := liveSlot{user: claims.UserID, host: strconv.FormatInt(target.HostID, 10), path: auth.Source.Path}
+	slot := liveSlot{user: claims.UserID, host: strconv.FormatInt(target.HostID, 10), hostIP: auth.Source.HostIP, path: auth.Source.Path}
 	if err = state.reserve(id, slot); err != nil {
 		fail(err)
 		return

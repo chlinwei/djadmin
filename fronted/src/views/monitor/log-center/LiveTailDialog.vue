@@ -65,7 +65,9 @@ import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { createTailBuffer, liveSourceError, liveSourceFromLog, liveSourceKey, MAX_TAIL_TABS, TAIL_ROW_HEIGHT } from '@/util/liveTail'
 
 const open = ref(false)
+const emit = defineEmits(['state-change'])
 const tabs = reactive([])
+watch(() => tabs.map((tab) => [tab.key, Boolean(tab.socket), tab.status]), () => emit('state-change'))
 const activeKey = ref('')
 const activeTab = computed(() => tabs.find((tab) => tab.key === activeKey.value))
 const viewport = ref(null)
@@ -196,18 +198,24 @@ function closeAll() {
   flushTimer = null
 }
 
+function getTabState(log) {
+  if (!log?.host_ip || !log?.log_path) return null
+  const tab = tabs.find((item) => item.key === liveSourceKey(log))
+  return tab ? { tracking: Boolean(tab.socket), status: tab.status } : null
+}
+
 function start(log, serviceName = log?.service || '') {
-  const source = liveSourceFromLog(log)
-  if (!source) {
-    message.warning(liveSourceError(log))
-    return
-  }
-  const key = liveSourceKey(source)
+  const key = log ? liveSourceKey(log) : ''
   const existing = tabs.find((tab) => tab.key === key)
   if (existing) {
     open.value = true
     activate(key)
     if (!existing.socket) message.info('此标签已停止，可点击“继续跟踪”重新连接；停止期间可能有缺口或重复。')
+    return
+  }
+  const source = liveSourceFromLog(log)
+  if (!source) {
+    message.warning(liveSourceError(log))
     return
   }
   if (tabs.length >= MAX_TAIL_TABS) {
@@ -283,7 +291,7 @@ function resume(tab) {
 // readers; switching file tabs or pausing scroll does not stop ingestion.
 useKeepAliveRefreshLifecycle(() => {}, closeAll)
 onBeforeUnmount(closeAll)
-defineExpose({ start, closeAll })
+defineExpose({ start, closeAll, getTabState })
 </script>
 
 <style scoped>

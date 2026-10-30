@@ -182,6 +182,10 @@ export function searchElasticsearchLogs(id, params) {
   return requestUtil.get(prefix + `elasticsearch-clusters/${id}/log-search/`, params)
 }
 
+export function getLogLiveTailStatus() {
+  return requestUtil.get(prefix + 'log-tail/status/')
+}
+
 // 通用分面统计：params.field 必须是后端白名单字段之一；options_only=true 只聚合候选值与计数，不计算样例/趋势。
 export function searchElasticsearchLogFacetStats(id, params) {
   return requestUtil.get(prefix + `elasticsearch-clusters/${id}/log-facet-stats/`, params)

@@ -146,6 +146,7 @@
         <a-tag v-if="filters.environment" closable @close="clearDrillFilter('environment')">环境 = {{ dimensionName('environments', filters.environment) }}</a-tag>
       </a-space>
 
+      <a-alert v-if="liveTailEnabled && liveTailStatusError" type="warning" show-icon :message="liveTailStatusError" />
       <a-tabs v-model:active-key="activeTab" @change="handleTabChange">
         <!-- 所有树节点使用同一个日志入口，只改变查询范围和来源列。 -->
         <a-tab-pane key="logs" :tab="innerTabs[0].label" force-render>
@@ -188,11 +189,13 @@
                     <a-tooltip title="详细日志" placement="top">
                       <a-button size="small" type="link" @click="openDetail(record)">查看详情</a-button>
                     </a-tooltip>
-                    <a-tooltip v-if="liveTailEnabled" title="查看日志" placement="top">
-                      <a-button size="small" type="link" @click="startLiveTail(record)">
-                        <FontAwesomeIcon :icon="['fas', 'file-lines']" />
-                        <span>&nbsp;实时跟踪</span>
-                      </a-button>
+                    <a-tooltip v-if="liveTailEnabled" :title="liveTailTooltip(record)" placement="top">
+                      <span>
+                        <a-button size="small" type="link" :disabled="liveTailAction(record).disabled" @click="startLiveTail(record)">
+                          <FontAwesomeIcon :icon="['fas', 'file-lines']" />
+                          <span>&nbsp;{{ liveTailAction(record).label }}</span>
+                        </a-button>
+                      </span>
                     </a-tooltip>
                     <a-tooltip v-if="canOpenWebSsh" title="打开WebSSH 终端" placement="top">
                       <a-button
@@ -278,11 +281,13 @@
         <a-descriptions-item label="日志路径">{{ activeLog?.log_path || '-' }}</a-descriptions-item>
         <a-descriptions-item label="错误指纹" v-if="activeLog?.error_fingerprint">{{ activeLog.error_fingerprint }}</a-descriptions-item>
       </a-descriptions>
-      <a-tooltip v-if="liveTailEnabled" title="查看日志" placement="top">
-        <a-button style="margin-top: 12px" @click="startLiveTail(activeLog)">
-          <FontAwesomeIcon :icon="['fas', 'file-lines']" />
-          <span>&nbsp;实时跟踪</span>
-        </a-button>
+      <a-tooltip v-if="liveTailEnabled" :title="liveTailTooltip(activeLog)" placement="top">
+        <span>
+          <a-button style="margin-top: 12px" :disabled="liveTailAction(activeLog).disabled" @click="startLiveTail(activeLog)">
+            <FontAwesomeIcon :icon="['fas', 'file-lines']" />
+            <span>&nbsp;{{ liveTailAction(activeLog).label }}</span>
+          </a-button>
+        </span>
       </a-tooltip>
       <div class="detail-section-head">
         <span class="detail-section-title">原始日志</span>
@@ -321,7 +326,7 @@
       </template>
     </a-drawer>
 
-    <LiveTailDialog v-if="liveTailEnabled" ref="liveTailDialog" />
+    <LiveTailDialog v-if="liveTailEnabled" ref="liveTailDialog" @state-change="refreshLiveTailStatus" />
 
     <a-modal
       v-model:open="detailTextModal.open"
@@ -346,7 +351,8 @@ import { message } from 'ant-design-vue'
 import { createPagination, tableLocale } from '@/util/tableStyle'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
-import { getElasticsearchClusterList, refreshElasticsearchLogIndex, searchElasticsearchLogFacetStats, searchElasticsearchLogs } from '@/api/monitor'
+import { getElasticsearchClusterList, getLogLiveTailStatus, refreshElasticsearchLogIndex, searchElasticsearchLogFacetStats, searchElasticsearchLogs } from '@/api/monitor'
+import { liveSourceError, liveSourceKey } from '@/util/liveTail'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISOStringByUserTimezone } from '@/util/timezoneRange'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
@@ -361,6 +367,95 @@ import LiveTailDialog from './LiveTailDialog.vue'
 const liveTailDialog = ref(null)
 // Only the server advertises availability; hiding also unmounts active readers.
 const liveTailEnabled = ref(false)
+const liveTailStatus = ref(null)
+const liveTailStatusError = ref('')
+const liveTailFiles = computed(() => new Map((liveTailStatus.value?.files || []).map((file) => [liveSourceKey(file), file])))
+let liveTailPageActive = true
+let liveTailStatusTimer = null
+let liveTailStatusRequest = null
+let liveTailStatusGeneration = 0
+
+// Cached local tabs (including stopped readers) win over remote occupancy.
+// Snapshots are advisory; the WebSocket still performs atomic final admission.
+function liveTailAction(log) {
+  const local = liveTailDialog.value?.getTabState(log)
+  if (local) return { label: '查看跟踪', disabled: false, hint: local.tracking ? '' : '当前标签已停止，查看保留内容；继续跟踪需重新申请配额。' }
+  const file = log ? liveTailFiles.value.get(liveSourceKey(log)) : null
+  if (file?.current_user) {
+    return { label: '其他页面跟踪中', disabled: false, hint: '请切回已打开跟踪的页面或设备；不会新建连接或接管跟踪。' }
+  }
+  if (file && file.viewers >= liveTailStatus.value.max_viewers) {
+    return { label: '跟踪已满', disabled: true, hint: `该文件已有 ${file.viewers}/${liveTailStatus.value.max_viewers} 个用户跟踪，请等待名额释放。` }
+  }
+  if (liveTailStatus.value?.user_files >= liveTailStatus.value?.max_files) {
+    return { label: '已达上限', disabled: true, hint: `你已同时跟踪 ${liveTailStatus.value.max_files} 个文件，请先停止一个跟踪。` }
+  }
+  return { label: '实时跟踪', disabled: false, hint: liveTailStatusError.value ? '无法获取占用状态，点击重试；不会在校验失败时新建连接。' : '' }
+}
+
+function liveTailTooltip(log) {
+  const { hint } = liveTailAction(log)
+  return hint ? `查看日志 · ${hint}` : '查看日志'
+}
+
+async function refreshLiveTailStatus() {
+  if (!liveTailEnabled.value || !liveTailPageActive) return false
+  if (liveTailStatusRequest) return liveTailStatusRequest.promise
+  const request = { generation: liveTailStatusGeneration, promise: null }
+  liveTailStatusRequest = request
+  request.promise = (async () => {
+    try {
+      const { data } = await getLogLiveTailStatus()
+      const status = data.data
+      if (!status || !Array.isArray(status.files) || !Number.isInteger(status.max_viewers) || status.max_viewers < 1 ||
+          !Number.isInteger(status.max_files) || status.max_files < 1 || !Number.isInteger(status.user_files) || status.user_files < 0 ||
+          status.files.some((file) => !file || typeof file.host_ip !== 'string' || !file.host_ip || typeof file.log_path !== 'string' || !file.log_path ||
+            !Number.isInteger(file.viewers) || file.viewers < 1 || typeof file.current_user !== 'boolean')) {
+        throw new Error('跟踪占用状态响应无效')
+      }
+      if (request.generation !== liveTailStatusGeneration) return false
+      liveTailStatus.value = status
+      liveTailStatusError.value = ''
+      return true
+    } catch (error) {
+      if (request.generation === liveTailStatusGeneration) {
+        liveTailStatus.value = null
+        liveTailStatusError.value = `无法获取实时跟踪占用状态，将自动重试：${error?.message || '请求失败'}`
+      }
+      return false
+    } finally {
+      if (liveTailStatusRequest === request) liveTailStatusRequest = null
+    }
+  })()
+  return request.promise
+}
+
+function startLiveTailStatusPolling() {
+  if (!liveTailEnabled.value || !liveTailPageActive || liveTailStatusTimer !== null) return
+  void refreshLiveTailStatus()
+  liveTailStatusTimer = setInterval(refreshLiveTailStatus, 5000)
+}
+
+function stopLiveTailStatusPolling() {
+  liveTailStatusGeneration++
+  clearInterval(liveTailStatusTimer)
+  liveTailStatusTimer = null
+  liveTailStatusRequest = null
+  liveTailStatus.value = null
+  liveTailStatusError.value = ''
+}
+
+watch(liveTailEnabled, (enabled) => enabled ? startLiveTailStatusPolling() : stopLiveTailStatusPolling())
+useKeepAliveRefreshLifecycle(() => {
+  liveTailPageActive = true
+  startLiveTailStatusPolling()
+}, () => {
+  liveTailPageActive = false
+  stopLiveTailStatusPolling()
+})
+function refreshVisibleLiveTailStatus() {
+  if (document.visibilityState === 'visible') void refreshLiveTailStatus()
+}
 const router = useRouter()
 const canOpenWebSsh = computed(() => checkPermission('assets:hosts:view'))
 const webSshOpeningLogId = ref(null)
@@ -479,7 +574,27 @@ const serviceNameByCode = computed(() => {
   return byCode
 })
 
-function startLiveTail(log) {
+async function startLiveTail(log) {
+  if (!liveTailEnabled.value || !liveTailPageActive) return
+  const local = liveTailDialog.value?.getTabState(log)
+  if (!local && liveSourceError(log)) {
+    message.warning(liveSourceError(log))
+    return
+  }
+  // A local tab is always reopenable, even if occupancy cannot be queried.
+  if (!local && !liveTailStatus.value && !await refreshLiveTailStatus()) {
+    if (liveTailPageActive && liveTailEnabled.value) message.warning('无法确认跟踪占用状态，请稍后重试。')
+    return
+  }
+  const action = liveTailAction(log)
+  if (action.disabled) {
+    message.warning(action.hint)
+    return
+  }
+  if (action.label === '其他页面跟踪中') {
+    message.info(action.hint)
+    return
+  }
   // 同编码服务可能重名或跨环境；按 ID 取得下载展示名，不改变跟踪请求的来源身份。
   const service = props.candidateServices.find((item) => String(item.id) === String(log.service_id))
   const selectedServiceName = String(props.scope.applicationServiceId) === String(log.service_id)
@@ -600,7 +715,7 @@ function onTimeRangeOpenChange(open) {
 }
 
 const pagination = reactive(createPagination(0, 100, { pageSizeOptions: ['50', '100', '200'] }))
-const actionColumnWidth = computed(() => 100 + (liveTailEnabled.value ? 100 : 0) + (canOpenWebSsh.value ? 60 : 0))
+const actionColumnWidth = computed(() => 100 + (liveTailEnabled.value ? 160 : 0) + (canOpenWebSsh.value ? 60 : 0))
 
 // 跨服务模式多一列「逻辑服务」：记录上只有 service 编码，名字用候选清单反查
 //（查不到显示编码——范围外的文档不该出现，出现编码也比空着好排查）。
@@ -1150,9 +1265,16 @@ function resizeTrendChart() {
 onMounted(() => {
   refreshTimeRangePresets()
   window.addEventListener('resize', resizeTrendChart)
+  window.addEventListener('focus', refreshVisibleLiveTailStatus)
+  document.addEventListener('visibilitychange', refreshVisibleLiveTailStatus)
+  startLiveTailStatusPolling()
 })
 
 onBeforeUnmount(() => {
+  liveTailPageActive = false
+  stopLiveTailStatusPolling()
+  window.removeEventListener('focus', refreshVisibleLiveTailStatus)
+  document.removeEventListener('visibilitychange', refreshVisibleLiveTailStatus)
   cancelWebSshOpening()
   window.removeEventListener('resize', resizeTrendChart)
   trendChart?.dispose()

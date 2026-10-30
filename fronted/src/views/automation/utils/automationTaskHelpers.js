@@ -1,10 +1,10 @@
 export const ASSET_HOST_ROUTE_CANDIDATES = ['/assets/hosts', '/assets/host', '/assets/hosts/index', '/assets/host/index']
 
 export const TASK_COLUMNS = [
-  { title: '任务名称', dataIndex: 'name', key: 'name', width: 160, sorter: true },
+  { title: '任务名称', dataIndex: 'name', key: 'name', width: 160, sorter: true, ellipsis: { showTitle: false } },
   { title: '状态', dataIndex: 'enabled', key: 'enabled', width: 90, sorter: true },
-  { title: 'Inventory', dataIndex: 'inventory_name', key: 'inventory_name', width: 180 },
-  { title: '模板', dataIndex: 'template_name', key: 'template_name', width: 140 },
+  { title: 'Inventory', dataIndex: 'inventory_name', key: 'inventory_name', width: 180, ellipsis: { showTitle: false } },
+  { title: '模板', dataIndex: 'template_name', key: 'template_name', width: 140, ellipsis: { showTitle: false } },
   { title: '执行超时(秒)', dataIndex: 'execution_timeout_seconds', key: 'execution_timeout_seconds', width: 130 },
   { title: '执行范围', key: 'execution_scope', width: 260 },
   { title: '环境变量', dataIndex: 'env_vars', key: 'env_vars', width: 220 },

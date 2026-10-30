@@ -37,21 +37,24 @@
         :locale="tableLocale"
         rowKey="id"
         size="small"
+        table-layout="fixed"
         :scroll="{ x: 1700 }"
         @change="emitTableChange"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'name'">
-            <a-button
-              v-if="canEditTask"
-              type="link"
-              size="small"
-              class="task-name-link"
-              @click="emitEdit(record)"
-            >
-              {{ record.name || '-' }}
-            </a-button>
-            <span v-else>{{ record.name || '-' }}</span>
+            <a-tooltip :title="record.name || '-'" placement="top">
+              <a-button
+                v-if="canEditTask"
+                type="link"
+                size="small"
+                class="task-name-link task-label-link"
+                @click="emitEdit(record)"
+              >
+                <span class="task-label-text">{{ record.name || '-' }}</span>
+              </a-button>
+              <span v-else class="task-label-text">{{ record.name || '-' }}</span>
+            </a-tooltip>
           </template>
           <template v-else-if="column.key === 'enabled'">
             <a-switch
@@ -62,14 +65,18 @@
             />
           </template>
           <template v-else-if="column.key === 'template_name'">
-            <a-button type="link" size="small" class="task-code-link" @click="emitGotoTemplate(record)">
-              {{ record.template_name || '-' }}
-            </a-button>
+            <a-tooltip :title="record.template_name || '-'" placement="top">
+              <a-button type="link" size="small" class="task-code-link task-label-link" @click="emitGotoTemplate(record)">
+                <span class="task-label-text">{{ record.template_name || '-' }}</span>
+              </a-button>
+            </a-tooltip>
           </template>
           <template v-else-if="column.key === 'inventory_name'">
-            <a-button type="link" size="small" class="task-code-link" @click="emitGotoInventory(record)">
-              {{ record.inventory_name || '-' }}
-            </a-button>
+            <a-tooltip :title="record.inventory_name || '-'" placement="top">
+              <a-button type="link" size="small" class="task-code-link task-label-link" @click="emitGotoInventory(record)">
+                <span class="task-label-text">{{ record.inventory_name || '-' }}</span>
+              </a-button>
+            </a-tooltip>
           </template>
           <template v-else-if="column.key === 'execution_scope'">
             <div class="scope-compact-cell">
@@ -243,3 +250,21 @@ function emitDelete(record) {
   emit('delete', record)
 }
 </script>
+
+<style scoped>
+.task-label-link {
+  display: inline-flex;
+  justify-content: flex-start;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.task-label-text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+</style>

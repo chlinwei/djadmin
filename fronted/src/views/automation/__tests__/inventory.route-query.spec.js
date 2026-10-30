@@ -175,4 +175,45 @@ describe('inventory route query auto search', () => {
     expect(payload.search).toBe('after-change')
     wrapper.unmount()
   })
+
+  it('uses string instance names in both scope trees, search and host navigation', async () => {
+    getAutomationGroupTree.mockResolvedValue({
+      data: { data: [{ id: 1, name: 'wuhan', children: [] }] },
+    })
+    getAutomationHostOptions.mockResolvedValue({
+      data: { data: { count: 4, next: null, results: [
+        { id: 201, instance_name: 'hak-app-201', hostname: 'os-host-201', ip: '10.25.66.201', group_id: 1 },
+        { id: 202, instance_name: null, hostname: null, ip: '10.25.66.202', group_id: 1 },
+        { id: 203, instance_name: '', hostname: '', ip: '10.25.66.203', group_id: 1 },
+        { id: 204, instance_name: 'not-selected', ip: '10.25.66.204', group_id: 1 },
+      ] } },
+    })
+    const wrapper = mountPage()
+    try {
+      await flushPromises()
+      expect(wrapper.vm.scopeEditTreeData[0].children.map((node) => node.title)).toEqual([
+        'hak-app-201(10.25.66.201)', '10.25.66.202', '10.25.66.203', 'not-selected(10.25.66.204)',
+      ])
+      wrapper.vm.openScopeViewer({ name: 'all', selected_host_ids: [201, 202, 203] })
+      await nextTick()
+      expect(wrapper.vm.scopeViewTreeData[0].title).toBe('wuhan（3台）')
+      expect(wrapper.vm.scopeViewTreeData[0].children.map((node) => node.title)).toEqual([
+        'hak-app-201(10.25.66.201)', '10.25.66.202', '10.25.66.203',
+      ])
+      expect(wrapper.vm.scopeViewSummary).toBe('当前范围：3台主机')
+      wrapper.vm.scopeViewKeyword = 'hak-app-201'
+      await nextTick()
+      const matches = wrapper.vm.filteredScopeViewTreeData[0].children
+      expect(matches).toHaveLength(1)
+      expect(matches[0].host_id).toBe(201)
+      routerResolve.mockReturnValueOnce({ matched: [{}] })
+      wrapper.vm.goToAssetHostByNode(matches[0])
+      expect(routerPush).toHaveBeenLastCalledWith({
+        path: '/assets/hosts',
+        query: { host_id: '201', search: 'hak-app-201' },
+      })
+    } finally {
+      wrapper.unmount()
+    }
+  })
 })

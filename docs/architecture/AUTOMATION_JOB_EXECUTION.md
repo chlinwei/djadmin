@@ -202,6 +202,13 @@ Inventory 预检沿用 `automation:inventory:view` 权限，任务预检沿用�
 有编辑权限时任务名仍打开任务编辑；Inventory 和模板名称仍跳转到对应资源，
 无编辑权限时任务名显示只读文本，但同样支持省略和完整名称提示。
 右侧操作列固定并保留明确宽度，表格维持横向滚动；名称提示不改变操作列按钮或权限。
+模板列显示固定 16px 的类型图标加纯模板名称：Playbook 为代码文档图标，Shell 为终端图标，
+图标不参与省略，剩余宽度用于名称；顶部 Tooltip 展示 `类型 · 完整模板名`。
+类型取任务列表接口的 `template_content_format`（`playbook` / `shell`；无关联模板时为 `null`），
+随同原有模板 JOIN 一次返回，不按名称前缀猜测，不依赖模板选择器的分页或额外逐条请求。
+未识别类型显示问号图标与「未知类型」提示，无模板时显示 `-`，不虚构为 Playbook。
+接口现有 `template_name` 内容约定保持不变，列表展示与模板跳转共用名称提取逻辑，
+仅移除接口附加的一层 `[Playbook]` 前缀，不修改模板保存名称；无数据库结构变更或迁移。
 
 
 <a id="inventory"></a>
@@ -212,6 +219,11 @@ Inventory 预检沿用 `automation:inventory:view` 权限，任务预检沿用�
 
 ### API 语义
 
+- `GET /sys/automation/playbooks/host-options/`：返回统一分页主机选项；
+  `instance_name`、`hostname`、`ip` 为 JSON 字符串或 `null`，`group_id` 为数字或 `null`，
+  不暴露 Go 数据库可空类型的 `String/Valid` 等内部字段，空字符串与 `null` 保持区别。
+  Inventory 范围编辑与只读范围树共用该接口，主机标签显示实例名及 IP；
+  无实例名时显示 IP，搜索和资产主机跳转沿用相同名称。此读接口不修改数据库结构。
 - `POST /sys/automation/inventories/`：全量创建，`name` 必填；`enabled` 缺省 true，`update_on_launch` 缺省 false，`update_cache_timeout` 缺省 300 且必须非负。
 - `PUT/PATCH /sys/automation/inventories/:id/`：**支持部分更新**——未提供的字段保留原值（name/remark/selected_host_ids/enabled/update_on_launch/update_cache_timeout 逐字段合并后整体 UPDATE）。
   - 前端列表"启用状态"开关只发 `{enabled}`，不携带 name，必须走部分更新（此前因全量校验 `name is required` 报错，已修复）。

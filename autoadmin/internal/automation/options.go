@@ -44,7 +44,7 @@ func (handler *Handler) HostOptions(context *gin.Context) {
 	}
 	items := make([]gin.H, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, gin.H{"id": row.ID, "instance_name": row.InstanceName, "hostname": nullableString(row.Hostname), "ip": nullableString(row.Ip), "group_id": nullableInt(row.GroupID)})
+		items = append(items, gin.H{"id": row.ID, "instance_name": nullableString(row.InstanceName), "hostname": nullableString(row.Hostname), "ip": nullableString(row.Ip), "group_id": nullableInt(row.GroupID)})
 	}
 	response.Paginated(context, items, count, int32(page), int32(size))
 }

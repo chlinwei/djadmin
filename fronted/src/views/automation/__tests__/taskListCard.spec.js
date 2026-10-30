@@ -3,18 +3,24 @@ import Antd, { Table, Tooltip } from 'ant-design-vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import TaskListCard from '../automationtask/components/TaskListCard/index.vue'
 import { TASK_COLUMNS } from '../utils/automationTaskHelpers'
+import { library } from '@fortawesome/fontawesome-svg-core'
+import { fas } from '@fortawesome/free-solid-svg-icons'
 
+library.add(fas)
+
+const templateName = 'fluent-uninstall-'.repeat(40)
 const task = {
   id: 7,
   name: `任务-${'长名称'.repeat(60)}`,
   inventory_name: `Inventory-${'production-'.repeat(40)}`,
-  template_name: `[Playbook] ${'fluent-uninstall-'.repeat(40)}`,
+  template_name: `[Playbook] ${templateName}`,
+  template_content_format: 'playbook',
   execution_timeout_seconds: 600,
   enabled: true,
   env_vars: {},
 }
 
-function mountCard(tasks = [task], canEditTask = true) {
+function mountCard(tasks = [task], canEditTask = true, realIcons = false) {
   return mount(TaskListCard, {
     attachTo: document.body,
     props: {
@@ -28,7 +34,7 @@ function mountCard(tasks = [task], canEditTask = true) {
     },
     global: {
       plugins: [Antd],
-      stubs: { FontAwesomeIcon: true },
+      stubs: { FontAwesomeIcon: !realIcons },
       directives: { permission: () => {} },
     },
   })
@@ -74,12 +80,14 @@ describe('自动化任务列表名称列', () => {
       const nameCell = cell(wrapper, key)
       const link = nameCell.get('button.task-label-link')
       const label = link.get('.task-label-text')
-      expect(label.text()).toBe(task[key])
+      const expectedName = key === 'template_name' ? templateName : task[key]
+      const expectedTooltip = key === 'template_name' ? `Playbook · ${templateName}` : task[key]
+      expect(label.text()).toBe(expectedName)
       const tooltip = nameCell.findComponent(Tooltip)
-      expect(tooltip.props()).toMatchObject({ title: task[key], placement: 'top' })
+      expect(tooltip.props()).toMatchObject({ title: expectedTooltip, placement: 'top' })
       await link.trigger('mouseenter')
       await vi.advanceTimersByTimeAsync(200)
-      expect([...document.body.querySelectorAll('.ant-tooltip-inner')].some((node) => node.textContent === task[key])).toBe(true)
+      expect([...document.body.querySelectorAll('.ant-tooltip-inner')].some((node) => node.textContent === expectedTooltip)).toBe(true)
       await link.trigger('click')
       expect(wrapper.emitted(event)).toEqual([[task]])
       expect(cell(wrapper, 'execution_timeout_seconds').text()).toBe('600')
@@ -110,9 +118,45 @@ describe('自动化任务列表名称列', () => {
     try {
       await flushPromises()
       for (const key of ['name', 'inventory_name', 'template_name']) {
-        expect(cell(wrapper, key).get('.task-label-text').text()).toBe(record[key] || '-')
-        expect(cell(wrapper, key).findComponent(Tooltip).props('title')).toBe(record[key] || '-')
+        const name = key === 'template_name' ? (record[key] ? 'test' : '-') : record[key] || '-'
+        const title = key === 'template_name' && record[key] ? 'Playbook · test' : name
+        expect(cell(wrapper, key).get('.task-label-text').text()).toBe(name)
+        expect(cell(wrapper, key).findComponent(Tooltip).props('title')).toBe(title)
       }
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it.each([
+    ['playbook', 'file-code', 'Playbook'],
+    ['shell', 'terminal', 'Shell'],
+    [null, 'circle-question', '未知类型'],
+    ['unsupported', 'circle-question', '未知类型'],
+  ])('renders the actual %s type as a real SVG icon instead of a text prefix', async (format, icon, label) => {
+    const record = { ...task, template_name: '[Playbook] uptime', template_content_format: format }
+    const wrapper = mountCard([record], true, true)
+    try {
+      await flushPromises()
+      const templateCell = cell(wrapper, 'template_name')
+      expect(templateCell.get('.task-label-text').text()).toBe('uptime')
+      expect(templateCell.text()).not.toContain('[Playbook]')
+      expect(templateCell.get('.task-template-icon').attributes('aria-label')).toBe(label)
+      expect(templateCell.find(`.task-template-icon svg[data-icon="${icon}"]`).exists()).toBe(true)
+      expect(templateCell.findComponent(Tooltip).props()).toMatchObject({ title: `${label} · uptime`, placement: 'top' })
+      await templateCell.get('button').trigger('click')
+      expect(wrapper.emitted('goto-template')).toEqual([[record]])
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('does not show a type icon when no template is associated', async () => {
+    const wrapper = mountCard([{ ...task, template_name: '', template_content_format: null }])
+    try {
+      await flushPromises()
+      expect(cell(wrapper, 'template_name').find('.task-template-icon').exists()).toBe(false)
+      expect(cell(wrapper, 'template_name').get('.task-label-text').text()).toBe('-')
     } finally {
       wrapper.unmount()
     }

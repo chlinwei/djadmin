@@ -21,7 +21,8 @@ WHERE (a.id = sqlc.narg(id) OR sqlc.narg(id) IS NULL)
 -- name: ListTasksTyped :many
 SELECT a.id, a.create_time, a.update_time, a.remark, a.name, a.env_vars, a.enabled, a.inventory_id,
        a.default_limit, a.execution_timeout_seconds, a.playbook_template_id, a.run_as_user, a.run_as_group, a.work_directory,
-       COALESCE(p.name,'') AS raw_template_name, COALESCE(i.name,'') AS inventory_name
+       COALESCE(p.name,'') AS raw_template_name, COALESCE(i.name,'') AS inventory_name,
+       p.content_format AS template_content_format
 FROM automation_task a
 LEFT JOIN automation_playbook_template p ON p.id = a.playbook_template_id
 LEFT JOIN automation_inventory i ON i.id = a.inventory_id

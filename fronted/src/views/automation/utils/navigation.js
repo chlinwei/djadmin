@@ -18,9 +18,13 @@ export function buildAutomationInventoryRoute(record) {
   }
 }
 
-export function buildAutomationTemplateRoute(record) {
+export function getAutomationTemplateName(record) {
   const rawTemplateName = String(record?.template_name || '').trim()
-  const keyword = rawTemplateName.replace(/^\[Playbook\]\s*/, '')
+  return rawTemplateName.replace(/^\[Playbook\]\s*/, '')
+}
+
+export function buildAutomationTemplateRoute(record) {
+  const keyword = getAutomationTemplateName(record)
 
   return {
     path: '/sys/automation/templates',

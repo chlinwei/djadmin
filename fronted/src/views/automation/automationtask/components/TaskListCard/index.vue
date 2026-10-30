@@ -65,9 +65,12 @@
             />
           </template>
           <template v-else-if="column.key === 'template_name'">
-            <a-tooltip :title="record.template_name || '-'" placement="top">
-              <a-button type="link" size="small" class="task-code-link task-label-link" @click="emitGotoTemplate(record)">
-                <span class="task-label-text">{{ record.template_name || '-' }}</span>
+            <a-tooltip :title="templateTooltip(record)" placement="top">
+              <a-button type="link" size="small" class="task-code-link task-label-link task-template-link" @click="emitGotoTemplate(record)">
+                <span v-if="getAutomationTemplateName(record)" class="task-template-icon" role="img" :aria-label="templateType(record).label">
+                  <FontAwesomeIcon :icon="templateType(record).icon" />
+                </span>
+                <span class="task-label-text">{{ getAutomationTemplateName(record) || '-' }}</span>
               </a-button>
             </a-tooltip>
           </template>
@@ -163,7 +166,27 @@
 
 <script setup>
 import { computed } from 'vue'
+import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
+import { faFileCode, faTerminal, faCircleQuestion } from '@fortawesome/free-solid-svg-icons'
 import { tableLocale } from '@/util/tableStyle'
+import { getAutomationTemplateName } from '@/views/automation/utils/navigation'
+
+const templateTypes = {
+  playbook: { label: 'Playbook', icon: faFileCode },
+  shell: { label: 'Shell', icon: faTerminal },
+  unknown: { label: '未知类型', icon: faCircleQuestion },
+}
+
+function templateType(record) {
+  // The list name prefix is presentation text, not the template's actual execution format.
+  const format = record.template_content_format
+  return format === 'playbook' || format === 'shell' ? templateTypes[format] : templateTypes.unknown
+}
+
+function templateTooltip(record) {
+  const name = getAutomationTemplateName(record)
+  return name ? `${templateType(record).label} · ${name}` : '-'
+}
 
 const props = defineProps({
   taskKeyword: { type: String, default: '' },
@@ -266,5 +289,17 @@ function emitDelete(record) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.task-template-link {
+  gap: 6px;
+}
+
+.task-template-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 16px;
+  width: 16px;
 }
 </style>

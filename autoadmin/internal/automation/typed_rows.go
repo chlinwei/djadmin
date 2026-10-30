@@ -74,6 +74,7 @@ func taskRowToMapFromList(row db.ListTasksTypedRow) gin.H {
 		"execution_timeout_seconds": int64(row.ExecutionTimeoutSeconds), "playbook_template_id": nullInt64Any(row.PlaybookTemplateID),
 		"run_as_user": row.RunAsUser, "run_as_group": row.RunAsGroup, "work_directory": row.WorkDirectory,
 		"raw_template_name": row.RawTemplateName, "inventory_name": row.InventoryName,
+		"template_content_format": nullStringAny(row.TemplateContentFormat),
 	}
 }
 

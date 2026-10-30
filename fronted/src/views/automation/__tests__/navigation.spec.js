@@ -1,6 +1,13 @@
-import { buildAutomationInventoryRoute, buildAutomationTemplateRoute } from '../utils/navigation'
+import { buildAutomationInventoryRoute, buildAutomationTemplateRoute, getAutomationTemplateName } from '../utils/navigation'
 
 describe('automation navigation helpers', () => {
+  it('removes only the API presentation prefix for display and template search', () => {
+    const record = { template_name: '[Playbook] [Playbook] business-name', template_content_format: 'shell' }
+    expect(getAutomationTemplateName(record)).toBe('[Playbook] business-name')
+    expect(buildAutomationTemplateRoute(record).query.search).toBe('[Playbook] business-name')
+    expect(record.template_name).toBe('[Playbook] [Playbook] business-name')
+  })
+
   it('builds template route with playbook type and search when template name exists', () => {
     const route = buildAutomationTemplateRoute({
       template_name: 'Deploy Nginx',

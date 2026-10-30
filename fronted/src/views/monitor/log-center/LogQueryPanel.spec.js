@@ -522,7 +522,7 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
     let start
     try {
       if (scope.nodeType === 'all') {
-        await wrapper.setProps({ candidateServices: [{ id: 42 }, { id: 43 }] })
+        await wrapper.setProps({ candidateServices: [{ id: 42, name: '第一个服务' }, { id: 43, name: '第二个服务' }] })
       }
       await flushPromises()
       start = vi.spyOn(wrapper.vm.liveTailDialog, 'start').mockImplementation(() => {})
@@ -530,7 +530,7 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
         .find((button) => button.text().replace(/\s/g, '') === '实时跟踪')
       expect(firstButton.isVisible()).toBe(true)
       await firstButton.trigger('click')
-      expect(start).toHaveBeenLastCalledWith(firstLog)
+      expect(start).toHaveBeenLastCalledWith(firstLog, scope.nodeType === 'all' ? '第一个服务' : 'tomcat服务')
 
       const row = wrapper.get('tr[data-row-key="doc-2"]')
       const tooltip = row.findAllComponents(Tooltip)
@@ -544,10 +544,18 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
       expect(document.body.querySelector('.ant-tooltip-inner')?.textContent).toBe('查看日志')
       await button.trigger('click')
       expect(start).toHaveBeenCalledTimes(2)
-      expect(start).toHaveBeenLastCalledWith(secondLog)
+      expect(start).toHaveBeenLastCalledWith(secondLog, scope.nodeType === 'all' ? '第二个服务' : 'tomcat服务')
       expect(wrapper.vm.detailOpen).toBe(false)
       expect(wrapper.findComponent(Table).props('scroll').x).toBe(wrapper.vm.tableScrollX)
       expect(wrapper.vm.tableScrollX).toBe(scope.nodeType === 'all' ? 2290 : 1770)
+      wrapper.vm.openDetail(secondLog)
+      await flushPromises()
+      const detailButton = [...document.querySelectorAll('.ant-drawer-content button')]
+        .find((item) => item.textContent.replace(/\s/g, '') === '实时跟踪')
+      detailButton.click()
+      await flushPromises()
+      expect(start).toHaveBeenLastCalledWith(secondLog, scope.nodeType === 'all' ? '第二个服务' : 'tomcat服务')
+      expect(start).toHaveBeenCalledTimes(3)
     } finally {
       start?.mockRestore()
       wrapper.unmount()

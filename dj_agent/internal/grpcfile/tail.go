@@ -316,8 +316,8 @@ func followTail(ctx context.Context, task *tailTask, emit func(*pb.TailEvent) bo
 			pending = append([]byte(nil), pending[end:]...)
 			continue
 		}
-		// Reopen safely even when the path disappeared or was replaced. Symlinks,
-		// devices and compressed paths never become a valid rotation target.
+		// Resolve the original logical path again so release/log link changes
+		// go through the same safe open and identity admission as file rotation.
 		next, nextIdentity, openErr := openTailFile(task.path)
 		if os.IsNotExist(openErr) {
 			if missingSince.IsZero() {

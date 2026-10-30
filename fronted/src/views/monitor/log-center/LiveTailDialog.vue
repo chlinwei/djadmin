@@ -31,7 +31,12 @@
       <section class="tail-output" aria-label="实时日志内容">
         <div class="tail-output-head">
           <span class="tail-section-title">实时内容</span>
-          <a-button @click="copyActive">复制</a-button>
+          <div class="tail-output-actions">
+            <a-button @click="copyActive">复制</a-button>
+            <a-tooltip title="下载日志" placement="top">
+              <a-button @click="downloadActive">下载</a-button>
+            </a-tooltip>
+          </div>
         </div>
         <div ref="viewport" class="tail-viewport" @scroll="scrollTop = $event.target.scrollTop">
           <div :style="{ height: `${bufferState.lines.length * TAIL_ROW_HEIGHT}px`, position: 'relative' }">
@@ -54,6 +59,8 @@ import { message } from 'ant-design-vue'
 import { getToken } from '@/api/user'
 import { getWebSocketBaseUrl } from '@/util/request'
 import { copyTextWithFallback } from '@/util/clipboard'
+import { formatTimeWithTimezone } from '@/util/timezone'
+import store from '@/store'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { createTailBuffer, liveSourceError, liveSourceFromLog, liveSourceKey, MAX_TAIL_TABS, TAIL_ROW_HEIGHT } from '@/util/liveTail'
 
@@ -148,6 +155,39 @@ async function copyActive() {
   else message.error('复制失败，请检查浏览器权限')
 }
 
+function downloadActive() {
+  const tab = activeTab.value
+  const content = tab?.buffer.state.lines.join('\n') || ''
+  if (!content) {
+    message.warning('没有可下载的内容')
+    return
+  }
+  if (!tab.serviceName) {
+    message.error('缺少服务名称，无法生成下载文件名，请重新查询后再试')
+    return
+  }
+  let url
+  let link
+  try {
+    const timestamp = formatTimeWithTimezone(new Date(), store.state.user?.timezone || 'Asia/Shanghai', 'YYYYMMDD_HHmmss')
+    if (timestamp === '-') throw new Error('无法生成下载时间，请检查用户时区设置')
+    const segments = [tab.source.host_ip, tab.serviceName, tab.source.log_name.replace(/\.log$/i, '')]
+      .map((value) => String(value).replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/g, ''))
+    const filename = `${segments.join('-')}-${timestamp}.log`
+    url = window.URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }))
+    link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+  } catch (error) {
+    message.error(`下载失败：${error.message}`)
+  } finally {
+    link?.remove()
+    if (url) window.URL.revokeObjectURL(url)
+  }
+}
+
 function closeAll() {
   tabs.forEach(stop)
   tabs.splice(0)
@@ -156,7 +196,7 @@ function closeAll() {
   flushTimer = null
 }
 
-function start(log) {
+function start(log, serviceName = log?.service || '') {
   const source = liveSourceFromLog(log)
   if (!source) {
     message.warning(liveSourceError(log))
@@ -176,6 +216,7 @@ function start(log) {
   }
   const tab = reactive({
     key, source, label: `${source.host_ip} · ${source.log_path.split('/').pop()}`,
+    serviceName,
     status: '连接中', notice: '', socket: null, buffer: markRaw(createTailBuffer()),
   })
   if (!connect(tab)) return
@@ -252,6 +293,7 @@ defineExpose({ start, closeAll })
 .tail-section-title { font-weight: 600; }
 .tail-output { min-width: 0; }
 .tail-output-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; margin-bottom: 8px; }
+.tail-output-actions { display: flex; align-items: center; gap: 8px; }
 .tail-path { margin-top: 8px; overflow-wrap: anywhere; }
 .tail-notice { color: #ad6800; overflow-wrap: anywhere; }
 .tail-viewport { height: 520px; overflow: auto; background: #141414; color: #eee; font: 13px/22px monospace; }

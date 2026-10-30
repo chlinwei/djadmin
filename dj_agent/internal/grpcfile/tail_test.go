@@ -140,16 +140,47 @@ func TestTailSecureOpenAndPhysicalIdentity(t *testing.T) {
 	if err = os.Symlink(path, filepath.Join(dir, "symlink.log")); err != nil {
 		t.Fatal(err)
 	}
-	if file, _, err = openTailFile(filepath.Join(dir, "symlink.log")); err == nil {
-		file.Close()
-		t.Fatal("symlink accepted")
+	file, aliasIdentity, err = openTailFile(filepath.Join(dir, "symlink.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.Close()
+	if aliasIdentity != identity {
+		t.Fatal("symlink alias has different physical identity")
 	}
 	if err = os.Symlink(dir, filepath.Join(dir, "linked-dir")); err != nil {
 		t.Fatal(err)
 	}
-	if file, _, err = openTailFile(filepath.Join(dir, "linked-dir", "app.log")); err == nil {
+	file, aliasIdentity, err = openTailFile(filepath.Join(dir, "linked-dir", "app.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.Close()
+	if aliasIdentity != identity {
+		t.Fatal("symlink parent has different physical identity")
+	}
+	if err = os.Symlink("missing.log", filepath.Join(dir, "broken.log")); err != nil {
+		t.Fatal(err)
+	}
+	if file, _, err = openTailFile(filepath.Join(dir, "broken.log")); !os.IsNotExist(err) {
+		if file != nil {
+			file.Close()
+		}
+		t.Fatalf("want missing target error, got %v", err)
+	}
+	if err = os.Symlink("loop.log", filepath.Join(dir, "loop.log")); err != nil {
+		t.Fatal(err)
+	}
+	if file, _, err = openTailFile(filepath.Join(dir, "loop.log")); err == nil {
 		file.Close()
-		t.Fatal("symlink parent accepted")
+		t.Fatal("symlink loop accepted")
+	}
+	if err = os.Symlink(dir, filepath.Join(dir, "directory.log")); err != nil {
+		t.Fatal(err)
+	}
+	if file, _, err = openTailFile(filepath.Join(dir, "directory.log")); err == nil {
+		file.Close()
+		t.Fatal("symlink to directory accepted")
 	}
 	if file, _, err = openTailFile(dir); err == nil {
 		file.Close()
@@ -163,12 +194,47 @@ func TestTailSecureOpenAndPhysicalIdentity(t *testing.T) {
 		file.Close()
 		t.Fatal("FIFO accepted")
 	}
+	if err = os.Symlink(fifo, filepath.Join(dir, "linked-pipe.log")); err != nil {
+		t.Fatal(err)
+	}
+	if file, _, err = openTailFile(filepath.Join(dir, "linked-pipe.log")); err == nil {
+		file.Close()
+		t.Fatal("symlink to FIFO accepted")
+	}
 }
 
 func TestTailSnapshotAppendTruncateRotationAndCleanup(t *testing.T) {
+	for _, linked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("symlinks=%t", linked), func(t *testing.T) {
+			testTailSnapshotAppendTruncateRotationAndCleanup(t, linked)
+		})
+	}
+}
+
+func testTailSnapshotAppendTruncateRotationAndCleanup(t *testing.T, linked bool) {
+	t.Helper()
 	dir := tailTestDir(t)
-	path := filepath.Join(dir, "app.log")
-	if err := os.WriteFile(path, []byte("initial\n"), 0600); err != nil {
+	physicalPath := filepath.Join(dir, "common", "log", "app.log")
+	if err := os.MkdirAll(filepath.Dir(physicalPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := physicalPath
+	if linked {
+		if err := os.MkdirAll(filepath.Join(dir, "release", "run"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		for link, target := range map[string]string{
+			filepath.Join(dir, "run"):                          filepath.Join(dir, "release", "run"),
+			filepath.Join(dir, "release", "run", "log"):        "../../common/log",
+			filepath.Join(dir, "common", "log", "current.log"): "app.log",
+		} {
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+		}
+		path = filepath.Join(dir, "run", "log", "current.log")
+	}
+	if err := os.WriteFile(physicalPath, []byte("initial\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -186,7 +252,7 @@ func TestTailSnapshotAppendTruncateRotationAndCleanup(t *testing.T) {
 			return true
 		}, func(int) bool { return true })
 	}()
-	await := func(kind, text string) {
+	await := func(kind, text string) *pb.TailEvent {
 		t.Helper()
 		timer := time.NewTimer(4 * time.Second)
 		defer timer.Stop()
@@ -194,7 +260,7 @@ func TestTailSnapshotAppendTruncateRotationAndCleanup(t *testing.T) {
 			select {
 			case event := <-events:
 				if event.Type == kind && strings.Contains(string(event.Data)+event.Message, text) {
-					return
+					return event
 				}
 			case err := <-done:
 				t.Fatalf("tail ended early: %v", err)
@@ -203,8 +269,9 @@ func TestTailSnapshotAppendTruncateRotationAndCleanup(t *testing.T) {
 			}
 		}
 	}
+	firstIdentity := await("ready", "").Identity
 	await("data", "initial")
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+	file, err := os.OpenFile(physicalPath, os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,20 +281,61 @@ func TestTailSnapshotAppendTruncateRotationAndCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	await("data", "append")
-	if err = os.WriteFile(path, []byte("reset\n"), 0600); err != nil {
+	if err = os.WriteFile(physicalPath, []byte("reset\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	await("changed", "truncated")
 	await("data", "reset")
-	if err = os.Rename(path, path+".1"); err != nil {
+	if err = os.Rename(physicalPath, physicalPath+".1"); err != nil {
 		t.Fatal(err)
 	}
 	await("waiting", "waiting")
-	if err = os.WriteFile(path, []byte("rotated\n"), 0600); err != nil {
+	if err = os.WriteFile(physicalPath, []byte("rotated\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	await("changed", "rotated")
+	rotatedIdentity := await("ready", "").Identity
+	if rotatedIdentity == firstIdentity {
+		t.Fatal("rotation did not admit a new physical identity")
+	}
 	await("data", "rotated")
+	if linked {
+		nextPath := filepath.Join(filepath.Dir(physicalPath), "next.log")
+		if err = os.WriteFile(nextPath, []byte("link switched\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err = os.Symlink("next.log", path+".next"); err != nil {
+			t.Fatal(err)
+		}
+		if err = os.Rename(path+".next", path); err != nil {
+			t.Fatal(err)
+		}
+		await("changed", "rotated")
+		switchedIdentity := await("ready", "").Identity
+		if switchedIdentity == rotatedIdentity {
+			t.Fatal("link switch did not admit a new physical identity")
+		}
+		await("data", "link switched")
+		nextDir := filepath.Join(dir, "next-logs")
+		if err = os.Mkdir(nextDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err = os.WriteFile(filepath.Join(nextDir, "current.log"), []byte("directory switched\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		logLink := filepath.Join(dir, "release", "run", "log")
+		if err = os.Symlink(nextDir, logLink+".next"); err != nil {
+			t.Fatal(err)
+		}
+		if err = os.Rename(logLink+".next", logLink); err != nil {
+			t.Fatal(err)
+		}
+		await("changed", "rotated")
+		if await("ready", "").Identity == switchedIdentity {
+			t.Fatal("directory switch did not admit a new physical identity")
+		}
+		await("data", "directory switched")
+	}
 	cancel()
 	select {
 	case <-done:

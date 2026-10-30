@@ -4,10 +4,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import Antd, { message, Modal, Tooltip } from 'ant-design-vue'
 import LiveTailDialog from './LiveTailDialog.vue'
 import { copyTextWithFallback } from '@/util/clipboard'
+import { Blob as NodeBlob, Buffer } from 'node:buffer'
+import store from '@/store'
 
 vi.mock('@/api/user', () => ({ getToken: () => 'secret-jwt' }))
 vi.mock('@/util/request', () => ({ getWebSocketBaseUrl: () => 'ws://localhost:9000' }))
 vi.mock('@/util/clipboard', () => ({ copyTextWithFallback: vi.fn() }))
+vi.mock('@/store', () => ({ default: { state: { user: { timezone: 'Asia/Shanghai' } } } }))
 
 class FakeSocket {
   static OPEN = 1
@@ -21,10 +24,29 @@ class FakeSocket {
   }
 }
 
-const log = (id = 1) => ({ host_ip: `10.0.0.${id}`, service_id: '7', instance: 'app', log_name: 'main', log_path: `/logs/${id}.log` })
+const log = (id = 1) => ({ host_ip: `10.0.0.${id}`, service_id: '7', service: 'orders', instance: 'app', log_name: 'main', log_path: `/logs/${id}.log` })
 
 function getCopyButton(wrapper) {
   return wrapper.findAll('button').find((button) => button.text().replace(/\s/g, '') === '复制')
+}
+
+function getDownloadButton(wrapper) {
+  return wrapper.findAll('button').find((button) => button.text().replace(/\s/g, '') === '下载')
+}
+
+function mockDownloads() {
+  const createObjectURL = vi.fn(() => 'blob:tail-download')
+  const revokeObjectURL = vi.fn()
+  vi.stubGlobal('URL', class extends URL {
+    static createObjectURL = createObjectURL
+    static revokeObjectURL = revokeObjectURL
+  })
+  vi.stubGlobal('Blob', NodeBlob)
+  const downloads = []
+  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function () {
+    downloads.push({ filename: this.download, href: this.href })
+  })
+  return { createObjectURL, revokeObjectURL, downloads, click }
 }
 
 describe('LiveTailDialog', () => {
@@ -34,6 +56,128 @@ describe('LiveTailDialog', () => {
     vi.unstubAllGlobals()
     copyTextWithFallback.mockReset()
     FakeSocket.sockets = []
+    store.state.user.timezone = 'Asia/Shanghai'
+  })
+
+  it.each([
+    ['Asia/Shanghai', '20261030_144318'],
+    ['UTC', '20261030_064318'],
+  ])('downloads all retained active-tab text using timezone %s without stopping the reader', async (timezone, timestamp) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-30T06:43:18Z'))
+    store.state.user.timezone = timezone
+    vi.stubGlobal('WebSocket', FakeSocket)
+    const { createObjectURL, revokeObjectURL, downloads } = mockDownloads()
+    const wrapper = mount(LiveTailDialog, {
+      global: { plugins: [Antd], stubs: { AModal: { template: '<div><slot /></div>' } } },
+    })
+    try {
+      const record = { ...log(), log_name: 'jmsgw.log' }
+      const content = `${Array.from({ length: 100 }, (_, index) => `行 ${index}`).join('\n')}\n最后一行\n`
+      wrapper.vm.start(record, '订单/网关:服务')
+      FakeSocket.sockets[0].onmessage({
+        data: JSON.stringify({ type: 'data', data: Buffer.from(content).toString('base64') }),
+      })
+      wrapper.vm.start(log(2), '其他服务')
+      FakeSocket.sockets[1].onmessage({ data: JSON.stringify({ type: 'data', data: btoa('other tab\n') }) })
+      wrapper.vm.start(record)
+      await vi.advanceTimersByTimeAsync(200)
+      expect(wrapper.findAll('.tail-line').length).toBeLessThanOrEqual(36)
+      const download = getDownloadButton(wrapper)
+      expect(download.isVisible()).toBe(true)
+      expect(download.element.previousElementSibling).toBe(getCopyButton(wrapper).element)
+      const tooltip = wrapper.findAllComponents(Tooltip).find((item) => item.props('title') === '下载日志')
+      expect(tooltip.props('placement')).toBe('top')
+      await download.trigger('mouseenter')
+      await vi.advanceTimersByTimeAsync(200)
+      expect([...document.body.querySelectorAll('.ant-tooltip-inner')].some((node) => node.textContent === '下载日志')).toBe(true)
+      await download.trigger('click')
+      expect(downloads).toEqual([{ filename: `10.0.0.1-订单_网关_服务-jmsgw-${timestamp}.log`, href: 'blob:tail-download' }])
+      const blob = createObjectURL.mock.calls[0][0]
+      expect(blob.type).toBe('text/plain;charset=utf-8')
+      expect(await blob.text()).toBe(content)
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:tail-download')
+      expect(document.querySelector('a[download]')).toBeNull()
+      expect(FakeSocket.sockets[0].close).not.toHaveBeenCalled()
+      expect(FakeSocket.sockets).toHaveLength(2)
+      await wrapper.findAll('button').find((button) => button.text() === '停止跟踪').trigger('click')
+      await download.trigger('click')
+      expect(downloads).toHaveLength(2)
+      expect(await createObjectURL.mock.calls[1][0].text()).toBe(content)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('downloads only retained rows after eviction and reports empty or cleared content', async () => {
+    vi.stubGlobal('WebSocket', FakeSocket)
+    const { createObjectURL } = mockDownloads()
+    const warning = vi.spyOn(message, 'warning').mockImplementation(() => {})
+    const wrapper = mount(LiveTailDialog, {
+      global: { plugins: [Antd], stubs: { AModal: { template: '<div><slot /></div>' } } },
+    })
+    try {
+      wrapper.vm.start(log())
+      await flushPromises()
+      const download = getDownloadButton(wrapper)
+      await download.trigger('click')
+      expect(createObjectURL).not.toHaveBeenCalled()
+      const lines = Array.from({ length: 5100 }, (_, index) => `L${index}`)
+      FakeSocket.sockets[0].onmessage({ data: JSON.stringify({ type: 'data', data: btoa(`${lines.join('\n')}\n`) }) })
+      await download.trigger('click')
+      expect(await createObjectURL.mock.calls[0][0].text()).toBe(`${lines.slice(101).join('\n')}\n`)
+      await wrapper.findAll('button').find((button) => button.text() === '清空显示').trigger('click')
+      await download.trigger('click')
+      expect(createObjectURL).toHaveBeenCalledOnce()
+      expect(warning).toHaveBeenCalledTimes(2)
+      expect(warning).toHaveBeenLastCalledWith('没有可下载的内容')
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('reports download errors and releases browser resources without stopping the reader', async () => {
+    vi.stubGlobal('WebSocket', FakeSocket)
+    const { revokeObjectURL, click } = mockDownloads()
+    click.mockImplementation(() => { throw new Error('download blocked') })
+    const error = vi.spyOn(message, 'error').mockImplementation(() => {})
+    const wrapper = mount(LiveTailDialog, {
+      global: { plugins: [Antd], stubs: { AModal: { template: '<div><slot /></div>' } } },
+    })
+    try {
+      wrapper.vm.start(log())
+      FakeSocket.sockets[0].onmessage({ data: JSON.stringify({ type: 'data', data: btoa('output\n') }) })
+      await flushPromises()
+      await getDownloadButton(wrapper).trigger('click')
+      expect(error).toHaveBeenCalledWith('下载失败：download blocked')
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:tail-download')
+      expect(document.querySelector('a[download]')).toBeNull()
+      expect(FakeSocket.sockets[0].close).not.toHaveBeenCalled()
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('reports missing service names instead of downloading a misidentified file', async () => {
+    vi.stubGlobal('WebSocket', FakeSocket)
+    const { createObjectURL } = mockDownloads()
+    const error = vi.spyOn(message, 'error').mockImplementation(() => {})
+    const wrapper = mount(LiveTailDialog, {
+      global: { plugins: [Antd], stubs: { AModal: { template: '<div><slot /></div>' } } },
+    })
+    try {
+      const record = log()
+      delete record.service
+      wrapper.vm.start(record)
+      FakeSocket.sockets[0].onmessage({ data: JSON.stringify({ type: 'data', data: btoa('output\n') }) })
+      await flushPromises()
+      await getDownloadButton(wrapper).trigger('click')
+      expect(error).toHaveBeenCalledWith('缺少服务名称，无法生成下载文件名，请重新查询后再试')
+      expect(createObjectURL).not.toHaveBeenCalled()
+      expect(FakeSocket.sockets[0].close).not.toHaveBeenCalled()
+    } finally {
+      wrapper.unmount()
+    }
   })
 
   it('reports the actual missing field without attempting a connection', () => {

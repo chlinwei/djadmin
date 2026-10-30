@@ -189,7 +189,7 @@
                       <a-button size="small" type="link" @click="openDetail(record)">查看详情</a-button>
                     </a-tooltip>
                     <a-tooltip v-if="liveTailEnabled" title="查看日志" placement="top">
-                      <a-button size="small" type="link" @click="liveTailDialog?.start(record)">
+                      <a-button size="small" type="link" @click="startLiveTail(record)">
                         <FontAwesomeIcon :icon="['fas', 'file-lines']" />
                         <span>&nbsp;实时跟踪</span>
                       </a-button>
@@ -279,7 +279,7 @@
         <a-descriptions-item label="错误指纹" v-if="activeLog?.error_fingerprint">{{ activeLog.error_fingerprint }}</a-descriptions-item>
       </a-descriptions>
       <a-tooltip v-if="liveTailEnabled" title="查看日志" placement="top">
-        <a-button style="margin-top: 12px" @click="liveTailDialog?.start(activeLog)">
+        <a-button style="margin-top: 12px" @click="startLiveTail(activeLog)">
           <FontAwesomeIcon :icon="['fas', 'file-lines']" />
           <span>&nbsp;实时跟踪</span>
         </a-button>
@@ -478,6 +478,15 @@ const serviceNameByCode = computed(() => {
   }
   return byCode
 })
+
+function startLiveTail(log) {
+  // 同编码服务可能重名或跨环境；按 ID 取得下载展示名，不改变跟踪请求的来源身份。
+  const service = props.candidateServices.find((item) => String(item.id) === String(log.service_id))
+  const selectedServiceName = String(props.scope.applicationServiceId) === String(log.service_id)
+    ? props.scope.serviceName || (props.scope.nodeType === 'service' ? props.scope.nodeTitle : '')
+    : ''
+  liveTailDialog.value?.start(log, service?.name || selectedServiceName || log.service || '')
+}
 
 // 维度名称映射（业务系统/环境/项目）：文档上是编码，显示用名称。
 const dimensionName = (mapping, code) => props.dimensionNames?.[mapping]?.[code] || code

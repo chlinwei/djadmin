@@ -48,30 +48,28 @@ func (q *Queries) CountLoginAudits(ctx context.Context, arg CountLoginAuditsPara
 
 const countWebSSHSessions = `-- name: CountWebSSHSessions :one
 SELECT COUNT(*) FROM assets_webssh_session_log s JOIN assets_host h ON h.id = s.host_id
-WHERE (s.status = $1 OR s.status = $2 OR $1 IS NULL)
-  AND (s.username LIKE $3 OR $3 IS NULL)
-  AND (s.username LIKE $4 OR h.instance_name LIKE $5 OR h.ip LIKE $6 OR $4 IS NULL)
-  AND (s.output_content LIKE $7 OR $7 IS NULL)
-  AND (s.start_time >= $8 OR $8 IS NULL)
-  AND (s.start_time <= $9 OR $9 IS NULL)
+WHERE (s.status = $1 OR $1 IS NULL)
+  AND (s.username LIKE $2 OR $2 IS NULL)
+  AND (s.username LIKE $3 OR h.instance_name LIKE $4 OR h.ip LIKE $5 OR $3 IS NULL)
+  AND (s.output_content LIKE $6 OR $6 IS NULL)
+  AND (s.start_time >= $7 OR $7 IS NULL)
+  AND (s.start_time <= $8 OR $8 IS NULL)
 `
 
 type CountWebSSHSessionsParams struct {
-	ExactStatus     sql.NullString `json:"exact_status"`
-	AlternateStatus sql.NullString `json:"alternate_status"`
-	ExactUsername   sql.NullString `json:"exact_username"`
-	KeywordUser     sql.NullString `json:"keyword_user"`
-	KeywordHost     sql.NullString `json:"keyword_host"`
-	KeywordIp       sql.NullString `json:"keyword_ip"`
-	OutputPattern   sql.NullString `json:"output_pattern"`
-	TimeFrom        sql.NullTime   `json:"time_from"`
-	TimeTo          sql.NullTime   `json:"time_to"`
+	ExactStatus   sql.NullString `json:"exact_status"`
+	ExactUsername sql.NullString `json:"exact_username"`
+	KeywordUser   sql.NullString `json:"keyword_user"`
+	KeywordHost   sql.NullString `json:"keyword_host"`
+	KeywordIp     sql.NullString `json:"keyword_ip"`
+	OutputPattern sql.NullString `json:"output_pattern"`
+	TimeFrom      sql.NullTime   `json:"time_from"`
+	TimeTo        sql.NullTime   `json:"time_to"`
 }
 
 func (q *Queries) CountWebSSHSessions(ctx context.Context, arg CountWebSSHSessionsParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countWebSSHSessions,
 		arg.ExactStatus,
-		arg.AlternateStatus,
 		arg.ExactUsername,
 		arg.KeywordUser,
 		arg.KeywordHost,
@@ -207,27 +205,26 @@ SELECT s.id, s.host_id AS host, COALESCE(h.instance_name, CONCAT('Host-', h.id))
        s.start_time, s.end_time, s.duration_seconds, s.close_code, s.error_message,
        s.input_bytes, s.command_count, s.recorded_content_bytes, s.is_content_truncated
 FROM assets_webssh_session_log s JOIN assets_host h ON h.id = s.host_id
-WHERE (s.status = $3 OR s.status = $4 OR $3 IS NULL)
-  AND (s.username LIKE $5 OR $5 IS NULL)
-  AND (s.username LIKE $6 OR h.instance_name LIKE $7 OR h.ip LIKE $8 OR $6 IS NULL)
-  AND (s.output_content LIKE $9 OR $9 IS NULL)
-  AND (s.start_time >= $10 OR $10 IS NULL)
-  AND (s.start_time <= $11 OR $11 IS NULL)
+WHERE (s.status = $3 OR $3 IS NULL)
+  AND (s.username LIKE $4 OR $4 IS NULL)
+  AND (s.username LIKE $5 OR h.instance_name LIKE $6 OR h.ip LIKE $7 OR $5 IS NULL)
+  AND (s.output_content LIKE $8 OR $8 IS NULL)
+  AND (s.start_time >= $9 OR $9 IS NULL)
+  AND (s.start_time <= $10 OR $10 IS NULL)
 ORDER BY s.start_time DESC, s.id DESC LIMIT $1 OFFSET $2
 `
 
 type ListWebSSHSessionsParams struct {
-	Limit           int32          `json:"limit"`
-	Offset          int32          `json:"offset"`
-	ExactStatus     sql.NullString `json:"exact_status"`
-	AlternateStatus sql.NullString `json:"alternate_status"`
-	ExactUsername   sql.NullString `json:"exact_username"`
-	KeywordUser     sql.NullString `json:"keyword_user"`
-	KeywordHost     sql.NullString `json:"keyword_host"`
-	KeywordIp       sql.NullString `json:"keyword_ip"`
-	OutputPattern   sql.NullString `json:"output_pattern"`
-	TimeFrom        sql.NullTime   `json:"time_from"`
-	TimeTo          sql.NullTime   `json:"time_to"`
+	Limit         int32          `json:"limit"`
+	Offset        int32          `json:"offset"`
+	ExactStatus   sql.NullString `json:"exact_status"`
+	ExactUsername sql.NullString `json:"exact_username"`
+	KeywordUser   sql.NullString `json:"keyword_user"`
+	KeywordHost   sql.NullString `json:"keyword_host"`
+	KeywordIp     sql.NullString `json:"keyword_ip"`
+	OutputPattern sql.NullString `json:"output_pattern"`
+	TimeFrom      sql.NullTime   `json:"time_from"`
+	TimeTo        sql.NullTime   `json:"time_to"`
 }
 
 type ListWebSSHSessionsRow struct {
@@ -256,7 +253,6 @@ func (q *Queries) ListWebSSHSessions(ctx context.Context, arg ListWebSSHSessions
 		arg.Limit,
 		arg.Offset,
 		arg.ExactStatus,
-		arg.AlternateStatus,
 		arg.ExactUsername,
 		arg.KeywordUser,
 		arg.KeywordHost,

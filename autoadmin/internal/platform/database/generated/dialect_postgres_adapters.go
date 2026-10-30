@@ -288,6 +288,14 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (s
 	return insertResult{id: id}, nil
 }
 
+func (q *Queries) CreateWebSSHSession(ctx context.Context, arg CreateWebSSHSessionParams) (sql.Result, error) {
+	id, err := q.Queries.CreateWebSSHSession(ctx, arg)
+	if err != nil {
+		return nil, err
+	}
+	return insertResult{id: id}, nil
+}
+
 func (q *Queries) CreateBusinessSystem(ctx context.Context, arg CreateBusinessSystemParams) (sql.Result, error) {
 	id, err := q.Queries.CreateBusinessSystem(ctx, arg)
 	if err != nil {

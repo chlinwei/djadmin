@@ -102,30 +102,22 @@ func (r *Repository) ListWebSSHSessions(ctx context.Context, filter WebSSHFilter
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := r.queries.ListWebSSHSessions(ctx, db.ListWebSSHSessionsParams{ExactStatus: params.ExactStatus, AlternateStatus: params.AlternateStatus, ExactUsername: params.ExactUsername, KeywordUser: params.KeywordUser, KeywordHost: params.KeywordHost, KeywordIp: params.KeywordIp, OutputPattern: params.OutputPattern, TimeFrom: params.TimeFrom, TimeTo: params.TimeTo, Limit: page.Size, Offset: page.Offset})
+	rows, err := r.queries.ListWebSSHSessions(ctx, db.ListWebSSHSessionsParams{ExactStatus: params.ExactStatus, ExactUsername: params.ExactUsername, KeywordUser: params.KeywordUser, KeywordHost: params.KeywordHost, KeywordIp: params.KeywordIp, OutputPattern: params.OutputPattern, TimeFrom: params.TimeFrom, TimeTo: params.TimeTo, Limit: page.Size, Offset: page.Offset})
 	result := make([]WebSSHSession, 0, len(rows))
 	for _, row := range rows {
-		status := row.Status
-		if status == "connected" {
-			status = "closed"
-		}
-		result = append(result, WebSSHSession{ID: row.ID, Host: row.Host, HostName: stringPtr(row.HostName), HostIP: stringPtr(row.HostIp), UserID: int32Ptr(row.UserID), Username: row.Username, ClientIP: row.ClientIp, UserAgent: row.UserAgent, Status: status, StartTime: formatTime(row.StartTime), EndTime: nullTimePtr(row.EndTime), DurationSeconds: int32Ptr(row.DurationSeconds), CloseCode: int32Ptr(row.CloseCode), ErrorMessage: row.ErrorMessage, InputBytes: row.InputBytes, CommandCount: row.CommandCount, RecordedContentBytes: row.RecordedContentBytes, IsContentTruncated: row.IsContentTruncated})
+		result = append(result, WebSSHSession{ID: row.ID, Host: row.Host, HostName: stringPtr(row.HostName), HostIP: stringPtr(row.HostIp), UserID: int32Ptr(row.UserID), Username: row.Username, ClientIP: row.ClientIp, UserAgent: row.UserAgent, Status: row.Status, StartTime: formatTime(row.StartTime), EndTime: nullTimePtr(row.EndTime), DurationSeconds: int32Ptr(row.DurationSeconds), CloseCode: int32Ptr(row.CloseCode), ErrorMessage: row.ErrorMessage, InputBytes: row.InputBytes, CommandCount: row.CommandCount, RecordedContentBytes: row.RecordedContentBytes, IsContentTruncated: row.IsContentTruncated})
 	}
 	return result, count, err
 }
 func webSSHParams(filter WebSSHFilter) db.CountWebSSHSessionsParams {
-	status, alternate := sql.NullString{}, sql.NullString{}
+	status := sql.NullString{}
 	if filter.Status != "" {
 		status = sql.NullString{String: filter.Status, Valid: true}
-		alternate = status
-		if filter.Status == "closed" {
-			alternate.String = "connected"
-		}
 	}
 	username := nullPattern(filter.Username)
 	keyword := nullPattern(filter.Keyword)
 	output := nullPattern(filter.OutputKeyword)
-	return db.CountWebSSHSessionsParams{ExactStatus: status, AlternateStatus: alternate, ExactUsername: username, KeywordUser: keyword, KeywordHost: keyword, KeywordIp: keyword, OutputPattern: output, TimeFrom: filter.From, TimeTo: filter.To}
+	return db.CountWebSSHSessionsParams{ExactStatus: status, ExactUsername: username, KeywordUser: keyword, KeywordHost: keyword, KeywordIp: keyword, OutputPattern: output, TimeFrom: filter.From, TimeTo: filter.To}
 }
 func (r *Repository) GetWebSSHContent(ctx context.Context, id int64) (WebSSHContent, error) {
 	row, err := r.queries.GetWebSSHSessionContent(ctx, id)

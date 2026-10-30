@@ -1,13 +1,48 @@
 package audit
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"testing"
 	"time"
 
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/pagination"
+
+	"github.com/DATA-DOG/go-sqlmock"
 )
+
+func TestWebSSHSessionListPreservesCurrentStatus(t *testing.T) {
+	for _, status := range []string{"connected", "closed", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			pool, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pool.Close()
+			mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM assets_webssh_session_log").
+				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+			mock.ExpectQuery("SELECT s.id, s.host_id AS host").WillReturnRows(sqlmock.NewRows([]string{
+				"id", "host", "host_name", "host_ip", "user_id", "username", "client_ip", "user_agent",
+				"status", "start_time", "end_time", "duration_seconds", "close_code", "error_message",
+				"input_bytes", "command_count", "recorded_content_bytes", "is_content_truncated",
+			}).AddRow(123, 42, "host", "10.0.0.1", 7, "operator", "10.0.0.9", "test",
+				status, time.Now().UTC(), nil, nil, nil, "", 6, 1, 12, false))
+			filter := WebSSHFilter{Status: status}
+			if params := webSSHParams(filter); !params.ExactStatus.Valid || params.ExactStatus.String != status {
+				t.Fatalf("status filter was rewritten: %+v", params)
+			}
+			rows, count, err := NewRepository(pool).ListWebSSHSessions(context.Background(), filter, pagination.New(1, 10))
+			if err != nil || count != 1 || len(rows) != 1 || rows[0].Status != status {
+				t.Fatalf("live session status was rewritten: %+v, %d, %v", rows, count, err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
 
 func TestOperationLogJSON(t *testing.T) {
 	for _, tc := range []struct {

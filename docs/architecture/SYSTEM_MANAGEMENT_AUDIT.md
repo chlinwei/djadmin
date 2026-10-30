@@ -22,12 +22,43 @@
 - 操作日志列表通过响应模型输出，`duration_ms` 为毫秒整数或 `null`，`user_id` 为整数或 `null`，不暴露数据库可空类型的内部结构；`created_at` 统一返回 UTC 时间。前端列表与详情直接显示耗时，缺失值显示 `-`，零毫秒保留为 `0`。
 - 终端历史日志清洗 ANSI 转义、可读命令解析（`history_test.go`）。
 
+### WebSSH 会话审计
+
+- 连接入口为 `/ws/assets/hosts/:id/webssh/`，主机下的 HTTP WebSocket 入口复用同一 handler。
+  通过既有登录与主机查看授权、确认主机及 Agent 身份后，先向 `assets_webssh_session_log`
+  写入主机 ID、当前登录用户、客户端 IP/User-Agent、请求的目标系统用户与 UTC 开始时间，
+  再请求 Agent 打开终端；审计创建失败明确报错，不开启未记录的终端。
+- 会话开始及等待 Agent 应答期间使用 `connected`，目标用户切换状态为 `pending`；
+  Agent 确认打开后保存真实系统用户和切换成功状态。列表按数据库状态原样返回：
+  `connected` 为连接中、`closed` 为正常关闭、`failed` 为失败，状态筛选精确匹配，
+  不把仍连接的记录转换为已关闭。
+- 终端桥接在一个事件循环内顺序处理 Agent 输出、浏览器输入与审计快照，避免并发修改记录。
+  成功发送到 Agent 的输入计入输入字节数；CR/LF 提交计数合并跨帧 CRLF，计入 `command_count`。
+  该数值代表输入行提交次数，不代表经 shell 确认执行的命令数；可读输入解析也不是 shell 执行凭证。
+  Agent 输出按原有协议实时转发给浏览器，审计内容截断不截断终端显示。
+- 输入和输出共用 **1 MiB** 原始内容预算，超限停止追加内容，保留输入计数并设置截断标记。
+  SQL 快照重新拼合跨帧 UTF-8；非法字节及 NUL 使用替代字符，兼容两侧数据库文本字段，
+  存储的 UTF-8 输入/输出合计同样不超过 1 MiB，字节数以实际存储文本为准。
+  Agent 确认连接时立即保存；有变化的会话每 5 秒保存一次，空闲或截断后未变化的输出不反复写库。
+- 关闭窗口、主动关闭或 Agent 正常退出时保存 `closed`、结束时间、时长与关闭码；
+  Agent 离线、打开失败、远端异常退出、异常断网或审计更新失败保存 `failed` 和原因，
+  并结束终端连接。所有退出路径尝试关闭远端终端；结束写入使用独立的 5 秒上下文，
+  不受浏览器请求取消影响。数据库写入失败写结构化错误日志并尽可能提示浏览器，不输出终端内容到服务日志。
+- 进程被强杀或机器掉电时无法执行结束写入：只能保留最后一次成功快照，最多可能丢失一个刷新周期内
+  尚未落库的内容，`connected` 记录也可能残留。会话历史不是实时在线人数的权威来源，
+  不在查询时把残留记录伪装成正常关闭；未写入的历史连接无法补录。
+- 审计列表、内容查看及下载仍由 `audit:webssh_sessions:view` 控制。终端输入/输出可能包含口令、
+  业务数据等敏感内容，不承诺自动识别或脱敏，必须严格限制该权限；保存期继续由 scheduler 的
+  WebSSH 会话日志清理任务控制。沿用现有表结构，不需要数据库迁移。
+
 ## 测试覆盖
 
 - `internal/rbac/menu_test.go`：层级/排序、孤儿丢弃、环保护（双向/自引用）、NULL 根、可空字段映射、validateParent。
 - `internal/sysconfig/service_test.go`：normalize 全类型（含 secret 哈希+掩码透传）、typed 类型还原与掩码、mapConfig 输出契约（掩码+UTC 时间格式）。
 - `internal/audit/history_test.go` + `middleware_test.go`：见上。
 - `internal/audit/repository_test.go`：操作日志响应字段、可空整数及 UTC 时间序列化。
+- `internal/assets/webssh_audit_test.go`：终端双向转发、运行中快照、正常/异常结束、数据库失败、
+  内容上限、UTF-8 跨帧和输入提交计数；审计仓储测试覆盖连接状态与筛选不被改写。
 
 
 <a id="user-avatar"></a>

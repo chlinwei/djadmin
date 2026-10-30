@@ -2,12 +2,20 @@ package assets
 
 import (
 	stdcontext "context"
+	"database/sql"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"autoadmin/internal/agent/pb"
+	"autoadmin/internal/identity"
+	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/apperror"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -43,7 +51,7 @@ type webSSHMessage struct {
 }
 
 func (handler *Handler) WebSSH(context *gin.Context) {
-	if deploymentGateway == nil {
+	if handler.gateway == nil {
 		context.JSON(http.StatusServiceUnavailable, gin.H{"code": 503, "msg": "Agent Gateway 未启用", "data": nil})
 		return
 	}
@@ -61,81 +69,202 @@ func (handler *Handler) WebSSH(context *gin.Context) {
 		context.JSON(http.StatusBadRequest, gin.H{"code": 400, "msg": "主机未配置实例名，无法定位 agent", "data": nil})
 		return
 	}
+	claims, ok := identity.ClaimsFromContext(context)
+	if !ok {
+		respond(context, nil, apperror.ErrTokenInvalid)
+		return
+	}
+	targetUser := strings.TrimSpace(context.Query("target_user"))
+	if len(targetUser) > 100 {
+		respond(context, nil, apperror.New(apperror.CodeInvalidArgument, "目标用户名过长"))
+		return
+	}
 	socket, err := webSSHUpgrader.Upgrade(context.Writer, context.Request, nil)
 	if err != nil {
 		return
 	}
 	defer socket.Close()
-	requestID := uuid.NewString()
-	targetUser := strings.TrimSpace(context.Query("target_user"))
-	events, err := deploymentGateway.OpenTerminal(context.Request.Context(), *host.InstanceName, requestID, targetUser, 120, 32)
+	// Refuse an unaudited terminal: persist the identity before opening the PTY.
+	// Final writes use their own deadline because browser disconnect cancels HTTP.
+	createCtx, cancel := stdcontext.WithTimeout(context.Request.Context(), webSSHAuditWriteTimeout)
+	audit, err := newWebSSHAudit(createCtx, handler.service.repository.queries, db.CreateWebSSHSessionParams{
+		HostID: hostID, UserID: sql.NullInt32{Int32: claims.UserID, Valid: true},
+		Username: claims.Username, ClientIp: webSSHText(context.ClientIP(), 64),
+		UserAgent: webSSHText(context.Request.UserAgent(), 255), StartTime: time.Now().UTC(),
+		RequestedUsername: targetUser,
+	})
+	cancel()
 	if err != nil {
-		_ = socket.WriteJSON(gin.H{"type": "error", "message": err.Error()})
+		slog.Error("webssh audit create failed", "host_id", hostID, "user_id", claims.UserID, "error", err)
+		_ = writeWebSSH(socket, gin.H{"type": "error", "message": "无法创建 WebSSH 会话审计记录，连接已停止"})
 		return
 	}
-	writeMu := make(chan struct{}, 1)
-	writeMu <- struct{}{}
-	writeJSON := func(value any) error {
-		<-writeMu
-		defer func() { writeMu <- struct{}{} }()
-		return socket.WriteJSON(value)
+	bridgeWebSSH(context.Request.Context(), socket, handler.gateway, host, targetUser, audit)
+	audit.finish()
+	finalCtx, cancelFinal := stdcontext.WithTimeout(stdcontext.Background(), webSSHAuditWriteTimeout)
+	defer cancelFinal()
+	if err := audit.flush(finalCtx); err != nil {
+		slog.Error("webssh audit finalize failed", "session_id", audit.row.ID, "host_id", hostID, "error", err)
+		_ = writeWebSSH(socket, gin.H{"type": "error", "message": "WebSSH 已停止，但会话审计保存失败，请联系管理员"})
 	}
-	ctx, cancel := stdcontext.WithCancel(stdcontext.Background())
+}
+
+type webSSHTerminalGateway interface {
+	OpenTerminal(stdcontext.Context, string, string, string, uint32, uint32) (<-chan *pb.AgentFrame, error)
+	SendTerminalData(stdcontext.Context, string, string, []byte) error
+	ResizeTerminal(stdcontext.Context, string, string, uint32, uint32) error
+	CloseTerminal(stdcontext.Context, string, string) error
+}
+
+type webSSHClientEvent struct {
+	message webSSHMessage
+	err     error
+}
+
+func writeWebSSH(socket *websocket.Conn, value any) error {
+	if err := socket.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return err
+	}
+	return socket.WriteJSON(value)
+}
+
+// One loop serializes terminal events, input and audit snapshots; only the
+// socket reader runs separately. Agent exit must also end the browser session.
+func bridgeWebSSH(parent stdcontext.Context, socket *websocket.Conn, gateway webSSHTerminalGateway, host Host, targetUser string, audit *webSSHAudit) {
+	ctx, cancel := stdcontext.WithCancel(parent)
 	defer cancel()
+	fail := func(message string) {
+		audit.fail(message)
+		_ = writeWebSSH(socket, gin.H{"type": "error", "message": message})
+	}
+	requestID := uuid.NewString()
+	agentName := webSSHString(host.InstanceName)
+	events, err := gateway.OpenTerminal(ctx, agentName, requestID, targetUser, 120, 32)
+	if err != nil {
+		fail(err.Error())
+		return
+	}
+	defer func() {
+		closeCtx, cancelClose := stdcontext.WithTimeout(stdcontext.Background(), 2*time.Second)
+		defer cancelClose()
+		if err := gateway.CloseTerminal(closeCtx, agentName, requestID); err != nil {
+			slog.Warn("webssh terminal close failed", "session_id", audit.row.ID, "error", err)
+			if audit.row.Status != "failed" {
+				fail("关闭远端终端失败：" + err.Error())
+			}
+		}
+	}()
+	clientEvents := make(chan webSSHClientEvent)
 	go func() {
 		for {
+			var message webSSHMessage
+			err := socket.ReadJSON(&message)
 			select {
 			case <-ctx.Done():
 				return
-			case frame, ok := <-events:
-				if !ok {
+			case clientEvents <- webSSHClientEvent{message: message, err: err}:
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	ticker := time.NewTicker(webSSHAuditFlushInterval)
+	defer ticker.Stop()
+	flush := func() bool {
+		writeCtx, cancelWrite := stdcontext.WithTimeout(ctx, webSSHAuditWriteTimeout)
+		defer cancelWrite()
+		if err := audit.flush(writeCtx); err != nil {
+			slog.Error("webssh audit update failed", "session_id", audit.row.ID, "error", err)
+			fail("WebSSH 会话审计保存失败，连接已停止")
+			return false
+		}
+		return true
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			fail("WebSSH 请求已取消")
+			return
+		case <-ticker.C:
+			if !flush() {
+				return
+			}
+		case event := <-clientEvents:
+			if event.err != nil {
+				code := websocket.CloseAbnormalClosure
+				if closeError, ok := event.err.(*websocket.CloseError); ok {
+					code = closeError.Code
+				}
+				if code != websocket.CloseNormalClosure && code != websocket.CloseGoingAway {
+					audit.fail("WebSSH 客户端连接异常中断")
+				}
+				audit.row.CloseCode = sql.NullInt32{Int32: int32(code), Valid: true}
+				return
+			}
+			message := event.message
+			switch strings.ToLower(message.Type) {
+			case "resize":
+				err = gateway.ResizeTerminal(ctx, agentName, requestID, message.Cols, message.Rows)
+			case "input", "data":
+				err = gateway.SendTerminalData(ctx, agentName, requestID, []byte(message.Data))
+				if err == nil {
+					audit.recordInput(message.Data)
+				}
+			case "close":
+				return
+			}
+			if err != nil {
+				fail("终端操作失败：" + err.Error())
+				return
+			}
+		case frame, ok := <-events:
+			if !ok {
+				fail("Agent 终端连接中断")
+				return
+			}
+			var message gin.H
+			switch {
+			case frame.GetTerminalOpenResponse() != nil:
+				response := frame.GetTerminalOpenResponse()
+				if response.Error != "" {
+					fail(response.Error)
 					return
 				}
-				switch {
-				case frame.GetTerminalOpenResponse() != nil:
-					response := frame.GetTerminalOpenResponse()
-					if response.Error != "" {
-						_ = writeJSON(gin.H{"type": "error", "message": response.Error})
-					} else {
-						homeDir := "/"
-						if response.EffectiveUser == "root" {
-							homeDir = "/root"
-						}
-						_ = writeJSON(gin.H{
-							"type": "connected", "requested_user": targetUser,
-							"effective_user": response.EffectiveUser, "switch_user_status": "success",
-							"instance_name": webSSHString(host.InstanceName), "ip": webSSHString(host.IP),
-							"supports_file_ops": true, "home_dir": homeDir,
-						})
-					}
-				case frame.GetTerminalDataResponse() != nil:
-					_ = writeJSON(gin.H{"type": "output", "data": string(frame.GetTerminalDataResponse().Data)})
-				case frame.GetTerminalExitResponse() != nil:
-					exit := frame.GetTerminalExitResponse()
-					_ = writeJSON(gin.H{"type": "exit", "exit_code": exit.ExitCode, "error": exit.Error})
+				audit.connected(response.EffectiveUser)
+				if !flush() {
+					return
+				}
+				homeDir := "/"
+				if response.EffectiveUser == "root" {
+					homeDir = "/root"
+				}
+				message = gin.H{
+					"type": "connected", "requested_user": targetUser,
+					"effective_user": response.EffectiveUser, "switch_user_status": "success",
+					"instance_name": agentName, "ip": webSSHString(host.IP),
+					"supports_file_ops": true, "home_dir": homeDir,
+				}
+			case frame.GetTerminalDataResponse() != nil:
+				data := frame.GetTerminalDataResponse().Data
+				audit.recordOutput(data)
+				message = gin.H{"type": "output", "data": string(data)}
+			case frame.GetTerminalExitResponse() != nil:
+				exit := frame.GetTerminalExitResponse()
+				if exit.Error != "" || exit.ExitCode != 0 {
+					audit.fail(fmt.Sprintf("终端退出（code=%d）：%s", exit.ExitCode, exit.Error))
+				}
+				_ = writeWebSSH(socket, gin.H{"type": "exit", "exit_code": exit.ExitCode, "error": exit.Error})
+				return
+			}
+			if message != nil {
+				if err := writeWebSSH(socket, message); err != nil {
+					audit.fail("WebSSH 终端数据发送失败")
 					return
 				}
 			}
 		}
-	}()
-	for {
-		var message webSSHMessage
-		if err = socket.ReadJSON(&message); err != nil {
-			break
-		}
-		switch strings.ToLower(message.Type) {
-		case "resize":
-			_ = deploymentGateway.ResizeTerminal(context.Request.Context(), *host.InstanceName, requestID, message.Cols, message.Rows)
-		case "input", "data":
-			_ = deploymentGateway.SendTerminalData(context.Request.Context(), *host.InstanceName, requestID, []byte(message.Data))
-		case "close":
-			_ = deploymentGateway.CloseTerminal(context.Request.Context(), *host.InstanceName, requestID)
-			return
-		}
 	}
-	closeCtx, cancelClose := stdcontext.WithTimeout(stdcontext.Background(), 2*time.Second)
-	defer cancelClose()
-	_ = deploymentGateway.CloseTerminal(closeCtx, *host.InstanceName, requestID)
 }
 
 func webSSHString(value *string) string {

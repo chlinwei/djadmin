@@ -283,6 +283,7 @@ type Querier interface {
 	CreateUserAlertMediaBinding(ctx context.Context, arg CreateUserAlertMediaBindingParams) error
 	CreateUserGroup(ctx context.Context, arg CreateUserGroupParams) (sql.Result, error)
 	CreateUserGroupMember(ctx context.Context, arg CreateUserGroupMemberParams) error
+	CreateWebSSHSession(ctx context.Context, arg CreateWebSSHSessionParams) (sql.Result, error)
 	DeactivateOtherAgentPackages(ctx context.Context, id uint64) error
 	DeleteAPIToken(ctx context.Context, id int32) error
 	DeleteAgentPackage(ctx context.Context, id uint64) error
@@ -617,6 +618,7 @@ type Querier interface {
 	GetUserGroupName(ctx context.Context, id int64) (string, error)
 	// ---- 告警链诊断（user-chain / chain/:historyId）----
 	GetUsernameByID(ctx context.Context, id int32) (string, error)
+	GetWebSSHAuditID(ctx context.Context, id int64) (int64, error)
 	GetWebSSHSessionContent(ctx context.Context, id int64) (GetWebSSHSessionContentRow, error)
 	// 作业实时输出块（运行期间才存在，结束时由执行方删除）：
 	InsertAutomationJobLogChunk(ctx context.Context, arg InsertAutomationJobLogChunkParams) error
@@ -1091,6 +1093,7 @@ type Querier interface {
 	UpdateUserPhonenumber(ctx context.Context, arg UpdateUserPhonenumberParams) error
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
 	UpdateUserTimezone(ctx context.Context, arg UpdateUserTimezoneParams) error
+	UpdateWebSSHSession(ctx context.Context, arg UpdateWebSSHSessionParams) (int64, error)
 	// conflict: host_id
 	UpsertHostHardware(ctx context.Context, arg UpsertHostHardwareParams) error
 	// conflict: host_id

@@ -15,7 +15,7 @@ ORDER BY login_time DESC, id DESC LIMIT ? OFFSET ?;
 
 -- name: CountWebSSHSessions :one
 SELECT COUNT(*) FROM assets_webssh_session_log s JOIN assets_host h ON h.id = s.host_id
-WHERE (s.status = sqlc.narg(exact_status) OR s.status = sqlc.narg(alternate_status) OR sqlc.narg(exact_status) IS NULL)
+WHERE (s.status = sqlc.narg(exact_status) OR sqlc.narg(exact_status) IS NULL)
   AND (s.username LIKE sqlc.narg(exact_username) OR sqlc.narg(exact_username) IS NULL)
   AND (s.username LIKE sqlc.narg(keyword_user) OR h.instance_name LIKE sqlc.narg(keyword_host) OR h.ip LIKE sqlc.narg(keyword_ip) OR sqlc.narg(keyword_user) IS NULL)
   AND (s.output_content LIKE sqlc.narg(output_pattern) OR sqlc.narg(output_pattern) IS NULL)
@@ -29,7 +29,7 @@ SELECT s.id, s.host_id AS host, COALESCE(h.instance_name, CONCAT('Host-', h.id))
        s.start_time, s.end_time, s.duration_seconds, s.close_code, s.error_message,
        s.input_bytes, s.command_count, s.recorded_content_bytes, s.is_content_truncated
 FROM assets_webssh_session_log s JOIN assets_host h ON h.id = s.host_id
-WHERE (s.status = sqlc.narg(exact_status) OR s.status = sqlc.narg(alternate_status) OR sqlc.narg(exact_status) IS NULL)
+WHERE (s.status = sqlc.narg(exact_status) OR sqlc.narg(exact_status) IS NULL)
   AND (s.username LIKE sqlc.narg(exact_username) OR sqlc.narg(exact_username) IS NULL)
   AND (s.username LIKE sqlc.narg(keyword_user) OR h.instance_name LIKE sqlc.narg(keyword_host) OR h.ip LIKE sqlc.narg(keyword_ip) OR sqlc.narg(keyword_user) IS NULL)
   AND (s.output_content LIKE sqlc.narg(output_pattern) OR sqlc.narg(output_pattern) IS NULL)

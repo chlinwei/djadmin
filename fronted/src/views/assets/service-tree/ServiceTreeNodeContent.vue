@@ -374,10 +374,14 @@ const columns = computed(() => {
     environment: serviceColumns,
     service: deploymentColumns,
   }[props.scope.nodeType] || [])
-  if (props.scope.nodeType === 'service' && entity.value?.cluster_type !== 'ha') {
-    return baseColumns.filter((column) => column.key !== 'ha_role')
-  }
-  return baseColumns
+  return baseColumns.filter((column) => {
+    if (column.key === 'ha_role') return entity.value?.cluster_type === 'ha'
+    if (column.key === 'deployment_action') return checkPermission('assets:hosts:execute')
+    if (column.key === 'business_system_action' || column.key === 'service_action') {
+      return checkPermission('assets:service-tree:manage')
+    }
+    return true
+  })
 })
 const childSectionTitle = computed(() => ({
   all: '业务系统', project: '业务系统', businessSystem: '环境', environment: '逻辑服务', service: '部署实例',
@@ -427,8 +431,9 @@ const summaryStatus = computed(() => {
     return { label: '状态未知', color: 'default' }
   }
   if (abnormalCount.value > 0) return { label: `${abnormalCount.value} 个异常实例`, color: 'error' }
-  if (descendants.value.length > 0) return { label: '未发现异常', color: 'success' }
-  return { label: '暂无实例', color: 'default' }
+  if (!descendants.value.length) return { label: '暂无实例', color: 'default' }
+  if (runningCount.value === descendants.value.length) return { label: '运行正常', color: 'success' }
+  return { label: '状态待确认', color: 'default' }
 })
 
 function childLabel(record) {

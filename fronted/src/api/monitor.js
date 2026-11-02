@@ -160,7 +160,7 @@ export function batchDeleteElasticsearchClusters(ids) {
 }
 
 export function testElasticsearchCluster(id) {
-  return requestUtil.post(prefix + `elasticsearch-clusters/${id}/test-connection/`, {})
+  return requestUtil.get(prefix + `elasticsearch-clusters/${id}/test-connection/`)
 }
 
 // 日志采集链路逐层对账（只读）：索引模板 / 保留策略 / 解析规则 / 主机配置 / 采集进程 / 数据写入
@@ -269,7 +269,7 @@ export function batchDeleteLogRetentionTiers(ids) {
 }
 
 export function checkLogCollectionStatus(id) {
-  return requestUtil.post(prefix + `log-targets/${id}/check-status/`, {})
+  return requestUtil.get(prefix + `log-targets/${id}/check-status/`)
 }
 
 export function retryLogCollectionTarget(id) {

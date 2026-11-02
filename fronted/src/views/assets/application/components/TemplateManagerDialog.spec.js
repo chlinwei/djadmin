@@ -66,6 +66,9 @@ describe('TemplateManagerDialog', () => {
 
     const view = document.body.querySelector('[data-view-template]')
     expect(view).not.toBeNull()
+    expect(view.classList.contains('ant-btn-link')).toBe(true)
+    expect(view.classList.contains('detail-action')).toBe(true)
+    expect(view.textContent.trim()).toBe('详情')
     const tooltip = wrapper.findAllComponents({ name: 'ATooltip' })
       .find((item) => item.props('title') === '查看详情')
     expect(tooltip.props('placement')).toBe('top')
@@ -79,7 +82,8 @@ describe('TemplateManagerDialog', () => {
     await flushPromises()
     const dialog = wrapper.findComponent(TemplateDialogStub)
     expect(dialog.props()).toMatchObject({ open: true, templateId: 2, copyFromId: null, readOnly: true })
-    expect(wrapper.vm.columns.find((column) => column.key === 'action')).toMatchObject({ fixed: 'right', width: 180 })
+    expect(wrapper.vm.columns.find((column) => column.key === 'action')).toMatchObject({ fixed: 'right', width: 220 })
+    expect(wrapper.findComponent({ name: 'ATable' }).props('scroll')).toEqual({ x: 1200 })
     wrapper.unmount()
   })
 

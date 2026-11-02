@@ -79,6 +79,10 @@ flowchart TD
 
 配置 Elasticsearch 集群连接与索引相关参数；检查连接、模板、pipeline 和 ILM 状态。
 后端管理存储对象，Filebeat 直接向 Elasticsearch 发事件，日志正文不经过 RabbitMQ 搬运。
+Filebeat 进程状态通过 `GET /monitor/log-targets/:id/check-status/` 观测，
+集群连通性通过 `GET /monitor/elasticsearch-clusters/:id/test-connection/` 检查；
+两者只刷新观测结果，不启停进程、不修改存储配置，返回 `Cache-Control: no-store`，
+且保留各自原权限条件。只有 GET 入口，不提供 POST 查询兼容。
 
 <a id="parsers"></a>
 
@@ -92,6 +96,8 @@ flowchart TD
 只读用户仅可切换样例格式和输入日志样例，不提供附加条件处理器输入，试算请求也不携带附加处理器，
 且不显示发布入口。保存或发布仍按新增/修改动作权限校验，有修改权限的用户保留完整编辑和试算能力。
 试算入口打开的弹窗标题不冒充编辑模式。
+试算接口保留 POST，用请求体提交 Pipeline 和日志样例，这是内容运算而非已有资源查询，
+不把完整日志或代码转移到 URL，也不为了减少审计记录而改写请求方法。
 
 ```mermaid
 flowchart TD

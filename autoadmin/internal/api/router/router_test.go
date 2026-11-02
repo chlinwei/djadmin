@@ -52,6 +52,11 @@ func TestReadOnlyRoutesUseGET(t *testing.T) {
 		"/monitor/targets/prometheus/proxy/*apiPath",
 		"/assets/application-services/log-status-summary/",
 		"/assets/service-dependencies/topology/",
+		"/assets/hosts/:id/refresh-info/",
+		"/assets/hosts/refresh-info/",
+		"/assets/application-services/:id/refresh-runtime-status/",
+		"/monitor/log-targets/:id/check-status/",
+		"/monitor/elasticsearch-clusters/:id/test-connection/",
 	} {
 		t.Run(path, func(t *testing.T) {
 			found := false
@@ -68,6 +73,62 @@ func TestReadOnlyRoutesUseGET(t *testing.T) {
 				t.Fatal("GET route missing")
 			}
 		})
+	}
+}
+
+func TestObservationQueriesDoNotKeepPOSTRoutes(t *testing.T) {
+	tokens := identity.NewTokenManager("test-secret", time.Hour)
+	engine, err := New(nil, tokens, []string{"*"}, nil, "", "test-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		"/assets/hosts/1/refresh-info/",
+		"/assets/hosts/refresh-info/",
+		"/assets/application-services/1/refresh-runtime-status/",
+		"/monitor/log-targets/1/check-status/",
+		"/monitor/elasticsearch-clusters/1/test-connection/",
+	} {
+		t.Run(path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, path, nil))
+			// Gin may normalize the slash of an unmatched POST; it must still
+			// reject that method after the redirect, not restore a query route.
+			if recorder.Code == http.StatusTemporaryRedirect {
+				location := recorder.Header().Get("Location")
+				recorder = httptest.NewRecorder()
+				engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, location, nil))
+			}
+			if recorder.Code != http.StatusNotFound {
+				t.Fatalf("removed POST query returned %d, want 404", recorder.Code)
+			}
+		})
+	}
+}
+
+func TestContentValidationAndSimulationRemainPOST(t *testing.T) {
+	tokens := identity.NewTokenManager("test-secret", time.Hour)
+	engine, err := New(nil, tokens, []string{"*"}, nil, "", "test-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		"/sys/automation/playbooks/validate/",
+		"/monitor/elasticsearch-clusters/:id/pipeline-simulate/",
+	} {
+		found := false
+		for _, route := range engine.Routes() {
+			if route.Path != path {
+				continue
+			}
+			if route.Method != http.MethodPost {
+				t.Errorf("%s accepts %s, want POST only", path, route.Method)
+			}
+			found = true
+		}
+		if !found {
+			t.Errorf("%s is not registered", path)
+		}
 	}
 }
 

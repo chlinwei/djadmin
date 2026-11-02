@@ -267,20 +267,10 @@ func (handler *Handler) BatchSaveApplicationServiceLogSettings(context *gin.Cont
 // 配置态（待下发）由注入的评估器给（见 log_status_summary.go）。评估不可用时该项为 null 并在
 // pending_error 里说明，不让整个接口失败——日志状态本身仍然有用。
 func (handler *Handler) LogStatusSummary(context *gin.Context) {
-	rawIDs, ok := context.GetQueryArray("service_ids")
-	if !ok || len(rawIDs) != 1 || strings.TrimSpace(rawIDs[0]) == "" {
+	serviceIDs, err := requiredIDListQuery(context, "service_ids")
+	if err != nil {
 		response.Error(context, ErrInvalid)
 		return
-	}
-	parts := strings.Split(rawIDs[0], ",")
-	serviceIDs := make([]int64, 0, len(parts))
-	for _, part := range parts {
-		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
-		if err != nil {
-			response.Error(context, ErrInvalid)
-			return
-		}
-		serviceIDs = append(serviceIDs, id)
 	}
 	summary, err := handler.service.LogStatusSummary(context.Request.Context(), serviceIDs)
 	respond(context, summary, err)

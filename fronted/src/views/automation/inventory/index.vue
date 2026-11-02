@@ -30,7 +30,7 @@
         rowKey="id"
         size="small"
         :locale="tableLocale"
-        :scroll="{ x: 1100 }"
+        :scroll="{ x: 1140 }"
         @change="onTableChange"
       >
         <template #bodyCell="{ column, record }">
@@ -55,8 +55,9 @@
           <template v-else-if="column.key === 'action'">
             <a-space>
               <a-tooltip title="查看详情" placement="top">
-                <a-button size="small" data-view-inventory @click="openScopeViewer(record)" v-permission="'automation:inventory:view'">
-                  <FontAwesomeIcon :icon="['fas', 'fa-circle-info']" />
+                <a-button type="link" size="small" class="detail-action" data-view-inventory @click="openScopeViewer(record)" v-permission="'automation:inventory:view'">
+                  <FontAwesomeIcon :icon="['fas', 'eye']" />
+                  <span>详情</span>
                 </a-button>
               </a-tooltip>
               <a-tooltip title="编辑">
@@ -260,7 +261,7 @@ const columns = [
   { title: '健康状态', dataIndex: 'health_status', key: 'health_status', width: 120 },
   { title: '状态', dataIndex: 'enabled', key: 'enabled', width: 100 },
   { title: '备注', dataIndex: 'remark', key: 'remark' },
-  { title: '操作', key: 'action', width: 180, fixed: 'right' },
+  { title: '操作', key: 'action', width: 220, fixed: 'right' },
 ]
 
 function getHealthTagColor(record) {

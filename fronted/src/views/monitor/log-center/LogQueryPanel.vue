@@ -187,7 +187,10 @@
                 <template v-else-if="column.key === 'action'">
                   <a-space :size="6">
                     <a-tooltip title="详细日志" placement="top">
-                      <a-button size="small" type="link" @click="openDetail(record)">查看详情</a-button>
+                      <a-button size="small" type="link" class="detail-action" @click="openDetail(record)">
+                        <FontAwesomeIcon :icon="['fas', 'eye']" />
+                        <span>详情</span>
+                      </a-button>
                     </a-tooltip>
                     <a-tooltip v-if="liveTailEnabled" :title="liveTailTooltip(record)" placement="top">
                       <span>
@@ -257,7 +260,10 @@
                       <a-button size="small" type="link" @click="drillDown(record)">查看日志</a-button>
                     </a-tooltip>
                     <a-tooltip title="详细日志" placement="top">
-                      <a-button size="small" type="link" :disabled="!record.sample" @click="openDetail(record.sample)">查看详情</a-button>
+                      <a-button size="small" type="link" class="detail-action" :disabled="!record.sample" @click="openDetail(record.sample)">
+                        <FontAwesomeIcon :icon="['fas', 'eye']" />
+                        <span>详情</span>
+                      </a-button>
                     </a-tooltip>
                   </a-space>
                 </template>

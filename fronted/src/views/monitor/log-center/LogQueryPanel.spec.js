@@ -1182,7 +1182,13 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
     await wrapper.setProps({ scope: { nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' } })
     await flushPromises()
 
-    wrapper.vm.openDetail(LOG_DOC)
+    const entry = wrapper.get('tr[data-row-key="doc-1"] .detail-action')
+    expect(entry.classes()).toContain('ant-btn-link')
+    expect(entry.text()).toBe('详情')
+    const tooltip = wrapper.findAllComponents(Tooltip)
+      .find((item) => item.find('.detail-action').exists())
+    expect(tooltip.props()).toMatchObject({ title: '详细日志', placement: 'top' })
+    await entry.trigger('click')
     await flushPromises()
 
     // a-drawer 通过 Teleport 挂载到 document.body，不在 wrapper 根节点子树内，需要直接查 body 文本。
@@ -1210,7 +1216,9 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
     // message 独有前缀，证明确实取的是原始行。
     expect(text).toContain('com.esb.App')
 
-    const heads = document.querySelectorAll('.detail-section-head')
+    const heads = Array.from(document.querySelectorAll('.detail-section-head')).filter((head) => (
+      ['原始日志', '错误日志'].includes(head.querySelector('.detail-section-title')?.textContent)
+    ))
     expect(heads.length).toBe(2)
     expect(heads[0].textContent).toContain('原始日志')
     expect(heads[1].textContent).toContain('错误日志')

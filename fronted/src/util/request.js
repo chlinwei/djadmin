@@ -132,12 +132,14 @@ httpService.interceptors.response.use(function (response) {
  *  params:参数
  *  timeout:自定义超时时间(可选，毫秒)
  * */
-export function get(url, params = {}, timeout = null) {
+export function get(url, params = {}, timeout = null, options = {}) {
     return new Promise((resolve, reject) => {
         const config = {
             url: url,
             method: 'get',
-            params: params
+            params: params,
+            // 状态轮询由调用方展示失败；切换为 GET 后仍保留原来的错误提示策略。
+            suppressBusinessErrorMessage: Boolean(options.suppressBusinessErrorMessage),
         }
         // 如果指定了自定义超时，则覆盖默认超时（如按需展开日志路径要逐台调 agent，较慢）。
         if (timeout) {

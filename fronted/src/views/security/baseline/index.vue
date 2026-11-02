@@ -107,7 +107,7 @@
               :columns="itemColumns"
               :data-source="categoryRows"
               :loading="itemsLoading"
-              :scroll="{ x: 800 }"
+              :scroll="{ x: 840 }"
               :pagination="itemPagination"
               size="small"
               :locale="{ emptyText: selectedCategory ? '该类目暂无策略，点击右上角「添加策略」' : (selectedBaseline ? '左侧选择一个类目查看策略' : '左侧选择一个基线标准') }"
@@ -119,8 +119,9 @@
                 <template v-else-if="column.key === 'action'">
                   <a-space :size="6">
                     <a-tooltip title="查看详情" placement="top">
-                      <a-button v-permission="'baseline:view'" size="small" data-view-policy @click="openItemDetails(record)">
-                        <FontAwesomeIcon :icon="['fas', 'fa-circle-info']" />
+                      <a-button v-permission="'baseline:view'" type="link" size="small" class="detail-action" data-view-policy @click="openItemDetails(record)">
+                        <FontAwesomeIcon :icon="['fas', 'eye']" />
+                        <span>详情</span>
                       </a-button>
                     </a-tooltip>
                     <a-tooltip title="上移" placement="top">
@@ -163,7 +164,7 @@
           :columns="scanColumns"
           :data-source="scans"
           :loading="scanLoading"
-          :scroll="{ x: 1100 }"
+          :scroll="{ x: 1140 }"
           :pagination="scanPagination"
           size="small"
           :locale="tableLocale"
@@ -182,8 +183,11 @@
             </template>
             <template v-else-if="column.key === 'action'">
               <a-space>
-                <a-tooltip title="历史记录" placement="top">
-                  <a-button size="small" @click="openScanDetail(record)">详情</a-button>
+                <a-tooltip title="查看详情" placement="top">
+                  <a-button type="link" size="small" class="detail-action" @click="openScanDetail(record)">
+                    <FontAwesomeIcon :icon="['fas', 'eye']" />
+                    <span>详情</span>
+                  </a-button>
                 </a-tooltip>
                 <a-tooltip v-if="['pending', 'running'].includes(record.status)" title="取消" placement="top">
                   <a-popconfirm title="确定取消该扫描吗？" @confirm="handleCancelScan(record)">
@@ -400,14 +404,14 @@ const scanColumns = [
   { title: '结果', key: 'summary', width: 240 },
   { title: '发起人', dataIndex: 'requested_username', key: 'requested_username', width: 110 },
   { title: '开始时间', dataIndex: 'start_time', key: 'start_time', width: 180 },
-  { title: '操作', key: 'action', fixed: 'right', width: 120 },
+  { title: '操作', key: 'action', fixed: 'right', width: 160 },
 ]
 const itemColumns = [
   { title: '#', key: 'index', width: 50, customRender: ({ index }) => index + 1 },
   { title: '策略名称', dataIndex: 'name' },
   { title: '级别', key: 'severity', width: 70 },
   { title: '说明', dataIndex: 'description', key: 'description', ellipsis: true, width: 180 },
-  { title: '操作', key: 'action', fixed: 'right', width: 224 },
+  { title: '操作', key: 'action', fixed: 'right', width: 264 },
 ]
 
 const scans = ref([])

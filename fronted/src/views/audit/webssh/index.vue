@@ -73,7 +73,7 @@
         :locale="tableLocale"
         :row-selection="rowSelection"
         rowKey="id"
-        :scroll="{ x: 1300 }"
+        :scroll="{ x: 1690 }"
         @change="handleTableChange"
       >
         <template #bodyCell="{ column, record }">
@@ -106,9 +106,10 @@
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space :size="8" class="action-links" wrap>
-              <a-tooltip title="查看详情">
-                <a-button size="small" type="link" @click="openSessionContent(record)">
-                  查看内容
+              <a-tooltip title="查看详情" placement="top">
+                <a-button size="small" type="link" class="detail-action" @click="openSessionContent(record)">
+                  <FontAwesomeIcon :icon="['fas', 'eye']" />
+                  <span>详情</span>
                 </a-button>
               </a-tooltip>
               <a-tooltip title="下载日志">
@@ -244,11 +245,6 @@ const columns = [
     width: 100,
   },
   {
-    title: '操作',
-    key: 'action',
-    width: 180,
-  },
-  {
     title: '开始时间',
     dataIndex: 'start_time',
     key: 'start_time',
@@ -289,6 +285,12 @@ const columns = [
     dataIndex: 'recorded_content_bytes',
     key: 'recorded_content_bytes',
     width: 160,
+  },
+  {
+    title: '操作',
+    key: 'action',
+    width: 200,
+    fixed: 'right',
   },
 ]
 

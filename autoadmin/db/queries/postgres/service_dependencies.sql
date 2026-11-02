@@ -108,8 +108,9 @@ AND (s.name LIKE sqlc.arg(pattern) OR t.name LIKE sqlc.arg(pattern) OR d.functio
 DELETE FROM assets_service_dependency WHERE id=sqlc.arg(id);
 
 -- name: ListDependencyTopologyNodes :many
-SELECT s.id,s.name,s.code,s.enabled,s.business_system_id,b.name AS business_system_name
+SELECT s.id,s.name,s.code,s.enabled,s.business_system_id,b.name AS business_system_name,c.cluster_type
 FROM assets_application_service s JOIN assets_business_system b ON b.id=s.business_system_id
+LEFT JOIN assets_cluster_profile c ON c.id=s.cluster_profile_id
 WHERE b.project_id=sqlc.arg(project_id) AND s.environment_id=sqlc.arg(environment_id)
 ORDER BY s.id LIMIT 1001;
 

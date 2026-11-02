@@ -20,7 +20,7 @@
       :data-source="templates"
       :loading="loading"
       :pagination="false"
-      :scroll="{ x: 1160 }"
+      :scroll="{ x: 1200 }"
       :locale="tableLocale"
     >
       <template #bodyCell="{ column, record }">
@@ -38,8 +38,9 @@
         <template v-else-if="column.key === 'action'">
           <a-space>
             <a-tooltip title="查看详情" placement="top">
-              <a-button v-permission="'assets:applications:view'" data-view-template size="small" @click="openView(record)">
-                <FontAwesomeIcon :icon="['fas', 'fa-circle-info']" />
+              <a-button v-permission="'assets:applications:view'" data-view-template type="link" size="small" class="detail-action" @click="openView(record)">
+                <FontAwesomeIcon :icon="['fas', 'eye']" />
+                <span>详情</span>
               </a-button>
             </a-tooltip>
             <a-tooltip title="编辑">
@@ -101,7 +102,7 @@ const columns = [
   { title: 'App Home', dataIndex: 'app_home', key: 'app_home', width: 260 },
   { title: '状态', key: 'enabled', width: 90 },
   { title: '备注', dataIndex: 'remark', key: 'remark', width: 200 },
-  { title: '操作', key: 'action', width: 180, fixed: 'right' },
+  { title: '操作', key: 'action', width: 220, fixed: 'right' },
 ]
 const templates = ref([])
 const loading = ref(false)

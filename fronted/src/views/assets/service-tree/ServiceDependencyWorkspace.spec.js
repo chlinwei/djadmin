@@ -32,7 +32,7 @@ const envelope = (data) => ({ data: { code: 200, msg: 'success', data } })
 const page = (results) => envelope({ results, totalPages: 1 })
 const types = [{ id: 1, code: 'http', name: '服务调用', enabled: true }]
 const makeNode = (id, name, business = 10) => ({
-  id, name, code: `service-${id}`, enabled: true, business_system_id: business, business_system_name: `业务 ${business}`,
+  id, name, code: `service-${id}`, enabled: true, cluster_type: 'ha', business_system_id: business, business_system_name: `业务 ${business}`,
   runtime_summary: { total: 1, running: 0, stopped: 0, error: 1, unknown: 0 },
   instances: [{ id, instance_name: `实例 ${id}`, host_id: id, host_ip: '127.0.0.1', ha_role: 'primary', runtime_status: 'error', runtime_status_output: '检查脚本退出异常', last_status_check_time: '2026-04-01T00:00:00Z' }],
 })
@@ -236,6 +236,43 @@ describe('service dependency workspace', () => {
     expect(formatTimeWithTimezone).toHaveBeenCalledWith('2026-04-01T00:00:00Z', 'UTC')
     expect(formatTimeWithTimezone).toHaveBeenCalledWith('2026-04-02T00:00:00Z', 'UTC')
   })
+  it.each([
+    ['ha', 'unknown', '未知'],
+    ['ha', 'primary', '主'],
+    ['ha', 'standby', '备'],
+    ['ha', '', '未知'],
+    ['ha', null, '未知'],
+    ['ha', 'unrecognized', '未知'],
+    ['redis', 'primary', null],
+    ['custom', 'unknown', null],
+    [null, 'unknown', null],
+    [undefined, 'primary', null],
+    ['', 'unknown', null],
+  ])('cluster_type=%s、ha_role=%s 的角色展示不混淆运行状态', async (clusterType, role, label) => {
+    const node = makeNode(1, '订单')
+    node.cluster_type = clusterType
+    node.runtime_summary = { total: 1, running: 1, stopped: 0, error: 0, unknown: 0 }
+    node.instances[0] = { ...node.instances[0], ha_role: role, runtime_status: 'running', runtime_status_output: 'active' }
+    api.getServiceDependencyTopology.mockResolvedValueOnce(topology([node], []))
+    const wrapper = await create()
+    await wrapper.find('.graph-stub button').trigger('click')
+    await flushPromises()
+    const card = document.body.querySelector('.ant-drawer .ant-card')
+    const lines = Array.from(card.querySelectorAll('.ant-card-body > div')).map((element) => element.textContent)
+    expect(lines).toContain('127.0.0.1')
+    expect(lines).toContain('状态：运行')
+    expect(card.textContent).not.toContain('unknown')
+    expect(card.textContent).not.toContain('primary')
+    expect(card.textContent).not.toContain('standby')
+    if (label) {
+      expect(lines).toContain(`主备状态：${label}`)
+    } else {
+      expect(lines.some((line) => line.startsWith('主备状态：'))).toBe(false)
+    }
+    expect(document.body.querySelector('.ant-drawer .ant-descriptions').textContent).toContain('实例运行中')
+    expect(api.getServiceDependencyTopology).toHaveBeenCalledTimes(1)
+  })
+
   it('uses a fixed action column, scroll, consistent tooltips and clickable edit controls', async () => {
     const wrapper = await create()
     wrapper.findComponent(RadioGroup).vm.$emit('update:value', 'list')

@@ -13,6 +13,7 @@ import (
 // RefreshHostInfo dispatches a synchronous get_host_info job to the host's agent, persists the
 // result, then returns {result, host} — mirroring Django's HostViewSet.refresh_info.
 func (handler *Handler) RefreshHostInfo(context *gin.Context) {
+	context.Header("Cache-Control", "no-store")
 	id, ok := resourceID(context)
 	if !ok {
 		return
@@ -44,20 +45,19 @@ func (handler *Handler) RefreshHostInfo(context *gin.Context) {
 // concurrency (mirroring Django's ThreadPoolExecutor(max_workers=8)) and returns the freshest
 // detail only for hosts that were actually updated, so the frontend can merge them in place.
 func (handler *Handler) BatchRefreshHostInfo(context *gin.Context) {
-	var input struct {
-		IDs []int64 `json:"ids"`
-	}
-	if err := context.ShouldBindJSON(&input); err != nil || len(input.IDs) == 0 {
+	context.Header("Cache-Control", "no-store")
+	ids, err := requiredIDListQuery(context, "ids")
+	if err != nil {
 		response.Error(context, ErrInvalid)
 		return
 	}
 	ctx := context.Request.Context()
 
-	results := make([]hostInfoOutcome, len(input.IDs))
+	results := make([]hostInfoOutcome, len(ids))
 	const maxConcurrency = 8
 	semaphore := make(chan struct{}, maxConcurrency)
 	var waitGroup sync.WaitGroup
-	for index, id := range input.IDs {
+	for index, id := range ids {
 		waitGroup.Add(1)
 		semaphore <- struct{}{}
 		go func(index int, id int64) {
@@ -100,6 +100,7 @@ func (handler *Handler) refreshOneHostForBatch(ctx context.Context, id int64) ho
 // （最多 8 并发，与批量采集主机信息的限流口径一致），逐实例把结果写回 runtime_status，
 // 并返回 {running, stopped, error, unknown} 汇总，供服务树刷新后的提示与状态列使用。
 func (handler *Handler) RefreshApplicationServiceRuntimeStatus(context *gin.Context) {
+	context.Header("Cache-Control", "no-store")
 	id, ok := resourceID(context)
 	if !ok {
 		return

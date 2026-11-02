@@ -33,11 +33,11 @@ export function getHostWebSshActiveSessions(id) {
 }
 
 export function refreshHostInfo(id) {
-    return requestUtil.post(prefix + `${id}/refresh-info/`, {})
+    return requestUtil.get(prefix + `${id}/refresh-info/`)
 }
 
 export function batchRefreshHostInfo(ids) {
-    return requestUtil.post(prefix + 'refresh-info/', { ids })
+    return requestUtil.get(prefix + 'refresh-info/', { ids: ids.join(',') })
 }
 
 export function getHostWebSshFiles(id, path) {

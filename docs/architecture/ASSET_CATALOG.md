@@ -224,6 +224,11 @@ migration 000044）。项目由业务系统隐含（`assets_business_system.proj
 项目节点下不重复展示项目列，同样不展示部署实例数量列。
 顶层表格横向滚动宽度为 990，项目节点表格为 810，操作列固定在右侧并保留明确宽度；
 顶部部署实例等汇总指标保持不变，环境及逻辑服务节点的列表列配置不受影响。
+全部业务、项目、业务系统、环境及逻辑服务节点的顶部状态标签按当前范围内实例的运行状态汇总：
+存在 `stopped` 或 `error` 时优先显示红色「N 个异常实例」；
+没有实例时显示灰色「暂无实例」；所有实例均为 `running` 时才显示绿色「运行正常」；
+其余情况（含未知、缺失或未识别状态，以及运行与未知混合）显示灰色「状态待确认」。
+主备角色不参与运行状态汇总；该标签仅描述已存储的运行状态，不代表完整的业务健康检查。
 环境节点的逻辑服务列表在「应用」右侧展示「版本」，取逻辑服务的
 `application_version_name`，为空显示 `-`；横向滚动宽度为 1350，操作列保持固定在右侧。
 逻辑服务节点的部署实例列表在地址后展示「主机 CPU」「主机内存」，按实例关联的主机 ID
@@ -248,7 +253,12 @@ Agent 分别从 `/etc/os-release` 的 `NAME` 和 `VERSION` 采集这两个字段
 同主机的多个实例显示相同的配置容量。
 部署实例列表的操作列固定在右侧、宽度为 90，提供与实例详情一致的小号 terminal 图标按钮，
 在按钮上方显示 WebSSH 提示；点击不触发行下钻，新窗口打开实例所在主机的 WebSSH，
-不是直接进入数据库或容器。按钮沿用 `assets:hosts:view` 权限，未关联主机时禁用。
+不是直接进入数据库或容器。按钮要求 `assets:hosts:execute` 权限，未关联主机时禁用。
+各层子表格的操作列按按钮实际权限决定是否展示，不按角色名称判断：
+全部业务／项目下的业务系统操作列、环境下的逻辑服务操作列要求 `assets:service-tree:manage`，
+逻辑服务下的部署实例操作列要求 `assets:hosts:execute`。
+用户没有该列任何操作权限时，整列（含表头）隐藏，权限变化后同步更新；
+只读用户仍通过名称链接查看详情。有操作权限时保留原按钮、右侧固定列宽和横向滚动。
 列表和实例详情共用主机终端导航，使用关联主机 ID 及已加载的主机实例名；
 不把应用部署实例名作为 Agent 主机身份。未带登录用户时由终端页面按既有规则处理。
 逻辑服务下的部署实例列表仅通过首列实例名称链接进入详情，普通单元格和行空白处不触发导航，
@@ -671,10 +681,14 @@ assets 域的内联 SQL 正在按 [SQL_DESIGN.md](SQL_DESIGN.md) 的约定收敛
 双向仍为两条边，前端自行布局，后端不保存画布坐标或生成图片。
 节点含身份、业务归属、启用标记、`instances`、
 `runtime_summary={total,running,stopped,error,unknown}`。
+节点的 `cluster_type` 来自该逻辑服务关联的集群模型；未配置时为 `null`，不从实例角色推断。
 只计入成员与部署实例均启用的关联，共享实例在各所属服务下分别展示。
 实例含主机、运行状态、检查输出、`last_status_check_time`、HA 角色；
 没有检查时间或状态值不在已知集合内时归为 `unknown`，无实例返回空数组与零计数。
 检查失败 `error` 不视为停止，不自动生成服务健康结论。
+服务详情抽屉将主机地址、主备状态和运行状态分开显示。
+仅 `cluster_type=ha` 的服务展示「主备状态：主／备／未知」；非 HA 或未配置集群模型时不显示主备状态，
+不在 IP 后直接输出 `unknown` 等内部枚举。主备角色未知不改变实例的运行状态或服务汇总。
 
 节点、关系、实例来自同一个只读可重复读事务；GET 不调用 Agent、不执行脚本、
 不启动全图轮询。时间按现有 UTC 规则返回；结果可能陈旧，调用方必须显示检查时间，
@@ -710,7 +724,8 @@ assets 域的内联 SQL 正在按 [SQL_DESIGN.md](SQL_DESIGN.md) 的约定收敛
   其他控制类型保留非零退出码记为 `stopped` 的约定。`response.Status != success`
   或 Agent 调用失败同样记为 `error`，结果写回
   `runtime_status` / `runtime_status_output` / `last_status_check_time`。
-- **逻辑服务批量**：`POST /assets/application-services/{id}/refresh-runtime-status/`，对服务名下**所有启用**部署实例并发（最多 8）执行一次 `status` 检查，逐实例写回状态，返回 `{summary:{running,stopped,error,unknown}, total}`。服务树选中逻辑服务时的手动刷新与 15s 轮询都走这里。
+- **逻辑服务批量**：`GET /assets/application-services/{id}/refresh-runtime-status/`，对服务名下**所有启用**部署实例并发（最多 8）执行一次 `status` 检查，逐实例写回状态，返回 `{summary:{running,stopped,error,unknown}, total}`。服务树选中逻辑服务时的手动刷新与 15s 轮询都走这里；沿用原动作权限、自定义超时及后台错误提示策略。
+- **主机事实观测**：单台使用 `GET /assets/hosts/{id}/refresh-info/`，批量使用 `GET /assets/hosts/refresh-info/?ids=7,8`，均要求 `assets:hosts:view`。只读取 Agent 当前事实并保存观测快照，不修改主机配置；批量 ID 缺失或非法直接拒绝，不扩展为全部主机。实时观测返回 `Cache-Control: no-store`，不保留 POST 查询入口。
 - **诊断与失败语义**：状态输出保留动作、控制类型、systemd 服务名与 scope、退出码、
   stdout/stderr/Agent 错误。Agent 未连接或模板冲突等提前失败时，
   `executeDeploymentControl` 写入 `error` 与原始原因；正常结果写库失败直接返回错误，

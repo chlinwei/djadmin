@@ -12,10 +12,18 @@ vi.mock('@/api/assets/application', () => ({
   getApplicationDeploymentList: vi.fn(),
   getApplicationDeployment: vi.fn(),
   getApplicationServiceLogConfig: vi.fn(),
+  refreshApplicationServiceRuntimeStatus: vi.fn(),
 }))
-vi.mock('@/store', () => ({
-  default: { state: { user: { timezone: 'Asia/Shanghai' }, perms: ['assets:hosts:execute'], role_codes: ['operator'] } },
-}))
+vi.mock('@/store', async () => {
+  const { reactive } = await import('vue')
+  return {
+    default: { state: reactive({
+      user: { timezone: 'Asia/Shanghai' },
+      perms: ['assets:hosts:execute', 'assets:service-tree:manage'],
+      role_codes: ['operator'],
+    }) },
+  }
+})
 vi.mock('@/api/assets/host', () => ({
   getHostById: vi.fn(() => Promise.resolve({ data: { data: {
     hostname: 'node-1.corp', os_type: 'Linux', os_version: 'Ubuntu 22.04', architecture: 'x86_64',
@@ -31,6 +39,8 @@ vi.mock('@/util/timezone', () => ({
 }))
 
 import * as applicationApi from '@/api/assets/application'
+import store from '@/store'
+import permission from '@/directives/permission'
 import ServiceTreeNodeContent from './ServiceTreeNodeContent.vue'
 
 const listResponse = (results) => ({
@@ -64,6 +74,9 @@ describe('ServiceTreeNodeContent', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    store.state.perms = ['assets:hosts:execute', 'assets:service-tree:manage']
+    store.state.role_codes = ['operator']
+    applicationApi.refreshApplicationServiceRuntimeStatus.mockResolvedValue({ data: { data: { summary: {} } } })
     applicationApi.getBusinessSystemList.mockResolvedValue(listResponse([
       { id: 7, name: '订单系统', code: 'order-system', deployment_count: 2, enabled: true },
     ]))
@@ -309,6 +322,116 @@ describe('ServiceTreeNodeContent', () => {
     expect(wrapper.emitted('delete-business-system')?.at(-1)).toEqual([
       expect.objectContaining({ id: 7 }),
     ])
+  })
+
+  it.each([
+    ['只读', ['assets:applications:view', 'assets:hosts:view'], ['readonly'], false, false],
+    ['仅管理', ['assets:service-tree:manage'], ['operator'], true, false],
+    ['仅终端执行', ['assets:hosts:execute'], ['operator'], false, true],
+    ['无权限', [], ['operator'], false, false],
+    ['管理员', [], ['admin'], true, true],
+  ])('%s 用户只显示具有可用操作的列，保留名称详情入口', async (_label, perms, roles, canManage, canExecute) => {
+    store.state.perms = perms
+    store.state.role_codes = roles
+    const cases = [
+      { scope: { nodeType: 'all' }, key: 'business_system_action', visible: canManage, target: 'businessSystem' },
+      { scope: { nodeType: 'project', projectId: 5 }, key: 'business_system_action', visible: canManage, target: 'businessSystem' },
+      { scope: { nodeType: 'environment', businessSystemId: 7, environment: 72 }, key: 'service_action', visible: canManage, target: 'service' },
+      { scope: { nodeType: 'service', applicationServiceId: 21 }, key: 'deployment_action', visible: canExecute, target: 'deployment' },
+    ]
+    const wrapper = mount(ServiceTreeNodeContent, {
+      props: { scope: cases[0].scope },
+      global: { plugins: [Antd], directives: { permission }, stubs: { FontAwesomeIcon: true } },
+    })
+    try {
+      for (const { scope, key, visible, target } of cases) {
+        await wrapper.setProps({ scope })
+        await flushPromises()
+        const table = wrapper.findComponent({ name: 'ATable' })
+        const actions = table.props('columns').filter((column) => column.title === '操作')
+        expect(actions.map((column) => column.key)).toEqual(visible ? [key] : [])
+        expect(table.findAll('thead th').some((header) => header.text() === '操作')).toBe(visible)
+        if (visible) {
+          expect(actions[0].fixed).toBe('right')
+          expect(actions[0].width).toBeGreaterThan(0)
+          expect(table.props('scroll').x).toBeGreaterThan(0)
+          const buttons = table.findAll('button')
+          expect(buttons.length).toBeGreaterThan(0)
+          expect(buttons.every((button) => button.element.style.display !== 'none')).toBe(true)
+        } else {
+          expect(table.findAll('button')).toHaveLength(0)
+        }
+        await table.find('.child-navigation-link').trigger('click')
+        expect(wrapper.emitted('navigate').at(-1)[0].nodeType).toBe(target)
+      }
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it.each([
+    [[], '暂无实例', 'default'],
+    [['running'], '运行正常', 'success'],
+    [['running', 'running'], '运行正常', 'success'],
+    [['unknown'], '状态待确认', 'default'],
+    [['running', 'unknown'], '状态待确认', 'default'],
+    [[undefined], '状态待确认', 'default'],
+    [[null], '状态待确认', 'default'],
+    [['unrecognized'], '状态待确认', 'default'],
+    [['stopped'], '1 个异常实例', 'error'],
+    [['error', 'running', 'unknown'], '1 个异常实例', 'error'],
+    [['stopped', 'error', 'unknown'], '2 个异常实例', 'error'],
+  ])('各层级将运行状态 %j 汇总为「%s」', async (statuses, label, color) => {
+    applicationApi.getApplicationDeploymentList.mockResolvedValue(listResponse(statuses.map((status, index) => ({
+      id: index + 31, instance_name: `order-api-${index + 1}`,
+      application_service_ids: [21], environment: 72, runtime_status: status, ha_role: 'unknown',
+    }))))
+    const scopes = [
+      { nodeType: 'all' },
+      { nodeType: 'project', projectId: 5 },
+      { nodeType: 'businessSystem', businessSystemId: 7 },
+      { nodeType: 'environment', businessSystemId: 7, environment: 72 },
+      { nodeType: 'service', applicationServiceId: 21 },
+    ]
+    const wrapper = mount(ServiceTreeNodeContent, {
+      props: { scope: scopes[0] },
+      global: { plugins: [Antd], directives: { permission }, stubs: { FontAwesomeIcon: true } },
+    })
+    try {
+      for (const scope of scopes) {
+        await wrapper.setProps({ scope })
+        await flushPromises()
+        const tag = wrapper.find('.node-content-header').findComponent({ name: 'ATag' })
+        expect(tag.text()).toBe(label)
+        expect(tag.props('color')).toBe(color)
+        expect(wrapper.vm.descendants).toHaveLength(statuses.length)
+      }
+      expect(applicationApi.refreshApplicationServiceRuntimeStatus).not.toHaveBeenCalled()
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('终端执行权限变动时同步显示或隐藏部署实例操作列', async () => {
+    const wrapper = mount(ServiceTreeNodeContent, {
+      props: { scope: { nodeType: 'service', applicationServiceId: 21 } },
+      global: { plugins: [Antd], directives: { permission }, stubs: { FontAwesomeIcon: true } },
+    })
+    try {
+      await flushPromises()
+      const table = wrapper.findComponent({ name: 'ATable' })
+      const hasAction = () => table.props('columns').some((column) => column.key === 'deployment_action')
+      expect(hasAction()).toBe(true)
+      store.state.perms = ['assets:applications:view', 'assets:hosts:view']
+      await flushPromises()
+      expect(hasAction()).toBe(false)
+      expect(table.text()).toContain('order-api-1')
+      store.state.perms = ['assets:hosts:execute']
+      await flushPromises()
+      expect(hasAction()).toBe(true)
+    } finally {
+      wrapper.unmount()
+    }
   })
 
   it('逻辑服务的编辑/删除操作只对外抛事件，不会触发导航', async () => {

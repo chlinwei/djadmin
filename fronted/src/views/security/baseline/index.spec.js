@@ -76,6 +76,7 @@ describe('策略只读详情', () => {
     const entries = wrapper.findAll('[data-view-policy]')
     expect(entries).toHaveLength(2)
     expect(entries.every((entry) => entry.isVisible())).toBe(true)
+    expect(entries.every((entry) => entry.classes().includes('detail-action') && entry.classes().includes('ant-btn-link') && entry.text() === '详情')).toBe(true)
     const viewTooltip = wrapper.findAllComponents(Tooltip).find((tooltip) => tooltip.props('title') === '查看详情')
     expect(viewTooltip.props('placement')).toBe('top')
     await entries[0].trigger('mouseenter')
@@ -110,8 +111,8 @@ describe('策略只读详情', () => {
     expect(requestUtil.patch).not.toHaveBeenCalled()
     expect(requestUtil.post).not.toHaveBeenCalled()
     expect(requestUtil.del).not.toHaveBeenCalled()
-    expect(wrapper.vm.itemColumns.find((column) => column.key === 'action')).toMatchObject({ fixed: 'right', width: 224 })
-    expect(wrapper.findAllComponents({ name: 'ATable' })[0].props('scroll')).toEqual({ x: 800 })
+    expect(wrapper.vm.itemColumns.find((column) => column.key === 'action')).toMatchObject({ fixed: 'right', width: 264 })
+    expect(wrapper.findAllComponents({ name: 'ATable' })[0].props('scroll')).toEqual({ x: 840 })
   })
 
   it('空配置明确显示默认用户和未配置项，详情归属不随页面类目改变', async () => {

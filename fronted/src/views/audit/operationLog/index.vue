@@ -70,8 +70,11 @@
             {{ record.duration_ms ?? '-' }}
           </template>
           <template v-else-if="column.key === 'action'">
-            <a-tooltip title="查看详情">
-              <a-button size="small" type="link" @click="openDetail(record)">查看详情</a-button>
+            <a-tooltip title="查看详情" placement="top">
+              <a-button size="small" type="link" class="detail-action" @click="openDetail(record)">
+                <FontAwesomeIcon :icon="['fas', 'eye']" />
+                <span>详情</span>
+              </a-button>
             </a-tooltip>
           </template>
         </template>

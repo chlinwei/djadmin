@@ -118,6 +118,33 @@
   font-weight: 500;
 }
 
+/* Opt-in detail actions stay lightweight without restyling write or notification actions. */
+.ant-btn.detail-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 72px;
+  height: 28px;
+  padding-inline: 8px;
+  white-space: nowrap;
+}
+
+.ant-btn.detail-action .svg-inline--fa {
+  margin-right: 0;
+}
+
+.ant-btn.detail-action:not(:disabled) {
+  color: #1677ff;
+}
+
+.ant-btn.ant-btn-link.detail-action:not(:disabled):hover,
+.ant-btn.ant-btn-link.detail-action:not(:disabled):focus-visible {
+  color: #4096ff;
+  background: #e6f4ff;
+  transform: none;
+}
+
 /* Refresh action button pattern */
 .ant-btn.refresh-btn {
   border-color: #1677ff;

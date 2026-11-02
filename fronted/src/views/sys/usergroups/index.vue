@@ -58,10 +58,11 @@
             size="small"
             :locale="tableLocale"
             :pagination="false"
+            :scroll="{ x: 640 }"
           >
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'operation'">
-                <a-tooltip title="移出本组">
+                <a-tooltip title="移出本组" placement="top">
                   <a-button size="small" type="primary" danger class="delBtn" @click="removeMember(record)">移出</a-button>
                 </a-tooltip>
               </template>
@@ -118,7 +119,7 @@ const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(trigge
 const memberColumns = [
   { title: '用户', dataIndex: 'username', key: 'username' },
   { title: 'ID', dataIndex: 'user_id', key: 'user_id', width: 90 },
-  { title: '操作', key: 'operation', width: 100 },
+  { title: '操作', key: 'operation', width: 100, fixed: 'right' },
 ]
 
 const groupList = ref([])
@@ -202,13 +203,13 @@ async function saveGroup() {
 }
 
 // 成员变更 = 以当前成员列表 + 变更调整 update 接口（整表替换）。
-async function saveMembers(userIDs) {
+async function saveMembers(group, userIDs) {
   memberSaving.value = true
   try {
     await updateUserGroup({
-      id: selectedGroupId.value,
-      name: currentGroup.value.name,
-      remark: currentGroup.value.remark || '',
+      id: group.id,
+      name: group.name,
+      remark: group.remark || '',
       user_ids: userIDs,
     })
     await loadGroups()
@@ -222,14 +223,28 @@ async function addMember() {
   const userIDs = currentGroup.value.members.map((member) => member.user_id)
   userIDs.push(memberToAdd.value)
   const added = userList.value.find((user) => user.id === memberToAdd.value)
-  await saveMembers(userIDs)
+  await saveMembers(currentGroup.value, userIDs)
   memberToAdd.value = null
   message.success(`已添加成员 ${added?.username || ''}`)
 }
 
 async function removeMember(record) {
-  await saveMembers(currentGroup.value.members.map((member) => member.user_id).filter((id) => id !== record.user_id))
-  message.success(`已移出成员 ${record.username}`)
+  // 确认期间可能切换用户组，更新目标必须固定为点击时的组。
+  const group = currentGroup.value
+  if (!group) {
+    message.warning('请先选择用户组')
+    return
+  }
+  await openDeleteConfirm({
+    title: '确认移出用户组成员',
+    okText: '确认移出',
+    summary: '仅移除该用户与本组的成员关系，不会删除平台用户；会影响通过该组选择的通知收件范围。',
+    items: [`用户组：${group.name}（#${group.id}）`, `成员：${record.username}（#${record.user_id}）`],
+    onConfirm: async () => {
+      await saveMembers(group, group.members.map((member) => member.user_id).filter((id) => id !== record.user_id))
+      message.success(`已将 ${record.username} 移出用户组 ${group.name}`)
+    },
+  })
 }
 
 async function loadGroups() {

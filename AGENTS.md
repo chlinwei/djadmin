@@ -14,6 +14,13 @@
 
 ## API 设计规则（必须遵守）
 
+**所有查询 API 只能使用 GET**：
+
+- 列表、详情、搜索、筛选、统计、状态查询和事实观测统一使用 GET；不得使用 POST、PUT、PATCH 或 DELETE 承载查询。
+- 查询条件只能通过 URL 路径或查询参数传递，不使用 GET 请求体；不得以参数复杂、批量 ID 或需要传 JSON 为由改用 POST。
+- 已有 POST 查询必须同步修改后端路由、前端调用、测试与文档，不保留 POST 查询兼容分支。新增或修改查询接口必须有回归测试，验证 GET 可用、POST 不提供查询能力。
+- HTTP 方法调整不得放宽原权限或改写历史审计。内容校验、样例试算等内容运算，以及创建、修改、删除、启停、发布等动作不属于查询，按实际语义设计；不得把写操作伪装成 GET。详细边界见 [查询请求方法](docs/architecture/CONVENTIONS.md#查询请求方法)。
+
 **删除类 API 只保留批量删除**：列表型资源一律只提供 `POST <资源前缀>/batch-delete/`（body `{"ids":[...]}`），不新增单条删除接口。全部 API/UI/文档约定见 [docs/architecture/CONVENTIONS.md](docs/architecture/CONVENTIONS.md)（含文档组织约定：新增文档前先查 README 索引，主题已存在则并入，过程性内容进 docs/plans 或 docs/archive）。
 
 ## 权限隔离（必须遵守）

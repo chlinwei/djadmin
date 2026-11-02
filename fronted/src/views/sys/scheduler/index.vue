@@ -264,7 +264,7 @@
         size="small"
         :locale="tableLocale"
         :loading="logsLoading"
-        :scroll="{ x: 1200 }"
+        :scroll="{ x: 1220 }"
         @change="handleLogTableChange"
       >
         <template #bodyCell="{ column, record }">
@@ -272,9 +272,10 @@
             {{ formatTimeDisplay(record.run_time) }}
           </template>
           <template v-if="column.key === 'action'">
-            <a-tooltip title="查看详情">
-              <a-button size="small" type="link" @click="viewLogDetail(record)">
-                查看详情
+            <a-tooltip title="查看详情" placement="top">
+              <a-button size="small" type="link" class="detail-action" @click="viewLogDetail(record)">
+                <FontAwesomeIcon :icon="['fas', 'eye']" />
+                <span>详情</span>
               </a-button>
             </a-tooltip>
           </template>
@@ -478,7 +479,7 @@ const logColumns = ref([
     sortOrder: null,
   },
   { title: '信息', dataIndex: 'message', key: 'message', width: 150 },
-  { title: '操作', key: 'action', fixed: 'right', width: 80 },
+  { title: '操作', key: 'action', fixed: 'right', width: 100 },
 ])
 
 const logsSort = reactive({

@@ -65,6 +65,9 @@ describe('日志保留档位：保留期的值 + 单位', () => {
       const tooltip = tooltips.find((item) => item.props('title') === '查看详情')
       expect(tooltip.props('placement')).toBe('top')
       const entry = wrapper.findAll('[data-view-tier]')[0]
+      expect(entry.classes()).toContain('ant-btn-link')
+      expect(entry.classes()).toContain('detail-action')
+      expect(entry.text()).toBe('详情')
       await entry.trigger('mouseenter')
       await new Promise((resolve) => setTimeout(resolve, 150))
       await flushPromises()
@@ -147,8 +150,8 @@ describe('日志保留档位：保留期的值 + 单位', () => {
       expect(document.body.querySelector('.ant-modal-footer')).toBeNull()
       expect(JSON.stringify(wrapper.vm.form)).toBe(initialForm)
       const action = wrapper.vm.columns.find((column) => column.key === 'action')
-      expect(action).toMatchObject({ fixed: 'right', width: 180 })
-      expect(wrapper.findComponent({ name: 'ATable' }).props('scroll')).toEqual({ x: 1250 })
+      expect(action).toMatchObject({ fixed: 'right', width: 220 })
+      expect(wrapper.findComponent({ name: 'ATable' }).props('scroll')).toEqual({ x: 1290 })
     } finally {
       wrapper.unmount()
     }

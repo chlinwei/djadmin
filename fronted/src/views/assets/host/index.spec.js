@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { reactive } from 'vue'
 import { mount, shallowMount } from '@vue/test-utils'
 
+const routerPush = vi.hoisted(() => vi.fn())
+
 vi.mock('@/api/assets/host/index.js', () => ({
   batchDeleteHost: vi.fn(() => Promise.resolve({ data: { code: 200, data: {} } })),
   getHostById: vi.fn(() =>
@@ -127,7 +129,7 @@ vi.mock('vue-router', async () => {
     ...actual,
     useRoute: () => route,
     useRouter: () => ({
-      push: vi.fn(),
+      push: routerPush,
       resolve: vi.fn(() => ({ href: '/assets/hosts/webssh' })),
       replace: vi.fn(() => Promise.resolve()),
     }),
@@ -139,7 +141,8 @@ import { listAgentPackages } from '@/api/assets/agentPackage.js'
 import * as hostGroupApi from '@/api/assets/hostgroup/index.js'
 import store from '@/store'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
-import { Button, Col, Empty, Row, Spin, Tooltip, message } from 'ant-design-vue'
+import { Button, Col, Empty, Row, Spin, Table, Tooltip, message } from 'ant-design-vue'
+import permission from '@/directives/permission'
 import HostPage from './index.vue'
 
 const flushPromises = async () => {
@@ -150,6 +153,45 @@ const flushPromises = async () => {
 describe('Host Agent 凭证安装与主机编辑保存', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+  })
+
+  it.each([false, true])('详情入口在管理权限=%s 时保持相同样式、顶部提示和可点击行为', async (canUpdate) => {
+    const originalPermissions = store.state.perms
+    store.state.perms = ['assets:hosts:view', ...(canUpdate ? ['assets:hosts:update'] : [])]
+    hostApi.getHostList.mockResolvedValueOnce({
+      data: { code: 200, data: { results: [{ id: 7, agent_online: false, instance_name: 'host-7' }], count: 1 } },
+    })
+    const wrapper = mount(HostPage, {
+      attachTo: document.body,
+      global: {
+        components: { AButton: Button, ACol: Col, ARow: Row, ASpin: Spin, ATable: Table, ATooltip: Tooltip, AEmpty: Empty },
+        stubs: { Dialog: true, FontAwesomeIcon: true },
+        directives: { permission },
+      },
+    })
+    try {
+      await flushPromises()
+      const entries = wrapper.findAll('.host-detail-action')
+      expect(entries).toHaveLength(1)
+      const entry = entries[0]
+      expect(entry.classes()).toContain('ant-btn-link')
+      expect(entry.classes()).toContain('detail-action')
+      expect(entry.text()).toBe('详情')
+      expect(entry.get('font-awesome-icon-stub').attributes('icon')).toBe('fas,eye')
+      const tooltip = wrapper.findAllComponents(Tooltip).find((item) => item.props('title') === '查看详情')
+      expect(tooltip.props('placement')).toBe('top')
+      await entry.trigger('mouseenter')
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      await flushPromises()
+      expect(document.querySelector('.ant-tooltip-inner')?.textContent).toBe('查看详情')
+      await entry.trigger('click')
+      await flushPromises()
+      expect(routerPush).toHaveBeenCalledWith({ path: '/assets/hosts/detail/7' })
+      expect(store.state.perms).toEqual(['assets:hosts:view', ...(canUpdate ? ['assets:hosts:update'] : [])])
+    } finally {
+      wrapper.unmount()
+      store.state.perms = originalPermissions
+    }
   })
 
   it.each([false, true])('主机列表不预取管理数据，管理权限=%s 时按需加载 Agent 包', async (canUpdate) => {

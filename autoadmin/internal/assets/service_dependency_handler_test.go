@@ -65,8 +65,8 @@ func TestDependencyTopologyReadOnlyHTTP(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "create_time", "update_time", "remark", "name", "code", "order", "owner", "enabled"}).
 			AddRow(4, now, now, nil, "生产", "prod", 0, "", true))
 	mock.ExpectQuery("SELECT s.id,s.name,s.code,s.enabled,s.business_system_id,b.name").
-		WithArgs(int64(3), int64(4)).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "code", "enabled", "business_system_id", "business_system_name"}).
-		AddRow(1, "API", "api", true, 10, "B").AddRow(2, "DB", "db", true, 20, "Shared"))
+		WithArgs(int64(3), int64(4)).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "code", "enabled", "business_system_id", "business_system_name", "cluster_type"}).
+		AddRow(1, "API", "api", true, 10, "B", "ha").AddRow(2, "DB", "db", true, 20, "Shared", nil))
 	mock.ExpectQuery("FROM assets_service_dependency d").WillReturnRows(dependencyGetRows(11, 1, 2))
 	mock.ExpectQuery("FROM assets_application_service_deployment m").
 		WithArgs(int64(3), int64(4)).WillReturnRows(sqlmock.NewRows([]string{"service_id", "id", "instance_name", "host_id", "host_ip", "runtime_status", "runtime_status_output", "last_status_check_time", "ha_role"}).
@@ -94,6 +94,9 @@ func TestDependencyTopologyReadOnlyHTTP(t *testing.T) {
 	}
 	if envelope.Data.StateSource != "stored_runtime_snapshot" || envelope.Data.Nodes[0].Instances[0].LastStatusCheckTime == nil {
 		t.Fatal("snapshot provenance missing")
+	}
+	if envelope.Data.Nodes[0].ClusterType == nil || *envelope.Data.Nodes[0].ClusterType != "ha" || envelope.Data.Nodes[1].ClusterType != nil {
+		t.Fatal("service cluster type must preserve HA and unconfigured profiles")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

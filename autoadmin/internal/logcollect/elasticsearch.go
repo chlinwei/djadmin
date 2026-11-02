@@ -165,6 +165,7 @@ func (handler *Handler) elasticsearchRequestArray(context context.Context, clust
 }
 
 func (handler *Handler) TestElasticsearchConnection(context *gin.Context) {
+	context.Header("Cache-Control", "no-store")
 	cluster, err := handler.loadElasticsearchCluster(context)
 	if err != nil {
 		response.BusinessError(context, 400, err.Error(), nil)

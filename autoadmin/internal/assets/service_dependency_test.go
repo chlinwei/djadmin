@@ -192,10 +192,14 @@ func TestDependencyProtectsServiceBeforeTombstone(t *testing.T) {
 
 func TestDependencyTopologySnapshots(t *testing.T) {
 	now := time.Now().UTC()
-	nodes := []db.ListDependencyTopologyNodesRow{{ID: 1, BusinessSystemID: 10}, {ID: 2, BusinessSystemID: 20}, {ID: 3, BusinessSystemID: 10}}
+	nodes := []db.ListDependencyTopologyNodesRow{
+		{ID: 1, BusinessSystemID: 10, ClusterType: sql.NullString{String: "ha", Valid: true}},
+		{ID: 2, BusinessSystemID: 20, ClusterType: sql.NullString{String: "redis", Valid: true}},
+		{ID: 3, BusinessSystemID: 10},
+	}
 	edges := []db.ListServiceDependenciesRow{{SourceServiceID: 1, TargetServiceID: 2}}
 	instances := []db.ListDependencyTopologyInstancesRow{
-		{ServiceID: 1, ID: 11, RuntimeStatus: "running", LastStatusCheckTime: sql.NullTime{Time: now, Valid: true}},
+		{ServiceID: 1, ID: 11, RuntimeStatus: "running", HaRole: "unknown", LastStatusCheckTime: sql.NullTime{Time: now, Valid: true}},
 		{ServiceID: 1, ID: 12, RuntimeStatus: "stopped", LastStatusCheckTime: sql.NullTime{Time: now, Valid: true}},
 		{ServiceID: 1, ID: 13, RuntimeStatus: "error", LastStatusCheckTime: sql.NullTime{Time: now, Valid: true}},
 		{ServiceID: 1, ID: 14, RuntimeStatus: "running"},
@@ -214,9 +218,15 @@ func TestDependencyTopologySnapshots(t *testing.T) {
 	if result[1].RuntimeSummary.Running != 1 {
 		t.Fatal("shared instance should be represented per service")
 	}
+	if result[0].ClusterType == nil || *result[0].ClusterType != "ha" || result[1].ClusterType == nil || *result[1].ClusterType != "redis" {
+		t.Fatal("topology must preserve each service's cluster type")
+	}
 	all := assembleDependencyTopology(nodes, nil, nil, DependencyTopologyScope{})
 	if len(all) != 3 || all[2].Instances == nil || all[2].RuntimeSummary.Total != 0 {
 		t.Fatal("isolated services and empty arrays must survive")
+	}
+	if all[2].ClusterType != nil {
+		t.Fatal("an unconfigured profile must not be inferred from runtime or HA role")
 	}
 }
 

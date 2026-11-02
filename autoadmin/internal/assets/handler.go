@@ -84,6 +84,22 @@ func queryID(c *gin.Context, name string) (int64, error) {
 	}
 	return value, nil
 }
+func requiredIDListQuery(c *gin.Context, name string) ([]int64, error) {
+	raw, ok := c.GetQueryArray(name)
+	if !ok || len(raw) != 1 || strings.TrimSpace(raw[0]) == "" {
+		return nil, ErrInvalid
+	}
+	parts := strings.Split(raw[0], ",")
+	ids := make([]int64, 0, len(parts))
+	for _, part := range parts {
+		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err != nil || id < 1 {
+			return nil, ErrInvalid
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
 func bind[T any](c *gin.Context) (T, bool) {
 	var input T
 	if err := c.ShouldBindJSON(&input); err != nil {

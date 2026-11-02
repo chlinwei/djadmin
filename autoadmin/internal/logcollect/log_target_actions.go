@@ -419,6 +419,7 @@ func (handler *Handler) StopLogTargetService(context *gin.Context) {
 	handler.controlLogTargetService(context, "stop")
 }
 func (handler *Handler) CheckLogTargetService(context *gin.Context) {
+	context.Header("Cache-Control", "no-store")
 	handler.controlLogTargetService(context, "status")
 }
 

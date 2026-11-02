@@ -6,6 +6,7 @@
 - **Backend**: 唯一实现是 Go 版 `autoadmin/`（一个二进制四个角色：api / scheduler / worker / migrate）与 `dj_agent/`。原 Django 实现已全面迁出并**从版本库移除**，历史文档在 `docs/archive/`——不要再引用它，也不要重建该目录。
 - **Architecture docs**: [docs/architecture/](../docs/architecture/) 是"最终逻辑"的落点，改代码必须同步更新（见 AGENTS.md 的文档同步规则）。
 - **API Standards**: Follow [API_RULES.md](API_RULES.md) for all API response formats, status codes, and implementation requirements.
+- **所有查询 API 只能使用 GET（强制）**：查询参数走 URL，不使用 GET 请求体，不因复杂筛选或批量 ID 改用 POST，也不保留 POST 查询兼容分支；前后端、文档与方法回归测试必须同步。查询与内容运算/写操作的边界遵循 [AGENTS.md](../AGENTS.md#api-设计规则必须遵守) 和 [查询请求方法](../docs/architecture/CONVENTIONS.md#查询请求方法)。
 - **User Request First**: If the user request conflicts with these files, follow the user request first.
 
 ## Tech Stack

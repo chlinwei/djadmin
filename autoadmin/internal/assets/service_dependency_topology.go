@@ -37,6 +37,8 @@ type DependencyTopologyInstance struct {
 
 type DependencyTopologyNode struct {
 	db.ListDependencyTopologyNodesRow
+	// 集群模型可选；用指针保留 null，避免向 JSON 暴露 sql.NullString 的内部结构。
+	ClusterType         *string                      `json:"cluster_type"`
 	ExternalToSelection bool                         `json:"external_to_selection"`
 	RuntimeSummary      DependencyRuntimeSummary     `json:"runtime_summary"`
 	Instances           []DependencyTopologyInstance `json:"instances"`
@@ -176,7 +178,7 @@ func assembleDependencyTopology(nodes []db.ListDependencyTopologyNodesRow, edges
 				summary.Unknown++
 			}
 		}
-		result = append(result, DependencyTopologyNode{ListDependencyTopologyNodesRow: node, ExternalToSelection: !roots[node.ID], RuntimeSummary: summary, Instances: items})
+		result = append(result, DependencyTopologyNode{ListDependencyTopologyNodesRow: node, ClusterType: nullStringPtr(node.ClusterType), ExternalToSelection: !roots[node.ID], RuntimeSummary: summary, Instances: items})
 	}
 	return result
 }

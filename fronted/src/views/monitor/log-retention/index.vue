@@ -31,7 +31,7 @@
       :loading="loading"
       :pagination="false"
       size="small"
-      :scroll="{ x: 1250 }"
+      :scroll="{ x: 1290 }"
       :locale="{ emptyText: '暂无保留档位' }"
     >
       <template #bodyCell="{ column, record }">
@@ -62,8 +62,9 @@
         <template v-else-if="column.key === 'action'">
           <a-space :size="6">
             <a-tooltip title="查看详情" placement="top">
-              <a-button v-if="checkPermission('monitor:view')" size="small" data-view-tier @click="openDetails(record)">
-                <FontAwesomeIcon :icon="['fas', 'fa-circle-info']" />
+              <a-button v-if="checkPermission('monitor:view')" type="link" size="small" class="detail-action" data-view-tier @click="openDetails(record)">
+                <FontAwesomeIcon :icon="['fas', 'eye']" />
+                <span>详情</span>
               </a-button>
             </a-tooltip>
             <a-tooltip title="编辑" placement="top">
@@ -229,7 +230,7 @@ const columns = [
   { title: '滚动条件（时长/分片）', key: 'rollover', width: 180, align: 'center' },
   { title: '状态', key: 'enabled', width: 90, align: 'center' },
   { title: '引用服务', key: 'service_count', width: 100, align: 'center' },
-  { title: '操作', key: 'action', width: 180, fixed: 'right' },
+  { title: '操作', key: 'action', width: 220, fixed: 'right' },
 ]
 
 const formRules = {

@@ -76,11 +76,8 @@ func TestReadonlyCannotMutateAnyBusinessRoute(t *testing.T) {
 		"POST /sys/usercenter/updateUserPassword/":                    "current user's password with old-password verification",
 		"POST /sys/usercenter/updateAlertMediaBindings/":              "current user's notification bindings",
 		"POST /sys/automation/playbooks/validate/":                    "content validation, not remote execution",
-		"POST /monitor/log-targets/:id/check-status/":                 "read service status, no start/stop or config change",
 		"POST /monitor/elasticsearch-clusters/:id/pipeline-simulate/": "pipeline simulation without publishing",
 		"POST /monitor/alert-webhook/api/v2/alerts":                   "separate machine authentication",
-		"POST /assets/hosts/:id/refresh-info/":                        "observe current host facts for viewers, no config change",
-		"POST /assets/hosts/refresh-info/":                            "observe current host facts for viewers, no config change",
 	}
 	parameters := regexp.MustCompile(`[:*][^/]+`)
 	checked := 0
@@ -127,8 +124,9 @@ func TestActionPermissionsReachHandlersWithoutAdmin(t *testing.T) {
 		method, path string
 		permissions  []string
 	}{
-		{http.MethodPost, "/assets/hosts/invalid/refresh-info/", []string{"assets:hosts:view"}},
-		{http.MethodPost, "/assets/hosts/refresh-info/", []string{"assets:hosts:view"}},
+		{http.MethodGet, "/assets/hosts/invalid/refresh-info/", []string{"assets:hosts:view"}},
+		{http.MethodGet, "/assets/hosts/refresh-info/", []string{"assets:hosts:view"}},
+		{http.MethodGet, "/assets/application-services/invalid/refresh-runtime-status/", []string{"assets:applications:update"}},
 		{http.MethodGet, "/assets/hosts/invalid/webssh/", []string{"assets:hosts:execute"}},
 		{http.MethodGet, "/ws/assets/hosts/invalid/webssh/", []string{"assets:hosts:execute"}},
 		{http.MethodPatch, "/sys/scheduler/tasks/invalid/", []string{"system:scheduler:update"}},

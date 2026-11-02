@@ -70,7 +70,8 @@
         <a-alert type="info" show-icon message="仅显示启用关联且启用部署的实例。运行不等于业务健康，检查异常不等于已停止；未知包含尚未检查。" style="margin: 16px 0" />
         <a-empty v-if="!selectedNode.instances.length" description="暂无启用实例" />
         <a-card v-for="instance in selectedNode.instances" :key="instance.id" size="small" :title="instance.instance_name" style="margin-bottom: 12px">
-          <div>{{ instance.host_ip || `主机 #${instance.host_id}` }} · {{ instance.ha_role || '未设置角色' }}</div>
+          <div>{{ instance.host_ip || `主机 #${instance.host_id}` }}</div>
+          <div v-if="selectedNode.cluster_type === 'ha'">主备状态：{{ haRoleLabels[instance.ha_role] || '未知' }}</div>
           <div>状态：{{ instance.last_status_check_time ? instanceStatus[instance.runtime_status] || '未知' : '未知（尚未检查）' }}</div>
           <div>上次检查：{{ instance.last_status_check_time ? formatTime(instance.last_status_check_time) : '尚未检查' }}</div>
           <pre v-if="instance.runtime_status_output" class="instance-output">{{ instance.runtime_status_output }}</pre>
@@ -122,6 +123,7 @@ const canUpdate = computed(() => checkPermission('assets:applications:update'))
 const canDelete = computed(() => checkPermission('assets:applications:delete'))
 const formatTime = (value) => formatTimeWithTimezone(value, store.state.user?.timezone || 'Asia/Shanghai')
 const instanceStatus = { running: '运行', stopped: '停止', error: '检查异常', unknown: '未知' }
+const haRoleLabels = { unknown: '未知', primary: '主', standby: '备' }
 const projects = ref([])
 const environments = ref([])
 const businesses = ref([])

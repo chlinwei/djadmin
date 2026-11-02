@@ -41,7 +41,7 @@
           </a-col>
           <a-col :span="12">
             <a-form-item label="启用">
-              <a-switch v-model:checked="form.enabled" />
+              <EnabledSwitch v-model:checked="form.enabled" />
             </a-form-item>
           </a-col>
           <a-col :span="24">
@@ -56,6 +56,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'

@@ -35,6 +35,7 @@ type alertChainPolicyBrief struct {
 	Name             string          `json:"name"`
 	Path             string          `json:"path"`
 	Matchers         json.RawMessage `json:"matchers"`
+	MatcherSummary   string          `json:"matcher_summary"`
 	UserGroupIDs     *[]int64        `json:"user_group_ids"`
 	UserGroupNames   []string        `json:"user_group_names"`
 	UserInGroup      bool            `json:"user_in_group"` // 组限制生效时当前用户是否在组内；未限制恒 true
@@ -206,36 +207,30 @@ func (handler *Handler) UserAlertChain(context *gin.Context) {
 
 		issues := userBindingIssues(enabled, mediaEnabled, mediaType, recipients)
 		for _, issue := range issues {
-			addSummary(fmt.Sprintf("绑定 %d：%s", bindingID, issue))
+			addSummary(fmt.Sprintf("媒介绑定「%s」：%s", mediaName, issue))
 		}
 
 		// 生效出口含该媒介的策略：沿父链继承判定（与分发侧 effectivePolicyMedia 同语义）。
-		policies, policyErr := handler.policiesEffectiveForMedia(context.Request.Context(), root, mediaID, int32(userID))
+		mediaPolicies, policyErr := handler.policiesEffectiveForMedia(context.Request.Context(), root, mediaID, int32(userID))
 		if policyErr != nil {
 			response.Error(context, policyErr)
 			return
 		}
-		for _, policy := range policies {
+		// 个人链路仅展示对目标用户适用的策略；其他接收组的策略不是该用户的故障。
+		policies := make([]alertChainPolicyBrief, 0, len(mediaPolicies))
+		for _, policy := range mediaPolicies {
+			if policy.UserGroupIDs != nil && !policy.UserInGroup {
+				continue
+			}
+			policies = append(policies, policy)
 			if !policy.NotifyOnFiring && policy.NotifyOnResolved {
 				addSummary(fmt.Sprintf("策略 %s 仅通知 resolved，firing 通知未开启", policy.Name))
 			}
 		}
-		if len(policies) == 0 {
+		if len(mediaPolicies) == 0 {
 			addSummary(fmt.Sprintf("媒介 %s 未被任何通知策略出口命中", mediaName))
-		}
-		// 用户组限制：仅当所有覆盖该媒介的策略都把当前用户排除在组外时才算断点
-		// （分发侧只投递"组成员的绑定"，用户不在组内即收不到）。
-		restrictedOut := len(policies) > 0
-		for _, policy := range policies {
-			if policy.UserGroupIDs == nil || policy.UserInGroup {
-				restrictedOut = false
-				break
-			}
-		}
-		if restrictedOut {
-			issue := "当前用户不在该策略的接收组内，收不到对应告警"
-			issues = append(issues, issue)
-			addSummary(fmt.Sprintf("绑定 %d：%s", bindingID, issue))
+		} else if len(policies) == 0 {
+			addSummary(fmt.Sprintf("媒介 %s 暂无对当前用户生效的通知策略", mediaName))
 		}
 		bindings = append(bindings, alertChainBinding{
 			BindingID: bindingID, Enabled: enabled, Recipients: recipients,
@@ -262,6 +257,7 @@ func (handler *Handler) UserAlertChain(context *gin.Context) {
 // 生效用户组限制及当前用户是否受限）。userID<1 时（如管理员视角外部邮箱）不判定 user_in_group。
 func (handler *Handler) policiesEffectiveForMedia(ctx context.Context, root *policyNode, mediaID int64, userID int32) ([]alertChainPolicyBrief, error) {
 	policies := make([]alertChainPolicyBrief, 0)
+	treeDescriptions := map[string]string{}
 	var walk func(node *policyNode, path []*policyNode, media []int64, groups []int64) error
 	walk = func(node *policyNode, path []*policyNode, media []int64, groups []int64) error {
 		currentPath := append(append([]*policyNode{}, path...), node)
@@ -269,7 +265,7 @@ func (handler *Handler) policiesEffectiveForMedia(ctx context.Context, root *pol
 			media = append(media[:0:0], node.MediaIDs...)
 		}
 		if !node.UserGroupInherited && node.UserGroupIDs != nil {
-			groups = append(groups[:0:0], node.UserGroupIDs...)
+			groups = append([]int64{}, node.UserGroupIDs...)
 		}
 		for _, id := range media {
 			if id != mediaID {
@@ -297,7 +293,16 @@ func (handler *Handler) policiesEffectiveForMedia(ctx context.Context, root *pol
 				}
 				brief.UserGroupNames = groupNames
 				if userID > 0 {
-					brief.UserInGroup = handler.userInGroups(ctx, userID, groupCopy)
+					brief.UserInGroup, err = handler.userInGroups(ctx, userID, groupCopy)
+					if err != nil {
+						return err
+					}
+				}
+			}
+			if brief.UserGroupIDs == nil || brief.UserInGroup {
+				brief.MatcherSummary, err = handler.policyMatcherSummary(ctx, currentPath, treeDescriptions)
+				if err != nil {
+					return err
 				}
 			}
 			policies = append(policies, brief)
@@ -320,18 +325,80 @@ func (handler *Handler) policiesEffectiveForMedia(ctx context.Context, root *pol
 	return policies, nil
 }
 
-// userInGroups 判断用户是否属于任一组；组列表为空（显式不限/静音语义由调用方区分）返回 false。
-func (handler *Handler) userInGroups(ctx context.Context, userID int32, groupIDs []int64) bool {
+// policyMatcherSummary 保留沿路径累积的 AND 约束；名称由后端解析，不依赖用户的资产列表权限。
+func (handler *Handler) policyMatcherSummary(ctx context.Context, path []*policyNode, treeDescriptions map[string]string) (string, error) {
+	queries := db.New(handler.db)
+	operatorNames := map[string]string{"=": "等于", "!=": "不等于", "=~": "匹配正则", "!~": "不匹配正则"}
+	parts := make([]string, 0)
+	for _, node := range path {
+		for _, matcher := range node.Matchers {
+			switch matcher.Type {
+			case "label":
+				operator, exists := operatorNames[matcher.Operator]
+				if !exists {
+					return "", fmt.Errorf("通知策略包含不支持的标签运算符 %q", matcher.Operator)
+				}
+				parts = append(parts, fmt.Sprintf("标签「%s」%s「%s」", matcher.Label, operator, matcher.Value))
+			case "tree":
+				key := fmt.Sprintf("%s:%d", matcher.NodeType, matcher.ID)
+				description, exists := treeDescriptions[key]
+				if !exists {
+					var name, typeName string
+					var err error
+					switch matcher.NodeType {
+					case "project":
+						typeName = "项目"
+						name, err = queries.GetProjectNameByID(ctx, matcher.ID)
+					case "business":
+						typeName = "业务系统"
+						var system db.GetBusinessSystemRow
+						system, err = queries.GetBusinessSystem(ctx, matcher.ID)
+						name = system.Name
+					case "environment":
+						typeName = "环境"
+						name, err = queries.GetBusinessEnvironmentNameByID(ctx, matcher.ID)
+					case "service":
+						typeName = "服务"
+						name, err = queries.GetApplicationServiceName(ctx, matcher.ID)
+					default:
+						return "", fmt.Errorf("通知策略包含不支持的服务树节点类型 %q", matcher.NodeType)
+					}
+					switch {
+					case err == sql.ErrNoRows:
+						description = fmt.Sprintf("%s不存在（原编号：%d）", typeName, matcher.ID)
+					case err != nil:
+						return "", err
+					case strings.TrimSpace(name) == "":
+						description = fmt.Sprintf("%s名称为空（编号：%d）", typeName, matcher.ID)
+					default:
+						description = fmt.Sprintf("%s「%s」", typeName, name)
+					}
+					treeDescriptions[key] = description
+				}
+				parts = append(parts, description)
+			default:
+				return "", fmt.Errorf("通知策略包含不支持的匹配条件类型 %q", matcher.Type)
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return "不限", nil
+	}
+	return strings.Join(parts, " 且 "), nil
+}
+
+// userInGroups 判断用户是否属于任一组；空组列表返回 false，查询失败不能冒充非成员。
+func (handler *Handler) userInGroups(ctx context.Context, userID int32, groupIDs []int64) (bool, error) {
 	if len(groupIDs) == 0 {
-		return false
+		return false, nil
 	}
 	count, err := db.New(handler.db).CountUserGroupMemberships(ctx, db.CountUserGroupMembershipsParams{
 		UserID: userID, GroupIds: groupIDs,
 	})
 	if err != nil {
-		return false
+		return false, err
 	}
-	return count > 0
+	return count > 0, nil
 }
 
 func userCanReceive(bindings []alertChainBinding) bool {
@@ -542,7 +609,10 @@ func (handler *Handler) policyMediasDetail(context *gin.Context, mediaIDs []int6
 				"user_id": row.UserID, "username": row.Username, "recipients": recipients, "enabled": row.Enabled,
 			}
 			if userGroupIDs != nil {
-				inGroup := handler.userInGroups(context.Request.Context(), row.UserID, userGroupIDs)
+				inGroup, err := handler.userInGroups(context.Request.Context(), row.UserID, userGroupIDs)
+				if err != nil {
+					return nil, err
+				}
 				bindingView["in_group"] = inGroup
 				if !inGroup {
 					bindingView["issue"] = "不在命中策略的接收组内，不会收到该告警"

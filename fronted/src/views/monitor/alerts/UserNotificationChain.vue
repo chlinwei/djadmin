@@ -31,8 +31,8 @@
         >
           <div class="chain-node">
             <div class="chain-node-head">
-              <span class="chain-node-title">绑定 #{{ binding.binding_id }}</span>
-              <a-tag :color="binding.enabled ? 'success' : 'default'">{{ binding.enabled ? '已启用' : '已禁用' }}</a-tag>
+              <span class="chain-node-title">媒介绑定：{{ binding.media.name }}</span>
+              <EnabledSwitch :checked="binding.enabled" read-only />
               <a-tag v-for="(issue, index) in binding.issues" :key="`b-${index}`" :color="issueColor(issue)" class="issue-tag">{{ issue }}</a-tag>
             </div>
 
@@ -40,7 +40,7 @@
               <div class="chain-node-head">
                 <span class="chain-node-title">媒介：{{ binding.media.name }}</span>
                 <a-tag>{{ binding.media.media_type }}</a-tag>
-                <a-tag :color="binding.media.enabled ? 'success' : 'default'">{{ binding.media.enabled ? '已启用' : '已禁用' }}</a-tag>
+                <EnabledSwitch :checked="binding.media.enabled" read-only />
               </div>
               <div v-if="binding.recipients.length" class="chain-recipients">
                 收件人：
@@ -59,14 +59,13 @@
                   接收组：
                   <template v-if="policy.user_group_ids">
                     <a-tag v-for="name in policy.user_group_names" :key="name" color="purple">{{ name }}</a-tag>
-                    <a-tag v-if="policy.user_in_group === false" color="red">当前用户不在组内，收不到</a-tag>
                   </template>
                   <a-tag v-else color="default">不限</a-tag>
                 </div>
-                <div v-if="policy.matchers && policy.matchers !== '[]'" class="chain-matchers">matchers：{{ policy.matchers }}</div>
+                <div class="chain-matchers">匹配条件：{{ policy.matcher_summary }}</div>
                 </div>
               </div>
-              <div v-else class="chain-no-route">未被任何通知策略出口命中</div>
+              <div v-else class="chain-no-route">暂无对当前用户生效的通知策略</div>
             </div>
           </div>
         </a-timeline-item>
@@ -76,6 +75,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onMounted, ref } from 'vue'
 import { getUserNotificationChain } from '@/api/monitor'
 

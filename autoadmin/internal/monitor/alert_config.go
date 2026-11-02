@@ -3,6 +3,7 @@ package monitor
 import (
 	"database/sql"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"time"
 
@@ -14,7 +15,35 @@ import (
 
 func (handler *Handler) CreateAlertMedia(context *gin.Context) { handler.saveAlertMedia(context, 0) }
 func (handler *Handler) UpdateAlertMedia(context *gin.Context) {
-	handler.saveAlertMedia(context, parseID(context.Param("id")))
+	id := parseID(context.Param("id"))
+	if id <= 0 {
+		response.BusinessError(context, 400, "invalid media id", nil)
+		return
+	}
+	if context.Request.Method == http.MethodPatch {
+		var fields map[string]json.RawMessage
+		if context.ShouldBindBodyWithJSON(&fields) != nil {
+			response.BusinessError(context, 400, "invalid request body", nil)
+			return
+		}
+		if rawEnabled, exists := fields["enabled"]; exists && len(fields) == 1 {
+			var enabled *bool
+			if json.Unmarshal(rawEnabled, &enabled) != nil || enabled == nil {
+				response.BusinessError(context, 400, "enabled must be a boolean", nil)
+				return
+			}
+			// Status changes must not rewrite SMTP secrets or concurrently edited configuration.
+			if err := db.New(handler.db).UpdateAlertMediaEnabled(context, db.UpdateAlertMediaEnabledParams{
+				Enabled: *enabled, UpdateTime: time.Now().UTC(), ID: id,
+			}); err != nil {
+				response.Error(context, err)
+				return
+			}
+			handler.getAlertMedia(context, id)
+			return
+		}
+	}
+	handler.saveAlertMedia(context, id)
 }
 
 func (handler *Handler) saveAlertMedia(context *gin.Context, id int64) {
@@ -25,7 +54,7 @@ func (handler *Handler) saveAlertMedia(context *gin.Context, id int64) {
 		Enabled   *bool          `json:"enabled"`
 		Remark    string         `json:"remark"`
 	}
-	if context.ShouldBindJSON(&input) != nil {
+	if context.ShouldBindBodyWithJSON(&input) != nil {
 		response.BusinessError(context, 400, "invalid request body", nil)
 		return
 	}

@@ -24,7 +24,7 @@
                 </a-form-item>
               </a-col>
               <a-col :span="12"><a-form-item name="instance_name" label="实例名称" extra="同一主机的不同程序应登记为不同实例；关联已有实例请在逻辑服务成员中选择。"><a-input v-model:value="form.instance_name" placeholder="例如 tomcat-order-prod" /></a-form-item></a-col>
-              <a-col :span="12"><a-form-item label="启用"><a-switch v-model:checked="form.enabled" /></a-form-item></a-col>
+              <a-col :span="12"><a-form-item label="启用"><EnabledSwitch v-model:checked="form.enabled" /></a-form-item></a-col>
               <a-col :span="24"><a-form-item label="备注"><a-textarea v-model:value="form.remark" :rows="3" /></a-form-item></a-col>
         </a-row>
       </a-form>
@@ -33,6 +33,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { nextTick, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'

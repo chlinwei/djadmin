@@ -28,7 +28,7 @@
     >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'enabled'">
-          <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '允许部署' : '已停用' }}</a-tag>
+          <EnabledSwitch v-model:checked="record.enabled" :endpoint="`assets/application-versions/${record.id}/`" permission="assets:applications:update" @changed="emit('changed')" />
         </template>
         <template v-else-if="column.key === 'action'">
           <a-tooltip title="删除">
@@ -43,6 +43,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { tableLocale } from '@/util/tableStyle'

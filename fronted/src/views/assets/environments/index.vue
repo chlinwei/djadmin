@@ -11,7 +11,7 @@
     </a-row>
     <a-table row-key="id" :columns="columns" :data-source="environments" :loading="loading" :pagination="false" size="small" :locale="tableLocale" :scroll="{ x: 1200 }">
       <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'enabled'"><a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" /></template>
+        <template v-if="column.key === 'enabled'"><EnabledSwitch v-model:checked="record.enabled" :endpoint="`assets/business-environments/${record.id}/`" permission="assets:applications:update" /></template>
         <template v-else-if="column.key === 'action'"><a-space>
           <a-tooltip title="编辑"><a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openEnvironment(record)"><FontAwesomeIcon :icon="['fa', 'edit']" /></a-button></a-tooltip>
           <a-tooltip title="删除"><a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDelete(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip>
@@ -23,6 +23,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { tableLocale } from '@/util/tableStyle'

@@ -168,6 +168,9 @@ func (h *Handler) UpdateServiceDependencyType(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if h.enabledPatch(c, id, "dependency-type", h.GetServiceDependencyType) {
+		return
+	}
 	input, ok := bind[DependencyTypeInput](c)
 	if !ok {
 		return

@@ -359,7 +359,8 @@ describe('ServiceTreeNodeContent', () => {
           expect(buttons.length).toBeGreaterThan(0)
           expect(buttons.every((button) => button.element.style.display !== 'none')).toBe(true)
         } else {
-          expect(table.findAll('button')).toHaveLength(0)
+          expect(table.findAll('button:not([role="switch"])')).toHaveLength(0)
+          expect(table.findAll('button[role="switch"]').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
         }
         await table.find('.child-navigation-link').trigger('click')
         expect(wrapper.emitted('navigate').at(-1)[0].nodeType).toBe(target)

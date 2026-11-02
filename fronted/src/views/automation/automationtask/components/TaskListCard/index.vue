@@ -57,7 +57,7 @@
             </a-tooltip>
           </template>
           <template v-else-if="column.key === 'enabled'">
-            <a-switch
+            <EnabledSwitch
               :checked="record.enabled === true"
               :disabled="!canEditTask || taskLoading || taskStatusUpdatingId === record.id"
               :loading="taskStatusUpdatingId === record.id"
@@ -165,6 +165,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed } from 'vue'
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import { faFileCode, faTerminal, faCircleQuestion } from '@fortawesome/free-solid-svg-icons'

@@ -131,7 +131,7 @@
                 </a-col>
               </a-row>
             </template>
-            <a-form-item label="允许新部署"><a-switch v-model:checked="form.enabled" /></a-form-item>
+            <a-form-item label="允许新部署"><EnabledSwitch v-model:checked="form.enabled" :read-only="readOnly" /></a-form-item>
             <a-form-item label="备注"><a-textarea v-model:value="form.remark" :rows="3" /></a-form-item>
           </a-tab-pane>
 
@@ -225,6 +225,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { tableLocale } from '@/util/tableStyle'

@@ -6952,6 +6952,23 @@ func (q *Queries) UpdateAlertMedia(ctx context.Context, arg UpdateAlertMediaPara
 	return result.RowsAffected()
 }
 
+const updateAlertMediaEnabled = `-- name: UpdateAlertMediaEnabled :exec
+UPDATE monitor_alert_media
+SET enabled=?,update_time=?
+WHERE id=?
+`
+
+type UpdateAlertMediaEnabledParams struct {
+	Enabled    bool      `json:"enabled"`
+	UpdateTime time.Time `json:"update_time"`
+	ID         int64     `json:"id"`
+}
+
+func (q *Queries) UpdateAlertMediaEnabled(ctx context.Context, arg UpdateAlertMediaEnabledParams) error {
+	_, err := q.db.ExecContext(ctx, updateAlertMediaEnabled, arg.Enabled, arg.UpdateTime, arg.ID)
+	return err
+}
+
 const updateElasticsearchCluster = `-- name: UpdateElasticsearchCluster :execrows
 UPDATE monitor_elasticsearch_cluster
 SET update_time=?,name=?,hosts=?,username=?,

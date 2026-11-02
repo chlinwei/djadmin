@@ -68,9 +68,10 @@
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'enabled'">
-            <a-switch
+            <EnabledSwitch
               :checked="record.enabled === true"
-              :disabled="!checkPermission('system:scheduler:update') || record.is_running"
+              :disabled="!checkPermission('system:scheduler:update') || record.is_running || statusUpdating[record.id]"
+              :loading="statusUpdating[record.id]"
               @change="(checked) => toggleEnable(record, checked)"
             />
           </template>
@@ -176,7 +177,7 @@
           />
         </a-form-item>
         <a-form-item label="启用状态">
-          <a-switch v-model:checked="editForm.enabled" checked-children="启用" un-checked-children="禁用" />
+          <EnabledSwitch v-model:checked="editForm.enabled" />
         </a-form-item>
         <a-form-item label="Cron 表达式" required>
           <a-input
@@ -328,6 +329,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { ref, reactive, onMounted, onBeforeUnmount, computed } from 'vue'
 import { createPagination, tableLocale } from '@/util/tableStyle'
 import { message } from 'ant-design-vue'
@@ -364,6 +366,7 @@ const router = useRouter()
 const currentTask = ref(null)
 const currentLogDetail = ref(null)
 const tasks = ref([])
+const statusUpdating = reactive({})
 // 未迁移（没有 Go 实现）的任务数：>0 时页面顶部给一条警告。
 // 判据只有后端有（supported 字段来自 handler 注册表），前端不自己猜编码清单。
 const unsupportedTaskCount = computed(() => tasks.value.filter((task) => task.supported === false).length)
@@ -836,21 +839,20 @@ const submitTask = () => {
     })
 }
 
-const toggleEnable = (record, enable) => {
-  if (!checkPermission('system:scheduler:update')) return
+const toggleEnable = async (record, enable) => {
+  if (!checkPermission('system:scheduler:update') || record.is_running || statusUpdating[record.id]) return
+  statusUpdating[record.id] = true
   const action = enable ? enableTask : disableTask
-  action(record.id)
-    .then((res) => {
-      if (res.data.code === 200) {
-        message.success(enable ? '已启用' : '已禁用')
-        loadTasks()
-      } else {
-        message.error(res.data.msg || '操作失败')
-      }
-    })
-    .catch(() => {
-      message.error('操作失败')
-    })
+  try {
+    const res = await action(record.id)
+    if (res.data.code !== 200) throw new Error(res.data.msg || '操作失败')
+    await loadTasks()
+    message.success(enable ? '已启用' : '已停用')
+  } catch (error) {
+    message.error(error?.message || '操作失败')
+  } finally {
+    statusUpdating[record.id] = false
+  }
 }
 
 const pollIntervals = ref({})  // Store poll intervals by task ID

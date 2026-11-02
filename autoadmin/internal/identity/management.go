@@ -57,7 +57,7 @@ func (service *Service) UpdateUser(ctx context.Context, userID int32, input User
 	user.Status = input.Status
 	now := sql.NullTime{Time: time.Now().UTC(), Valid: true}
 	if err := service.repository.Update(ctx, db.UpdateUserProfileParams{
-		Avatar: user.Avatar, Phonenumber: user.Phonenumber, Status: user.Status,
+		Phonenumber: user.Phonenumber, Status: user.Status,
 		Remark: user.Remark, Timezone: user.Timezone, UpdateTime: now, ID: userID,
 	}); err != nil {
 		return CurrentUser{}, err

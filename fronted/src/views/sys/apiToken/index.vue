@@ -26,7 +26,7 @@
   >
     <template #bodyCell="{ column, record }">
       <template v-if="column.key === 'is_active'">
-        <a-tag :color="record.is_active ? 'green' : 'red'">{{ record.is_active ? '启用' : '禁用' }}</a-tag>
+        <EnabledSwitch :checked="record.is_active" read-only />
       </template>
       <template v-else-if="column.key === 'expires_at'">
         <span>{{ record.bind_mode === 'agent' ? '永不过期' : formatDateTime(record.expires_at) }}</span>
@@ -109,6 +109,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, reactive, ref, watch } from 'vue'
 import dayjs from 'dayjs'
 import { message, Modal } from 'ant-design-vue'

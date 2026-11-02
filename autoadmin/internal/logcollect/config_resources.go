@@ -86,6 +86,9 @@ func (handler *Handler) CreateRetentionTier(context *gin.Context) {
 	handler.saveResource(context, retentionSpec, 0, handler.respondRetentionTierThenSync)
 }
 func (handler *Handler) UpdateRetentionTier(context *gin.Context) {
+	if handler.enabledPatch(context, "retention", handler.respondRetentionTierThenSync) {
+		return
+	}
 	handler.saveResource(context, retentionSpec, parseID(context.Param("id")), handler.respondRetentionTierThenSync)
 }
 
@@ -289,6 +292,9 @@ func (handler *Handler) CreateFilterRule(context *gin.Context) {
 	handler.saveResource(context, filterRuleSpec, 0, handler.respondFilterRule)
 }
 func (handler *Handler) UpdateFilterRule(context *gin.Context) {
+	if handler.enabledPatch(context, "filter", handler.respondFilterRule) {
+		return
+	}
 	handler.saveResource(context, filterRuleSpec, parseID(context.Param("id")), handler.respondFilterRule)
 }
 func (handler *Handler) BatchDeleteFilterRules(context *gin.Context) {
@@ -301,7 +307,7 @@ func (handler *Handler) BatchDeleteFilterRules(context *gin.Context) {
 // 供解析规则等需要“先发布到 Elasticsearch 再写库”的资源挂接外部副作用。
 func (handler *Handler) saveResource(context *gin.Context, spec resourceSpec, id int64, respond func(*gin.Context, int64), beforeSave ...func(*gin.Context, map[string]any, int64) string) {
 	var input map[string]any
-	if err := context.ShouldBindJSON(&input); err != nil {
+	if err := context.ShouldBindBodyWithJSON(&input); err != nil {
 		response.BusinessError(context, 400, "invalid request body", nil)
 		return
 	}

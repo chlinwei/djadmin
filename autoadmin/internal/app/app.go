@@ -38,11 +38,14 @@ var supportedCommands = map[string]struct{}{
 
 // Run dispatches independently deployable process roles from one binary.
 func Run(args []string) error {
-	// 只有 migrate 额外带一层子命令：`migrate force <version>`（迁移失败后清脏标记）。
+	// migrate 子命令分别处理 schema 脏标记修复与显式头像数据导入。
 	forced := false
+	importAvatars := false
 	var forceVersion int64
 	switch {
 	case len(args) == 1:
+	case len(args) == 2 && args[0] == "migrate" && args[1] == "avatars":
+		importAvatars = true
 	case len(args) == 3 && args[0] == "migrate" && args[1] == "force":
 		parsed, err := strconv.ParseInt(args[2], 10, 64)
 		if err != nil || parsed < 0 {
@@ -50,7 +53,7 @@ func Run(args []string) error {
 		}
 		forced, forceVersion = true, parsed
 	default:
-		return fmt.Errorf("usage: autoadmin <api|scheduler|worker|migrate> 或 autoadmin migrate force <version>")
+		return fmt.Errorf("usage: autoadmin <api|scheduler|worker|migrate> 或 autoadmin migrate force <version> 或 autoadmin migrate avatars")
 	}
 	if _, ok := supportedCommands[args[0]]; !ok {
 		return fmt.Errorf("unknown command %q", args[0])
@@ -60,7 +63,12 @@ func Run(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := configuration.Validate(args[0]); err != nil {
+	validationCommand := args[0]
+	if importAvatars {
+		// 头像数据导入使用正常业务连接；不依赖 schema 迁移专用 URL 或 API/RabbitMQ 配置。
+		validationCommand = "avatar-import"
+	}
+	if err := configuration.Validate(validationCommand); err != nil {
 		return err
 	}
 
@@ -68,6 +76,16 @@ func Run(args []string) error {
 	case "api":
 		return runAPI(configuration)
 	case "migrate":
+		if importAvatars {
+			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+			pool, err := openDatabase(ctx, configuration)
+			if err != nil {
+				return err
+			}
+			defer pool.Close()
+			return identity.ImportDiskAvatars(ctx, pool, "media")
+		}
 		if forced {
 			return migration.Force(configuration.MigrationSource, configuration.MigrationDBURL, forceVersion)
 		}

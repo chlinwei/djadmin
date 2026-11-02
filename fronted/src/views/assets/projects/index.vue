@@ -14,7 +14,7 @@
         <template v-if="column.key === 'business_system_names'">
           <a-space wrap><a-tag v-for="name in record.business_system_names || []" :key="name">{{ name }}</a-tag><span v-if="!record.business_system_names?.length">-</span></a-space>
         </template>
-        <template v-else-if="column.key === 'enabled'"><a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" /></template>
+        <template v-else-if="column.key === 'enabled'"><EnabledSwitch v-model:checked="record.enabled" :endpoint="`assets/projects/${record.id}/`" permission="assets:applications:update" /></template>
         <template v-else-if="column.key === 'action'"><a-space>
           <a-tooltip title="编辑"><a-button v-permission="'assets:projects:update'" size="small" type="primary" @click="openProject(record)"><FontAwesomeIcon :icon="['fa', 'edit']" /></a-button></a-tooltip>
           <a-tooltip title="删除"><a-button v-permission="'assets:projects:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDelete(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip>
@@ -26,6 +26,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { tableLocale } from '@/util/tableStyle'

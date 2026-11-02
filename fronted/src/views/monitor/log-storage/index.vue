@@ -49,7 +49,7 @@
           <a-tag v-if="record.is_default" color="blue">默认</a-tag>
         </template>
         <template v-else-if="column.key === 'enabled'">
-          <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
+          <EnabledSwitch v-model:checked="record.enabled" :endpoint="`monitor/elasticsearch-clusters/${record.id}/`" permission="monitor:update" />
         </template>
         <template v-else-if="column.key === 'verify_tls'">
           <a-tag :color="record.verify_tls ? 'green' : 'orange'">{{ record.verify_tls ? '校验' : '不校验' }}</a-tag>
@@ -183,7 +183,7 @@
           </a-col>
           <a-col :span="6">
             <a-form-item label="启用">
-              <a-switch v-model:checked="form.enabled" />
+              <EnabledSwitch v-model:checked="form.enabled" />
             </a-form-item>
           </a-col>
           <a-col :span="24">
@@ -235,6 +235,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 defineOptions({
   name: 'monitorLogStorage'
 })

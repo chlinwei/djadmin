@@ -54,7 +54,7 @@
           <span>{{ record.rollover_min_index_age }} / {{ record.rollover_min_primary_shard_size }}</span>
         </template>
         <template v-else-if="column.key === 'enabled'">
-          <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
+          <EnabledSwitch v-model:checked="record.enabled" :endpoint="`monitor/log-retention-tiers/${record.id}/`" permission="monitor:update" />
         </template>
         <template v-else-if="column.key === 'service_count'">
           <a-tag :color="record.service_count ? 'purple' : 'default'">{{ record.service_count }}</a-tag>
@@ -99,7 +99,7 @@
         <a-descriptions-item label="引用服务">{{ detailTier.service_count }}</a-descriptions-item>
         <a-descriptions-item label="滚动最小时长">{{ detailTier.rollover_min_index_age }}</a-descriptions-item>
         <a-descriptions-item label="滚动最小主分片大小">{{ detailTier.rollover_min_primary_shard_size }}</a-descriptions-item>
-        <a-descriptions-item label="状态">{{ detailTier.enabled ? '启用' : '停用' }}</a-descriptions-item>
+        <a-descriptions-item label="状态"><EnabledSwitch :checked="detailTier.enabled" read-only /></a-descriptions-item>
         <a-descriptions-item label="默认档位">{{ detailTier.is_default ? '是' : '否' }}</a-descriptions-item>
         <a-descriptions-item label="备注" :span="2">
           <span style="white-space: pre-wrap; overflow-wrap: anywhere">{{ detailTier.remark || '-' }}</span>
@@ -168,7 +168,7 @@
         <a-row :gutter="16">
           <a-col :span="12">
             <a-form-item label="启用">
-              <a-switch v-model:checked="form.enabled" />
+              <EnabledSwitch v-model:checked="form.enabled" />
             </a-form-item>
           </a-col>
           <a-col :span="12">
@@ -187,6 +187,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { checkPermission } from '@/directives/permission/permission'
 import { message } from 'ant-design-vue'

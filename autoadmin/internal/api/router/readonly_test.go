@@ -75,6 +75,7 @@ func TestReadonlyCannotMutateAnyBusinessRoute(t *testing.T) {
 		"POST /sys/usercenter/updateUserInfo/":                        "current user's profile",
 		"POST /sys/usercenter/updateUserPassword/":                    "current user's password with old-password verification",
 		"POST /sys/usercenter/updateAlertMediaBindings/":              "current user's notification bindings",
+		"PATCH /sys/usercenter/alertMediaBindings/:id/":               "current user's notification binding status",
 		"POST /sys/automation/playbooks/validate/":                    "content validation, not remote execution",
 		"POST /monitor/elasticsearch-clusters/:id/pipeline-simulate/": "pipeline simulation without publishing",
 		"POST /monitor/alert-webhook/api/v2/alerts":                   "separate machine authentication",

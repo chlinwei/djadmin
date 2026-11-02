@@ -127,7 +127,7 @@
                 <template v-else-if="column.key === 'rule_type'"><a-tag :color="record.rule_type === 'exclude' ? 'orange' : 'green'">{{ filterRuleTypeLabel(record.rule_type) }}</a-tag></template>
                 <template v-else-if="column.key === 'description'"><span style="white-space: pre-wrap; overflow-wrap: anywhere">{{ record.description || '-' }}</span></template>
                 <template v-else-if="column.key === 'pattern'"><code>{{ record.pattern }}</code></template>
-                <template v-else-if="column.key === 'enabled'"><a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag></template>
+                <template v-else-if="column.key === 'enabled'"><EnabledSwitch v-model:checked="record.enabled" :endpoint="`monitor/log-collection-filter-rules/${record.id}/`" permission="monitor:update" /></template>
                 <template v-else-if="column.key === 'action'"><a-space :size="6"><a-tooltip title="编辑"><a-button v-if="checkPermission('monitor:update')" type="primary" @click="openFilterEdit(record)"><FontAwesomeIcon :icon="['fa', 'edit']" /></a-button></a-tooltip><a-tooltip title="删除"><a-button v-if="checkPermission('monitor:delete')" class="delBtn" danger type="primary" @click="confirmDeleteFilter(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip></a-space></template>
               </template>
             </a-table>
@@ -171,7 +171,7 @@
           <template v-if="column.key === 'service_name'">
             <a class="service-count-link" @click="gotoService(record)">{{ record.name }} <RightOutlined /></a>
           </template>
-          <template v-else-if="column.key === 'enabled'"><a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" /></template>
+          <template v-else-if="column.key === 'enabled'"><EnabledSwitch :checked="record.enabled" read-only /></template>
         </template>
       </a-table>
       <div class="usage-hint" style="margin-top: 8px;">点服务名可跳转到服务树查看详情。</div>
@@ -400,7 +400,7 @@
           <a-textarea v-model:value="filterForm.pattern" :rows="3" :placeholder="filterForm.rule_type === 'exclude' ? '例如 (?i)healthcheck|/ping|DEBUG' : '例如 (?i)(error|failed|critical|fatal)'" spellcheck="false" />
           <div class="field-hint">Go RE2 方言（与 Filebeat 同一个引擎）：不支持 \uXXXX（要写 \x{XXXX}）与断言；过滤发生在多行合并之后，<code>^</code> 只匹配整条记录的开头。</div>
         </a-form-item>
-        <a-form-item label="启用"><a-switch v-model:checked="filterForm.enabled" /></a-form-item>
+        <a-form-item label="启用"><EnabledSwitch v-model:checked="filterForm.enabled" /></a-form-item>
         <a-form-item label="试算（可选）">
           <a-textarea v-model:value="filterSample" :rows="5" placeholder="粘几行日志，下面显示这条规则会保留/丢掉哪些行——白名单写错的代价是数据永久丢失，先算一次。" spellcheck="false" />
           <div v-if="filterSample.trim()" class="filter-sample-result">
@@ -449,6 +449,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { checkPermission } from '@/directives/permission/permission'
 import { message } from 'ant-design-vue'

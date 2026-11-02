@@ -46,7 +46,7 @@
       </a-row>
 
       <a-form-item label="启用状态">
-        <a-switch v-model:checked="taskForm.enabled" checked-children="启用" un-checked-children="禁用" />
+        <EnabledSwitch v-model:checked="taskForm.enabled" />
       </a-form-item>
 
       <a-form-item>
@@ -148,6 +148,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import ScopePrecheckPanel from '../../../components/ScopePrecheckPanel.vue'
 
 defineProps({

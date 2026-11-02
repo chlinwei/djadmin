@@ -58,10 +58,11 @@ func New(database *sql.DB, tokens *identity.TokenManager, allowedOrigins []strin
 // batchOptions 的零值字段用 logcollect 的缺省规模（0 视为未配置）。
 func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrigins []string, batchPublisher LogBatchPublisher, credentialEncryptionKey, djangoSecret string, gateway *agent.Gateway, batchOptions LogBatchOptions) (*gin.Engine, rabbitmq.Consumer, error) {
 	engine := gin.New()
+	// Ant Design uploads add X-Requested-With automatically; allow it in preflight without changing origins or permissions.
 	engine.Use(cors.New(cors.Config{
 		AllowOrigins:  allowedOrigins,
 		AllowMethods:  []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions},
-		AllowHeaders:  []string{"Authorization", "Content-Type", "Accept", "Range"},
+		AllowHeaders:  []string{"Authorization", "Content-Type", "Accept", "Range", "X-Requested-With"},
 		ExposeHeaders: []string{"Content-Disposition", "Content-Length", "Content-Range", "Accept-Ranges"},
 		MaxAge:        12 * time.Hour,
 	}), gin.LoggerWithConfig(gin.LoggerConfig{SkipQueryString: true}))
@@ -74,16 +75,15 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	})
 	engine.GET("/health/ready", readiness(database))
 
-	// 静态文件（用户头像等）：与 identity/assets/monitor 的 media 目录一致（默认 autoadmin/media）。
-	// 匿名可访问，路径穿越由 http.Dir 拦截；audit 中间件已跳过 /media 前缀。
 	mediaRoot, err := filepath.Abs("media")
 	if err != nil {
 		return nil, nil, err
 	}
-	engine.Static("/media", mediaRoot)
-
 	identityRepository := identity.NewRepository(database)
 	identityHandler := identity.NewHandler(identity.NewService(identityRepository, tokens))
+	// 头像保留公共图片 URL 但只读数据库；其他 media 文件仍由原目录提供，避免影响软件包下载。
+	engine.GET("/media/*filepath", identityHandler.ServeMedia(mediaRoot))
+	engine.HEAD("/media/*filepath", identityHandler.ServeMedia(mediaRoot))
 	apiTokenHandler := identity.NewAPITokenHandler(db.New(database))
 	engine.POST("/sys/login", identityHandler.Login)
 	engine.GET("/sys/users/current/", middleware.Authenticate(tokens), identityHandler.Current)
@@ -100,6 +100,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	apiTokens.POST("/updateUserPassword/", identityHandler.UpdateUserPassword)
 	apiTokens.GET("/alertMediaBindings/", identityHandler.AlertMediaBindings)
 	apiTokens.POST("/updateAlertMediaBindings/", identityHandler.UpdateAlertMediaBindings)
+	apiTokens.PATCH("/alertMediaBindings/:id/", identityHandler.UpdateOwnAlertMediaBindingEnabled)
 	apiTokens.GET("/apiTokens/", middleware.RequirePermission("system:api_token:view"), apiTokenHandler.List)
 	apiTokens.POST("/createApiToken/", middleware.RequirePermission("system:api_token:create"), apiTokenHandler.Create)
 	apiTokens.POST("/rotateApiToken/", middleware.RequirePermission("system:api_token:rotate"), apiTokenHandler.Rotate)
@@ -395,6 +396,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	dependencyTypes.GET("/:id/", middleware.RequirePermission("assets:applications:view"), assetsHandler.GetServiceDependencyType)
 	dependencyTypes.POST("/", middleware.RequirePermission("assets:applications:create"), assetsHandler.CreateServiceDependencyType)
 	dependencyTypes.PUT("/:id/", middleware.RequirePermission("assets:applications:update"), assetsHandler.UpdateServiceDependencyType)
+	dependencyTypes.PATCH("/:id/", middleware.RequirePermission("assets:applications:update"), assetsHandler.UpdateServiceDependencyType)
 	dependencyTypes.POST("/batch-delete/", middleware.RequirePermission("assets:applications:delete"), assetsHandler.BatchDeleteServiceDependencyTypes)
 	deployments := engine.Group("/assets/application-deployments", middleware.Authenticate(tokens))
 	deployments.GET("/", middleware.RequirePermission("assets:applications:view"), assetsHandler.ListApplicationDeployments)

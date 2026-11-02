@@ -205,6 +205,27 @@ func (q *Queries) CreateUserAlertMediaBinding(ctx context.Context, arg CreateUse
 	return err
 }
 
+const createUserAvatarContent = `-- name: CreateUserAvatarContent :exec
+INSERT INTO sys_user_avatar (user_id, filename, content, update_time) VALUES ($1, $2, $3, $4)
+`
+
+type CreateUserAvatarContentParams struct {
+	UserID     int32     `json:"user_id"`
+	Filename   string    `json:"filename"`
+	Content    []byte    `json:"content"`
+	UpdateTime time.Time `json:"update_time"`
+}
+
+func (q *Queries) CreateUserAvatarContent(ctx context.Context, arg CreateUserAvatarContentParams) error {
+	_, err := q.db.ExecContext(ctx, createUserAvatarContent,
+		arg.UserID,
+		arg.Filename,
+		arg.Content,
+		arg.UpdateTime,
+	)
+	return err
+}
+
 const createUserGroup = `-- name: CreateUserGroup :one
 INSERT INTO sys_user_group(create_time, update_time, remark, name) VALUES ($1, $2, $3, $4)
 RETURNING id
@@ -259,6 +280,15 @@ DELETE FROM monitor_user_alert_media_binding WHERE user_id = $1
 
 func (q *Queries) DeleteUserAlertMediaBindings(ctx context.Context, userID int32) error {
 	_, err := q.db.ExecContext(ctx, deleteUserAlertMediaBindings, userID)
+	return err
+}
+
+const deleteUserAvatarContent = `-- name: DeleteUserAvatarContent :exec
+DELETE FROM sys_user_avatar WHERE user_id = $1
+`
+
+func (q *Queries) DeleteUserAvatarContent(ctx context.Context, userID int32) error {
+	_, err := q.db.ExecContext(ctx, deleteUserAvatarContent, userID)
 	return err
 }
 
@@ -336,6 +366,22 @@ func (q *Queries) GetAPITokenByID(ctx context.Context, id int32) (SysAgentToken,
 		&i.CreatedByID,
 		&i.BindMode,
 	)
+	return i, err
+}
+
+const getUserAvatarContent = `-- name: GetUserAvatarContent :one
+SELECT content, update_time FROM sys_user_avatar WHERE filename = $1 LIMIT 1
+`
+
+type GetUserAvatarContentRow struct {
+	Content    []byte    `json:"content"`
+	UpdateTime time.Time `json:"update_time"`
+}
+
+func (q *Queries) GetUserAvatarContent(ctx context.Context, filename string) (GetUserAvatarContentRow, error) {
+	row := q.db.QueryRowContext(ctx, getUserAvatarContent, filename)
+	var i GetUserAvatarContentRow
+	err := row.Scan(&i.Content, &i.UpdateTime)
 	return i, err
 }
 
@@ -436,6 +482,41 @@ func (q *Queries) ListAPITokens(ctx context.Context) ([]ListAPITokensRow, error)
 			&i.CreateTime,
 			&i.UpdateTime,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDiskUserAvatars = `-- name: ListDiskUserAvatars :many
+SELECT u.id, u.avatar FROM sys_user u
+LEFT JOIN sys_user_avatar a ON a.user_id = u.id
+WHERE u.avatar IS NOT NULL AND u.avatar <> '' AND a.user_id IS NULL
+ORDER BY u.id
+`
+
+type ListDiskUserAvatarsRow struct {
+	ID     int32          `json:"id"`
+	Avatar sql.NullString `json:"avatar"`
+}
+
+func (q *Queries) ListDiskUserAvatars(ctx context.Context) ([]ListDiskUserAvatarsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listDiskUserAvatars)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDiskUserAvatarsRow{}
+	for rows.Next() {
+		var i ListDiskUserAvatarsRow
+		if err := rows.Scan(&i.ID, &i.Avatar); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -768,6 +849,40 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]SysUser
 	return items, nil
 }
 
+const lockOwnAlertMediaBindingEnabled = `-- name: LockOwnAlertMediaBindingEnabled :one
+SELECT b.enabled, m.enabled AS media_enabled
+FROM monitor_user_alert_media_binding b JOIN monitor_alert_media m ON m.id = b.media_id
+WHERE b.id = $1 AND b.user_id = $2 FOR UPDATE
+`
+
+type LockOwnAlertMediaBindingEnabledParams struct {
+	ID     int64 `json:"id"`
+	UserID int32 `json:"user_id"`
+}
+
+type LockOwnAlertMediaBindingEnabledRow struct {
+	Enabled      bool `json:"enabled"`
+	MediaEnabled bool `json:"media_enabled"`
+}
+
+func (q *Queries) LockOwnAlertMediaBindingEnabled(ctx context.Context, arg LockOwnAlertMediaBindingEnabledParams) (LockOwnAlertMediaBindingEnabledRow, error) {
+	row := q.db.QueryRowContext(ctx, lockOwnAlertMediaBindingEnabled, arg.ID, arg.UserID)
+	var i LockOwnAlertMediaBindingEnabledRow
+	err := row.Scan(&i.Enabled, &i.MediaEnabled)
+	return i, err
+}
+
+const lockUserAvatar = `-- name: LockUserAvatar :one
+SELECT avatar FROM sys_user WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) LockUserAvatar(ctx context.Context, id int32) (sql.NullString, error) {
+	row := q.db.QueryRowContext(ctx, lockUserAvatar, id)
+	var avatar sql.NullString
+	err := row.Scan(&avatar)
+	return avatar, err
+}
+
 const rotateAPIToken = `-- name: RotateAPIToken :exec
 UPDATE sys_agent_token
 SET token_hash = $1, last_used_at = NULL, is_active = TRUE, update_time = $2
@@ -841,6 +956,28 @@ func (q *Queries) SearchUsers(ctx context.Context, arg SearchUsersParams) ([]Sys
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateOwnAlertMediaBindingEnabled = `-- name: UpdateOwnAlertMediaBindingEnabled :exec
+UPDATE monitor_user_alert_media_binding SET enabled = $1, update_time = $2
+WHERE id = $3 AND user_id = $4
+`
+
+type UpdateOwnAlertMediaBindingEnabledParams struct {
+	Enabled    bool      `json:"enabled"`
+	UpdateTime time.Time `json:"update_time"`
+	ID         int64     `json:"id"`
+	UserID     int32     `json:"user_id"`
+}
+
+func (q *Queries) UpdateOwnAlertMediaBindingEnabled(ctx context.Context, arg UpdateOwnAlertMediaBindingEnabledParams) error {
+	_, err := q.db.ExecContext(ctx, updateOwnAlertMediaBindingEnabled,
+		arg.Enabled,
+		arg.UpdateTime,
+		arg.ID,
+		arg.UserID,
+	)
+	return err
 }
 
 const updateUserAvatar = `-- name: UpdateUserAvatar :exec
@@ -928,12 +1065,11 @@ func (q *Queries) UpdateUserPhonenumber(ctx context.Context, arg UpdateUserPhone
 
 const updateUserProfile = `-- name: UpdateUserProfile :exec
 UPDATE sys_user
-SET avatar = $1, phonenumber = $2, status = $3, remark = $4, timezone = $5, update_time = $6
-WHERE id = $7
+SET phonenumber = $1, status = $2, remark = $3, timezone = $4, update_time = $5
+WHERE id = $6
 `
 
 type UpdateUserProfileParams struct {
-	Avatar      sql.NullString `json:"avatar"`
 	Phonenumber sql.NullString `json:"phonenumber"`
 	Status      int16          `json:"status"`
 	Remark      sql.NullString `json:"remark"`
@@ -944,7 +1080,6 @@ type UpdateUserProfileParams struct {
 
 func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error {
 	_, err := q.db.ExecContext(ctx, updateUserProfile,
-		arg.Avatar,
 		arg.Phonenumber,
 		arg.Status,
 		arg.Remark,

@@ -174,6 +174,98 @@ WebSocket 必须使用执行权限；POST 校验不因方法是 POST 就被当�
 4. 后端唯一实现为 Go 版 autoadmin；Django 实现已从版本库移除，文档禁止引用其源码，历史实现只允许引用 `docs/archive/`（见 AGENTS.md）。
 5. **数据访问层约定（选 sqlc 还是内联 SQL、字段映射、SQL 方言可移植性）统一见 [SQL_DESIGN.md](SQL_DESIGN.md)**，本文不重复；新增或修改任何 SQL 前先读该文档。
 
+## 配置启停状态
+
+配置型启停状态统一复用 [EnabledSwitch](../../fronted/src/components/EnabledSwitch.vue)，
+以巡检中心为唯一基准：Ant Design Vue 默认尺寸，开关内显示「启用 / 停用」。
+列表、详情和新增/编辑表单使用相同控件，不使用无文字开关、圆点、标签、复选框或单选组表达同一个启停字段。
+用户账号仍提交数字 `1 / 0`，仅在界面映射为布尔值，既有 API 契约不变。
+
+### 交互与失败语义
+
+- 表单开关只修改草稿，随表单提交；不因切换而自动保存。
+- 普通资源列表的开关按后端动作权限授权，不按角色名称判断；无动作权限时保留状态展示并禁用交互。
+  多项必需权限逐项检查，不能使用 ANY 语义代替 AND。
+- 行内保存使用受控状态，等待服务端成功后确认，显示 loading 并阻止重复提交。
+  失败或返回状态与请求不一致时保留旧状态并提示原因；刷新替换行对象后更新当前行，不写入陈旧对象，也不把旧请求结果应用到另一资源。
+  点击开关不触发服务树行导航。
+- 内置集群模型不可编辑；API Token 的状态只读，禁用继续使用既有动作与确认流程，不提供反向启用。
+  通知链路诊断、引用服务详情和 Inventory 范围详情中的状态只读，不在诊断中改变配置。
+- 运行中/成功/失败、在线/离线、告警级别、自动刷新、必填、TLS 校验、默认项、
+  安装/卸载、日志采集及多行模式保留各自的业务语义，不能机械改成「启用 / 停用」。
+  依赖图的停用提示与通知绑定的组合故障提示仍是诊断标记，不是写入入口。
+
+### 状态写入
+
+普通资源通过现有详情 `PATCH` 仅提交 `{"enabled":true}` 或 `{"enabled":false}`。
+只有请求恰含 `enabled` 时进入窄更新；必须为 JSON 布尔值，拒绝 `null`、字符串、数字、数组和对象。
+混合字段请求继续完整编辑的校验与保存路径，不能误当状态请求。
+状态写入只更新 `enabled` 与 `update_time`，不从列表回写名称、连接凭据、规则、模板嵌套配置或服务成员。
+返回原有资源详情响应；新前端以返回的真实 `data.enabled` 确认状态。
+
+| 资源 | PATCH 入口 | 动作权限及约束 |
+|---|---|---|
+| 项目 | `/assets/projects/:id/` | `assets:applications:update`，沿用当前后端路由权限 |
+| 业务系统 | `/assets/business-systems/:id/` | `assets:service-tree:manage` |
+| 环境 | `/assets/business-environments/:id/` | `assets:applications:update` |
+| 应用 / 版本 / 集群模型 | `/assets/applications/:id/`、`/assets/application-versions/:id/`、`/assets/cluster-profiles/:id/` | `assets:applications:update`；内置模型拒绝修改 |
+| 部署模板 / 服务 / 实例 | `/assets/application-deployment-templates/:id/`、`/assets/application-services/:id/`、`/assets/application-deployments/:id/` | `assets:applications:update`；保持可串行化事务与日志配置一致性校验，失败回滚；服务删除墓碑阻止状态修改 |
+| 依赖交互类型 | `/assets/service-dependency-types/:id/` | `assets:applications:update`；停用禁止新引用，已有关系保留 |
+| 软件包 | `/monitor/packages/:id/` | `monitor:update`；不改包文件、平台或 Playbook，也不触发安装/卸载 |
+| ES 集群 | `/monitor/elasticsearch-clusters/:id/` | `monitor:update`；保留原存储初始化/同步动作 |
+| 日志保留档位 | `/monitor/log-retention-tiers/:id/` | `monitor:update`；保留原存储策略同步动作 |
+| 日志采集过滤规则 | `/monitor/log-collection-filter-rules/:id/` | `monitor:update`；不回写正则或关联配置 |
+| 通知媒介 | `/monitor/media/:id/` | `monitor:update`；不回写 SMTP 配置与密码 |
+| 自身通知绑定 | `/sys/usercenter/alertMediaBindings/:id/` | 只依赖当前登录身份；锁定和更新均限定 `user_id`，不能修改其他用户；媒介停用时不能启用绑定 |
+
+状态更新不变更表结构，无新增数据库迁移。SQL 使用生成查询；不存在的目标明确返回 404，
+存储或事务失败明确报错，不以修改了 0 行冒充成功。既有账号、自动化任务、Inventory、调度和巡检启停动作继续使用原有接口及限制。
+前后端须配套部署：列表直接切换依赖上述状态窄更新，不能只部署前端后继续使用旧 API 进程。
+
+### 页面覆盖与回归入口
+
+以下入口使用同一配置启停规范；路径对应页面或表单组件，不包含业务运行状态的例外控件。
+
+| 入口 | 状态与交互 |
+|---|---|
+| [项目列表](../../fronted/src/views/assets/projects/index.vue) | 行内启停 |
+| [环境列表](../../fronted/src/views/assets/environments/index.vue) | 行内启停 |
+| [应用工作区](../../fronted/src/views/assets/application/components/ApplicationWorkspace.vue) | 项目、应用及自定义模型行内启停；内置模型只读 |
+| [部署模板管理](../../fronted/src/views/assets/application/components/TemplateManagerDialog.vue) | 行内启停，通知上层刷新 |
+| [版本管理](../../fronted/src/views/assets/application/components/VersionDialog.vue) | 行内启停，通知上层刷新 |
+| [服务树节点](../../fronted/src/views/assets/service-tree/ServiceTreeNodeContent.vue) | 业务系统、逻辑服务启停，保持导航与运行状态分离 |
+| [交互类型管理](../../fronted/src/views/assets/service-tree/ServiceDependencyTypes.vue) | 列表行内启停、表单草稿 |
+| [项目表单](../../fronted/src/views/assets/application/components/ProjectDialog.vue) | 草稿启停 |
+| [业务系统表单](../../fronted/src/views/assets/application/components/BusinessSystemDialog.vue) | 草稿启停 |
+| [环境表单](../../fronted/src/views/assets/application/components/BusinessEnvironmentDialog.vue) | 草稿启停 |
+| [应用表单](../../fronted/src/views/assets/application/components/Dialog.vue) | 草稿启停，保留「允许使用」说明 |
+| [模型表单](../../fronted/src/views/assets/application/components/ClusterProfileDialog.vue) | 草稿启停 |
+| [实例表单](../../fronted/src/views/assets/application/components/DeploymentDialog.vue) | 草稿启停 |
+| [模板表单](../../fronted/src/views/assets/application/components/TemplateDialog.vue) | 草稿启停，保留「允许新部署」说明；查看模式只读 |
+| [服务表单](../../fronted/src/views/assets/application/components/ApplicationServiceDialog.vue) | 服务与成员草稿启停；采集总开关保留业务语义 |
+| [Inventory](../../fronted/src/views/automation/inventory/index.vue) | 既有行内启停、表单草稿、范围详情只读 |
+| [自动化任务列表](../../fronted/src/views/automation/automationtask/components/TaskListCard/index.vue) | 既有行内启停与权限/loading |
+| [自动化任务表单](../../fronted/src/views/automation/automationtask/components/TaskFormModal/index.vue) | 草稿启停 |
+| [用户管理](../../fronted/src/views/sys/user/index.vue) | 既有数字状态接口，行内保存期间防重复 |
+| [用户表单](../../fronted/src/views/sys/user/components/Dialog.vue) | 草稿启停，保持数字状态 |
+| [系统调度](../../fronted/src/views/sys/scheduler/index.vue) | 既有启停动作、表单草稿；运行中不能切换，保存期间防重复 |
+| [API Token](../../fronted/src/views/sys/apiToken/index.vue) | 状态只读，既有单向禁用动作保留 |
+| [监控软件仓库](../../fronted/src/views/monitor/index.vue) | 软件包行内启停 |
+| [通知媒介](../../fronted/src/views/monitor/media/index.vue) | 既有行内启停、表单草稿 |
+| [日志存储](../../fronted/src/views/monitor/log-storage/index.vue) | 集群行内启停、表单草稿 |
+| [日志保留档位](../../fronted/src/views/monitor/log-retention/index.vue) | 行内启停、表单草稿、详情只读 |
+| [日志解析与过滤](../../fronted/src/views/monitor/log-parsers/index.vue) | 过滤规则行内启停与草稿；关联服务详情只读 |
+| [告警历史链路](../../fronted/src/views/monitor/alerts/index.vue) | 媒介只读状态，绑定组合诊断保留 |
+| [用户通知链路](../../fronted/src/views/monitor/alerts/UserNotificationChain.vue) | 绑定与媒介状态只读 |
+| [个人中心](../../fronted/src/views/userCenter/index.vue) | 自身绑定行内启停、表单草稿 |
+| [巡检中心](../../fronted/src/views/inspection/index.vue) | 统一基准，保留任务/定时任务启停与表单规则 |
+| [安全基线](../../fronted/src/views/security/baseline/index.vue) | 草稿启停，扫描结果状态不变 |
+
+回归入口：公共控件测试覆盖文字、默认尺寸、表单禁用继承、权限、loading、防重复、成功/失败及刷新竞争；
+全站模板守卫覆盖上述入口的控件复用、动作权限、自助范围和只读限制。
+各页既有组件测试继续验证原业务交互；后端测试覆盖布尔校验、窄 SQL、资源保护、事务回滚、日志校验与自身绑定所有权，
+路由全量只读回归验证查看权限不能触发业务变更。
+
 ## 前端查看详情入口
 
 列表操作列的只读详情入口以部署模板列表为统一基准：Ant Design Vue 小号 `type="link"` 按钮，

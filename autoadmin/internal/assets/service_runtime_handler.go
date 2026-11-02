@@ -369,6 +369,9 @@ func (handler *Handler) UpdateApplicationService(context *gin.Context) {
 	if !ok {
 		return
 	}
+	if handler.enabledPatch(context, id, "service", handler.GetApplicationService) {
+		return
+	}
 	input, ok := bind[ApplicationServiceInput](context)
 	if !ok {
 		return
@@ -387,6 +390,9 @@ func (handler *Handler) CreateApplicationDeployment(context *gin.Context) {
 func (handler *Handler) UpdateApplicationDeployment(context *gin.Context) {
 	id, ok := resourceID(context)
 	if !ok {
+		return
+	}
+	if handler.enabledPatch(context, id, "deployment", handler.GetApplicationDeployment) {
 		return
 	}
 	input, ok := bind[ApplicationDeploymentInput](context)

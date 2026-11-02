@@ -386,7 +386,7 @@
                 </a-tag>
               </template>
               <template v-else-if="column.key === 'enabled'">
-                <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '禁用' }}</a-tag>
+                <EnabledSwitch v-model:checked="record.enabled" :endpoint="`monitor/packages/${record.id}/`" permission="monitor:update" />
               </template>
               <template v-else-if="column.key === 'size_bytes'">
                 {{ formatSize(record.size_bytes) }}
@@ -850,6 +850,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { createPagination, tableLocale } from '@/util/tableStyle'
 import { useRouter } from 'vue-router'

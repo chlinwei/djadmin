@@ -78,7 +78,9 @@ describe('日志保留档位：保留期的值 + 单位', () => {
       expect(document.body.querySelector('.ant-modal-title').textContent).toBe('保留档位详情：标准')
       const dialog = document.body.querySelector('.ant-modal-content')
       const details = Object.fromEntries(Array.from(dialog.querySelectorAll('.ant-descriptions-item-label')).map((label) => [
-        label.textContent, label.nextElementSibling.textContent.trim(),
+        label.textContent, label.textContent === '状态'
+          ? (label.nextElementSibling.querySelector('[role="switch"]').getAttribute('aria-checked') === 'true' ? '启用' : '停用')
+          : label.nextElementSibling.textContent.trim(),
       ]))
       expect(details).toEqual({
         档位编码: 'std',
@@ -93,7 +95,8 @@ describe('日志保留档位：保留期的值 + 单位', () => {
         默认档位: '是',
         备注: '标准日志\n保留三十天',
       })
-      expect(dialog.querySelector('input, textarea, .ant-select, .ant-switch')).toBeNull()
+      expect(dialog.querySelector('input, textarea, .ant-select')).toBeNull()
+      expect(dialog.querySelector('.ant-switch').disabled).toBe(true)
       expect(dialog.querySelector('.ant-modal-footer')).toBeNull()
       expect(wrapper.vm.editorOpen).toBe(false)
       wrapper.vm.openEdit(wrapper.vm.tiers[0])

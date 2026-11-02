@@ -43,7 +43,7 @@
           <a-space wrap><a-tag v-for="name in record.business_system_names || []" :key="name">{{ name }}</a-tag><span v-if="!record.business_system_names?.length">-</span></a-space>
         </template>
         <template v-else-if="activeTab === 'projects' && column.key === 'enabled'">
-          <a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" />
+          <EnabledSwitch v-model:checked="record.enabled" :endpoint="`assets/projects/${record.id}/`" permission="assets:applications:update" />
         </template>
         <template v-else-if="activeTab === 'projects' && column.key === 'action'">
           <a-space>
@@ -58,7 +58,7 @@
           <a-tag>{{ clusterTypeLabels[record.cluster_type] || record.cluster_type }}</a-tag>
         </template>
         <template v-else-if="activeTab === 'profiles' && column.key === 'enabled'">
-          <a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" />
+          <EnabledSwitch v-model:checked="record.enabled" :endpoint="`assets/cluster-profiles/${record.id}/`" permission="assets:applications:update" :read-only="record.profile_type !== 'custom'" />
         </template>
         <template v-else-if="activeTab === 'profiles' && column.key === 'action'">
           <a-space>
@@ -81,7 +81,7 @@
           </a-space>
         </template>
         <template v-else-if="activeTab === 'applications' && column.key === 'enabled'">
-          <a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" />
+          <EnabledSwitch v-model:checked="record.enabled" :endpoint="`assets/applications/${record.id}/`" permission="assets:applications:update" />
         </template>
         <template v-else-if="activeTab === 'applications' && column.key === 'action'">
           <a-space>
@@ -219,6 +219,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { createPagination, tableLocale } from '@/util/tableStyle'

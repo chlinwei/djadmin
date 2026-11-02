@@ -1274,6 +1274,13 @@ type SysUserAlertMedium struct {
 	AlertmediaID int64 `json:"alertmedia_id"`
 }
 
+type SysUserAvatar struct {
+	UserID     int32     `json:"user_id"`
+	Filename   string    `json:"filename"`
+	Content    []byte    `json:"content"`
+	UpdateTime time.Time `json:"update_time"`
+}
+
 type SysUserGroup struct {
 	ID         int64          `json:"id"`
 	CreateTime time.Time      `json:"create_time"`

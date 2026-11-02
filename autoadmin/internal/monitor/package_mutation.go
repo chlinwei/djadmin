@@ -199,6 +199,9 @@ func validatePackageMetadata(item softwarePackage) error {
 
 func (handler *Handler) UpdateSoftwarePackage(context *gin.Context) {
 	id := parseID(context.Param("id"))
+	if handler.packageEnabledPatch(context, id) {
+		return
+	}
 	item, err := handler.loadSoftwarePackage(context, id)
 	if err == sql.ErrNoRows {
 		response.BusinessError(context, 404, "software package not found", nil)
@@ -209,7 +212,7 @@ func (handler *Handler) UpdateSoftwarePackage(context *gin.Context) {
 		return
 	}
 	var input packageMutationInput
-	if context.ShouldBindJSON(&input) != nil {
+	if context.ShouldBindBodyWithJSON(&input) != nil {
 		response.BusinessError(context, 400, "invalid request body", nil)
 		return
 	}

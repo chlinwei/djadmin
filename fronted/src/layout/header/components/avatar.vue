@@ -38,8 +38,11 @@ import router from '@/router'
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { formatTimeWithTimezone, getTimezoneLabel } from '@/util/timezone'
 import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
+import store from '@/store'
 
-const currentUser = ref(getCurrentUser() || {})
+const cachedUser = getCurrentUser() || {}
+// 头像上传已通过 saveCurrentUser 更新 store；顶栏订阅同一状态，缓存仅用于刷新后的初始回显。
+const currentUser = computed(() => store.state.user || cachedUser)
 const avatarUrl = computed(() => {
     const raw = currentUser.value?.avatar || currentUser.value?.user?.avatar || ''
     return raw ? getMediaUrl(raw) : ''

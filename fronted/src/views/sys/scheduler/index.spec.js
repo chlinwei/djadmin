@@ -56,7 +56,7 @@ const originalGetComputedStyle = window.getComputedStyle.bind(window)
 window.getComputedStyle = (element) => originalGetComputedStyle(element)
 
 import SchedulerPage from './index.vue'
-import { getTaskStatus, runTaskNow } from '@/api/sys/scheduler'
+import { disableTask, getTaskList, getTaskStatus, runTaskNow } from '@/api/sys/scheduler'
 
 async function mountPage() {
   const wrapper = mount(SchedulerPage, {
@@ -79,6 +79,46 @@ function rowByName(wrapper, name) {
 }
 
 describe('定时任务：未迁移任务的处理', () => {
+  it('waits for the status action, prevents duplicate submission and reloads the confirmed state', async () => {
+    const wrapper = await mountPage()
+    const success = vi.spyOn(message, 'success').mockImplementation(() => {})
+    let resolve
+    disableTask.mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    try {
+      const button = rowByName(wrapper, '登录日志清理').get('button[role="switch"]')
+      await button.trigger('click')
+      expect(button.classes()).toContain('ant-switch-loading')
+      expect(button.attributes('aria-checked')).toBe('true')
+      await button.trigger('click')
+      expect(disableTask).toHaveBeenCalledTimes(1)
+      getTaskList.mockResolvedValueOnce({ data: { data: {
+        results: wrapper.vm.tasks.map(task => ({ ...task, enabled: task.id === 5 ? false : task.enabled })),
+        count: 2, totalPages: 1,
+      } } })
+      resolve({ data: { code: 200 } })
+      await flushPromises()
+      expect(button.attributes('aria-checked')).toBe('false')
+      expect(success).toHaveBeenCalledWith('已停用')
+    } finally { wrapper.unmount(); success.mockRestore() }
+  })
+  it('preserves status on failure and refuses view-only status changes', async () => {
+    const wrapper = await mountPage()
+    const error = vi.spyOn(message, 'error').mockImplementation(() => {})
+    disableTask.mockRejectedValueOnce(new Error('保存失败'))
+    try {
+      const button = rowByName(wrapper, '登录日志清理').get('button[role="switch"]')
+      await button.trigger('click')
+      await flushPromises()
+      expect(button.attributes('aria-checked')).toBe('true')
+      expect(button.classes()).not.toContain('ant-switch-loading')
+      expect(error).toHaveBeenCalledWith('保存失败')
+      store.state.perms = ['system:scheduler:view']
+      await flushPromises()
+      expect(button.attributes('disabled')).toBeDefined()
+      await wrapper.vm.toggleEnable(wrapper.vm.tasks[0], false)
+      expect(disableTask).toHaveBeenCalledTimes(1)
+    } finally { wrapper.unmount(); error.mockRestore() }
+  })
   afterEach(() => {
     document.body.innerHTML = ''
     vi.clearAllMocks()

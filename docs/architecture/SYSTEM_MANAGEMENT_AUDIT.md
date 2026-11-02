@@ -75,23 +75,25 @@
 
 ### 数据与接口
 
-- 头像文件名存在 `sys_user.avatar`（`varchar(255)`，只存文件名，如 `20250918123000.jpg`）。
+- `sys_user.avatar` 保存 `userAvatar/<随机文件名>.png`，用户详情、登录和列表响应仅包含此地址，不携带图片数据。
+- `sys_user_avatar` 每用户一行，保存随机文件名、PNG 二进制和 UTC 更新时间；`user_id` 外键随用户删除级联清理。MySQL 使用 `MEDIUMBLOB`，PostgreSQL 使用 `bytea`，两侧数据库均用 CHECK 保证内容为 1～1048576 字节，不存 Base64。
 - 上传：`POST /user/changeAvatar`（登录即可，`multipart` 字段名 `avatar`）。
-- 展示：静态文件服务 `GET /media/*`，根目录为进程工作目录下的 `media/`（即 `autoadmin/media`）。
+- 展示：`GET /media/userAvatar/<file>`（支持 HEAD）从数据库读取图片二进制，匿名访问语义不变；图片响应不使用 JSON 包装。其他 `/media/*` 仍读取进程工作目录下的 `media/`，不影响软件包等下载。
 
 ### 上传链路（`ChangeAvatar`）
 
-1. 从 token 取当前用户；请求体限制 5MB（在解析 multipart 前用 `http.MaxBytesReader`）。
-2. 后缀白名单 `png/jpg/jpeg/gif/webp`，其余 400。
-3. 文件写 `media/userAvatar/<时间戳><后缀>`；写盘失败清理残留并 400。
-4. 成功落库：`UpdateUserAvatar` 写 `sys_user.avatar`；落库失败则删除刚落的新文件并报错。
-5. 删除该用户旧头像文件（失败不影响上传结论）。
-6. 返回 `{new_file_name, avatar, avatar_url}`，`avatar_url` 形如 `/media/userAvatar/<file>`（相对地址）。
+1. 从 token 取当前用户，只能修改自己的头像，无需用户管理权限。上传图片原文件最多 **5 MiB**；multipart 请求体额外允许 64 KiB 封装开销，在解析前限制请求体，解析临时文件结束后清理。
+2. 后缀白名单 `png/jpg/jpeg/gif/webp`，同时实际解码图片，拒绝伪造扩展名和损坏文件。解码前检查每边最多 8192 像素、总像素最多 32×1024×1024，限制图片解压内存。
+3. 保持比例、不放大，最长边缩至最多 1024 像素。重新编码 PNG，保留透明度、去掉元数据；GIF 取首帧，不支持的 WebP 动画明确拒绝。若编码结果仍超过 **1 MiB（1048576 字节）**，继续按比例缩小并编码，直到满足限制。该上限针对**处理后的图片二进制**，不是原文件、请求体或 JSON 大小。
+4. 生成随机文件名；事务中锁当前用户行，替换该用户的数据库图片并更新 `sys_user.avatar`。任一步失败全部回滚，旧头像保持可用；并发上传不会使地址和图片来自不同请求。管理员编辑资料或切换用户状态不回写头像字段，避免覆盖并发上传的新地址。新上传不写磁盘。
+5. 返回 `{new_file_name, avatar, avatar_url}`，其中 `avatar` 为 `userAvatar/<file>`，`avatar_url` 为 `/media/userAvatar/<file>`。
 
 ### 静态文件服务
 
-- `router.NewWithGateway` 注册 `engine.Static("/media", <cwd>/media)`，匿名可访问；目录不存在时返回 404。
-- 路径穿越由 `http.Dir` 拦截；`audit` 中间件已跳过 `/media` 与 `/static` 前缀，静态请求不落审计。
+- `/media/userAvatar/` 仅查询数据库，找不到返回 404，不回退读取磁盘。路径规范化后再分流，不能通过 `..` 绕回旧头像目录；数据库故障明确返回错误。
+- 图片固定输出 `image/png` 和 `X-Content-Type-Options: nosniff`，提供 ETag、Last-Modified 和一小时缓存。更新时随机地址改变，避免旧缓存遮蔽新头像。
+- 头像上传显式将 Ant Design 的 `X-Requested-With` 配置为 `null`，使用组件支持的方式关闭这个不参与业务的默认请求头，实际请求仍携带 `Authorization`，由浏览器生成 multipart Content-Type；跨域预检不再额外依赖该标记。API 公共 CORS 白名单同时允许其他上传入口使用的 `X-Requested-With`，不改变配置的来源限制或登录要求。
+- 其他 media 路径继续使用 `http.Dir`；`audit` 中间件已跳过 `/media` 与 `/static` 前缀，图片请求不落操作审计。
 - 前端 `getMediaUrl(file)` 统一把文件名/相对路径拼成 `getServerUrl() + /media/...`（开发环境后端在 9000 端口，
   生产可同源或由 nginx 转发 `/media`）。
 
@@ -100,18 +102,22 @@
 - `userCenter/components/Avatar.vue`：进入时用本地缓存的 `currentUser.avatar` 回显；上传成功后把响应里的
   `avatar` 写回 localStorage 的 `currentUser`，并即时刷新预览。
 - `layout/header/components/avatar.vue`：顶栏头像用 `currentUser.avatar` 显示，无头像时回退 `SvgIcon user`；
-  本地缓存是 setup 时读取，上传后需刷新页面（或重新登录）顶栏才更新。
+  用户信息响应式读取共享 store，刷新后的初始回显使用本地缓存。上传成功通过已有 `saveCurrentUser` 同时更新 store 和缓存，
+  顶栏与个人中心预览立即切换新图片地址，无需刷新或重新登录；上传失败不改变共享状态或顶栏头像。
 
-### 与 Django 的差异
+### 部署与已有头像导入
 
-- 旧 Django `changeAvatar` 只存文件、只返回文件名，不更新 `sys_user.avatar`，头像实际不可用。
-- Go 版在保存文件后**写入 `sys_user.avatar` 并删除旧文件**，配合 `/media` 静态服务形成完整可显示链路。
+- 先使用 `./bin/autoadmin migrate` 应用两侧对应的 `000062_user_avatar` 表结构迁移，再在保存旧头像文件的 `autoadmin/` 工作目录执行 `./bin/autoadmin migrate avatars`。导入命令使用业务数据库连接 `MYSQL_DSN`／`POSTGRES_DSN`，不需要 API、RabbitMQ 或 schema 迁移专用 URL。
+- 显式导入读取 `media/userAvatar/`，支持旧字段中的文件名、`userAvatar/...`、`media/userAvatar/...`、`/media/userAvatar/...`，使用与新上传相同的处理和大小规则。限制读取根目录，拒绝路径越界与非普通文件；不存在、损坏、超限文件明确报告对应用户并以失败退出，不伪装成导入成功。
+- 每用户独立事务，已成功导入的用户再次运行时跳过；并发修改头像时不覆盖新值。失败修复后可重新执行。源文件不自动删除，作为回滚备份；运行时不使用旧磁盘兜底。建议维护窗口停止旧版头像写入，完成导入并切换新 API 后重新登录，刷新浏览器缓存中的头像地址。
+- 回滚表结构会删除数据库图片，且不会自动恢复 `sys_user.avatar` 的旧地址；回滚前应备份数据库及旧字段映射。迁移不删除或改动原用户字段、旧外键。
 
 ### 失败语义
 
-- 未登录：401。
-- 无文件 / 后缀不在白名单 / 超 5MB：400，文案见实现。
-- 落库失败：删除新文件并 500，不留下孤儿文件。
+- 上传未登录：沿用 token 校验失败响应。
+- 无文件、后缀不在白名单、原文件超 5 MiB、图片无效或尺寸超限：业务码 400，页面显示明确原因。
+- 落库失败：HTTP 500，事务回滚，不产生孤立图片或改变旧地址。
+- 前端对 HTTP 非 2xx 上传失败也读取服务端 JSON 的 `msg`，显示 HTTP 状态码；代理返回 HTML 时不展示原文，413 明确提示请求体过大，其他状态提示检查后端／代理日志。无 HTTP 响应则提示检查网络、跨域或服务可用性。错误同时用提示消息及头像下方常驻错误区域展示，直到重新上传或成功，避免提示消失后无法定位；失败不更新旧头像和缓存。
 
 
 <a id="menu-structure"></a>

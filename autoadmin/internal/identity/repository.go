@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"autoadmin/internal/platform/database"
 	db "autoadmin/internal/platform/database/generated"
@@ -152,6 +153,38 @@ func (repository *Repository) Pool() *sql.DB {
 	return repository.pool
 }
 
-func (repository *Repository) UpdateAvatar(ctx context.Context, params db.UpdateUserAvatarParams) error {
-	return repository.queries.UpdateUserAvatar(ctx, params)
+// Lock the user row so concurrent uploads cannot leave the URL and image content from different requests.
+// During import, expected prevents an old disk image from overwriting a newly uploaded avatar.
+func (repository *Repository) saveAvatar(ctx context.Context, userID int32, filename string, content []byte, expected *string) (bool, error) {
+	if len(content) == 0 || len(content) > avatarStoredLimit {
+		return false, fmt.Errorf("处理后头像大小必须在 1 字节至 1 MiB 之间")
+	}
+	saved := false
+	err := database.InTransaction(ctx, repository.pool, func(queries *db.Queries) error {
+		current, err := queries.LockUserAvatar(ctx, userID)
+		if err != nil {
+			return err
+		}
+		if expected != nil && current.String != *expected {
+			return nil
+		}
+		if err := queries.DeleteUserAvatarContent(ctx, userID); err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		if err := queries.CreateUserAvatarContent(ctx, db.CreateUserAvatarContentParams{
+			UserID: userID, Filename: filename, Content: content, UpdateTime: now,
+		}); err != nil {
+			return err
+		}
+		if err := queries.UpdateUserAvatar(ctx, db.UpdateUserAvatarParams{
+			ID: userID, Avatar: validString(avatarDirectory + "/" + filename),
+			UpdateTime: sql.NullTime{Time: now, Valid: true},
+		}); err != nil {
+			return err
+		}
+		saved = true
+		return nil
+	})
+	return saved && err == nil, err
 }

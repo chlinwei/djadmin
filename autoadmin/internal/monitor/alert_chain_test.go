@@ -228,7 +228,7 @@ func TestUserAlertChainAllBroken(t *testing.T) {
 	for _, issue := range payload.SummaryIssues {
 		joined += issue + "\n"
 	}
-	for _, want := range []string{"绑定 7：该绑定已禁用", "绑定 7：绑定未配置收件地址", "媒介 公司邮箱 未被任何通知策略出口命中"} {
+	for _, want := range []string{"媒介绑定「公司邮箱」：该绑定已禁用", "媒介绑定「公司邮箱」：绑定未配置收件地址", "媒介 公司邮箱 未被任何通知策略出口命中"} {
 		if !containsString(payload.SummaryIssues, want) {
 			t.Fatalf("summary missing %q, got %v", want, joined)
 		}

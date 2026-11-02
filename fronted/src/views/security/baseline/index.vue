@@ -207,7 +207,7 @@
         <div class="form-grid">
           <a-form-item label="版本"><a-input v-model:value="baselineForm.version" placeholder="v1" /></a-form-item>
           <a-form-item label="状态">
-            <a-switch v-model:checked="baselineForm.enabled" checked-children="启用" un-checked-children="停用" />
+            <EnabledSwitch v-model:checked="baselineForm.enabled" />
           </a-form-item>
         </div>
         <a-form-item label="描述"><a-textarea v-model:value="baselineForm.description" :rows="2" /></a-form-item>
@@ -364,6 +364,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { checkPermission } from '@/directives/permission/permission'
 import { useRouter } from 'vue-router'

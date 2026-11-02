@@ -31,12 +31,18 @@ func (handler *Handler) CreateElasticsearchCluster(context *gin.Context) {
 }
 
 func (handler *Handler) UpdateElasticsearchCluster(context *gin.Context) {
+	if handler.enabledPatch(context, "cluster", func(c *gin.Context, id int64) {
+		handler.respondElasticsearchCluster(c, id)
+		go handler.syncClusterLogStorage(id)
+	}) {
+		return
+	}
 	handler.saveElasticsearchCluster(context, parseID(context.Param("id")))
 }
 
 func (handler *Handler) saveElasticsearchCluster(context *gin.Context, id int64) {
 	var input elasticsearchClusterInput
-	if context.ShouldBindJSON(&input) != nil {
+	if context.ShouldBindBodyWithJSON(&input) != nil {
 		response.BusinessError(context, 400, "invalid request body", nil)
 		return
 	}

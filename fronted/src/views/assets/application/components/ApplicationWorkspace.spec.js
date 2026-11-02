@@ -46,7 +46,7 @@ vi.mock('@/api/assets/application', () => ({
 }))
 
 vi.mock('@/store', () => ({
-  default: { state: { user: { timezone: 'Asia/Shanghai' } } },
+  default: { state: { user: { timezone: 'Asia/Shanghai' }, perms: [], role_codes: [] } },
 }))
 
 vi.mock('@/util/timezone', () => ({

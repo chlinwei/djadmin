@@ -20,7 +20,7 @@
           <div class="field-hint">归属关系在「业务系统」中维护，此处仅展示。</div>
         </a-form-item>
         <a-form-item name="owner" label="负责人"><a-input v-model:value="form.owner" /></a-form-item>
-        <a-form-item label="启用"><a-switch v-model:checked="form.enabled" /></a-form-item>
+        <a-form-item label="启用"><EnabledSwitch v-model:checked="form.enabled" /></a-form-item>
         <a-form-item label="备注"><a-textarea v-model:value="form.remark" :rows="3" /></a-form-item>
       </a-form>
     </a-spin>
@@ -28,6 +28,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { getProject, saveProject } from '@/api/assets/application'

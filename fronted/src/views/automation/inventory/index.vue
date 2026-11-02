@@ -35,7 +35,7 @@
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'enabled'">
-            <a-switch
+            <EnabledSwitch
               :checked="record.enabled === true"
               :disabled="!canUpdateInventory || loading || inventoryStatusUpdatingId === record.id"
               :loading="inventoryStatusUpdatingId === record.id"
@@ -97,7 +97,7 @@
         </a-form-item>
 
         <a-form-item label="启用状态">
-          <a-switch v-model:checked="form.enabled" checked-children="启用" un-checked-children="禁用" />
+          <EnabledSwitch v-model:checked="form.enabled" />
         </a-form-item>
 
         <a-form-item label="范围预览">
@@ -155,7 +155,7 @@
       <a-descriptions v-if="scopeViewInventory" bordered size="small" :column="2" class="scope-viewer__details">
         <a-descriptions-item label="名称">{{ scopeViewInventory.name }}</a-descriptions-item>
         <a-descriptions-item label="启用状态">
-          <a-tag :color="scopeViewInventory.enabled ? 'green' : 'default'">{{ scopeViewInventory.enabled ? '启用' : '禁用' }}</a-tag>
+          <EnabledSwitch :checked="scopeViewInventory.enabled" read-only />
         </a-descriptions-item>
         <a-descriptions-item label="可用主机">{{ Number(scopeViewInventory.resolved_host_count || 0) }} 台</a-descriptions-item>
         <a-descriptions-item label="健康状态">
@@ -202,6 +202,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'

@@ -613,6 +613,11 @@ WHERE id=sqlc.arg(id);
 -- name: DeleteAlertMedia :execresult
 DELETE FROM monitor_alert_media WHERE id=sqlc.arg(id);
 
+-- name: UpdateAlertMediaEnabled :exec
+UPDATE monitor_alert_media
+SET enabled=sqlc.arg(enabled),update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
 -- ---- 告警通知分发链路（event / delivery / 失联对账 / 服务树归属）----
 
 -- 入队去重：deduplication_key 是唯一键，"已有事件"即影响行数为 0。

@@ -131,6 +131,9 @@ UPDATE + `IF()`（`IF(rule_group='',?,rule_group)`、`IF(IFNULL(JSON_LENGTH(rule
 - 个人中心 `fronted/src/views/userCenter/index.vue` 的"告警媒介"tab 内、绑定表格下方渲染"通知链路诊断"卡片，不传 `userId`（查自己）。
 - 用户管理 `fronted/src/views/sys/user/index.vue` 操作列的"通知链路"按钮，点击弹窗内以 `record.id` 作为 `userId` 渲染同一组件。
 - 组件最终逻辑：顶部 `a-alert` 横幅——`can_receive=true` 绿色"你当前会收到告警通知"；`false` 红色"你当前不会收到告警通知"并逐条列出 `summary_issues`。主体按 `bindings` 用 `a-timeline` 逐绑定分组：绑定（启用/禁用 tag + issues tag）→ 媒介（名称/类型/启用 tag + recipients tag 列表）→ 命中该媒介出口的策略列表（名称、`path`（`根 / 子 / 孙`）、firing/resolved 开关 tag、matchers）。issues 颜色：命中"警告/未/建议/禁用"字样橙色，其余红色。
+- 个人中心与管理员用户诊断共用的绑定节点标题为 `媒介绑定：{媒介名称}`，不展示内部绑定编号；编号只保留在结构化响应和行标识中，避免被误认为绑定数量。绑定级摘要也按媒介名称定位问题，展示为 `媒介绑定「{媒介名称}」：{问题}`。
+- P1 用户链路仅展示对被诊断用户适用的策略：不限接收组，或用户属于生效接收组之一；不属于的策略不返回、不展示，也不生成该策略的故障提示。管理员查看指定用户时按目标用户的组成员关系判定，不按管理员自己的组判定。没有适用策略时展示「暂无对当前用户生效的通知策略」，不把它混同于媒介全局没有配置出口。P2 单条告警完整路由诊断仍保留组限制与未接收原因。
+- P1 的策略条件显示为中文「匹配条件」，使用后端返回的 `matcher_summary`，不直接展示 matchers JSON。服务树节点显示实际项目／业务系统／环境／服务名称；标签运算显示「等于／不等于／匹配正则／不匹配正则」。沿策略路径的条件累积并以「且」连接，全路径无条件才显示「不限」，子策略不会丢失上级约束。名称由后端复用现有查询解析，不要求个人中心用户额外拥有资产列表权限；已不存在的节点明确提示并保留原编号，数据库查询失败则返回错误，不把故障伪装成名称缺失。
 
 #### P2 单告警链路（告警详情）
 
@@ -157,16 +160,16 @@ UPDATE + `IF()`（`IF(rule_group='',?,rule_group)`、`IF(IFNULL(JSON_LENGTH(rule
 
 1. 目标用户：query `user_id` 合法时用之（供管理员查他人）；否则取登录态 `identity.ClaimsFromContext` 的 `UserID`。随后取用户名（`GetUsernameByID`）。
 2. 绑定：`monitor_user_alert_media_binding JOIN monitor_alert_media`（按 user_id，`ORDER BY b.id`），recipients 为 JSON 数组；**不再返回 scope/routes**。
-3. 每绑定的 `policies`：加载策略树后整树遍历，凡（继承后）出口包含该媒介 id 的策略均返回 `{id,name,path,matchers,user_group_ids,user_group_names,user_in_group,notify_on_firing,notify_on_resolved}`（`path` 为 `根 / 子 / 孙` 名称链；`user_group_ids=null` 表示不限组，`user_in_group` 在组限制生效时判定当前用户是否在组内，未限制恒 true）。media `config` 一律不返回（含 SMTP 密码等敏感信息）。
+3. 每绑定的 `policies`：加载策略树后整树遍历，计算继承后的出口与接收组；保留出口包含该媒介且不限组或目标用户属于接收组的策略，返回 `{id,name,path,matchers,matcher_summary,user_group_ids,user_group_names,user_in_group,notify_on_firing,notify_on_resolved}`（`path` 为 `根 / 子 / 孙` 名称链；原始 `matchers` 保持本级规则，`matcher_summary` 描述整条路径的累积条件；`user_group_ids=null` 表示不限组，显式 `[]` 表示无人可收）。父策略不适用时仍遍历子策略，子策略可覆盖接收组并对用户生效。组成员查询失败明确返回错误，不把数据库故障解释为用户不在组内。条件名称只为适用策略解析，同一绑定内重复节点复用解析结果。media `config` 一律不返回（含 SMTP 密码等敏感信息）。
 
 issues 判定（按序并入，可叠加）：
 
-- 绑定禁用 → `该绑定已禁用`；媒介禁用 → `媒介已停用`；`media_type != "email"` → `非邮件媒介，暂不支持自动发送`；recipients 为空 → `绑定未配置收件地址`（均以 `绑定 {id}：…` 进 summary）
+- 绑定禁用 → `该绑定已禁用`；媒介禁用 → `媒介已停用`；`media_type != "email"` → `非邮件媒介，暂不支持自动发送`；recipients 为空 → `绑定未配置收件地址`（均以 `媒介绑定「{媒介名称}」：…` 进 summary）
 - 媒介未被任何策略出口命中 → summary：`媒介 {name} 未被任何通知策略出口命中`
-- 命中策略仅通知 resolved → summary：`策略 {name} 仅通知 resolved，firing 通知未开启`
+- 对目标用户适用的策略仅通知 resolved → summary：`策略 {name} 仅通知 resolved，firing 通知未开启`
 - 无任何绑定 → summary：`用户 {username} 未配置任何告警媒介绑定`；有不完整通路时再追加总断点说明
 
-- 接收组限制：若覆盖该媒介的全部策略都将当前用户排除在组外（`user_group_ids` 非空且 `user_in_group=false`），绑定 issues 追加 `当前用户不在该策略的接收组内，收不到对应告警`。
+- 接收组限制：媒介有策略出口，但对目标用户均不适用时，summary 提示 `媒介 {name} 暂无对当前用户生效的通知策略`；不列出无关组和策略，也不把正常的组隔离列为绑定故障。
 
 `can_receive` = 存在至少一条完整通路：绑定启用 + 媒介启用 + media_type=email + recipients 非空 + 某命中策略 `notify_on_firing=true` 且（未限制组或用户在组内）。`summary_issues` 汇总所有断点（去重）。
 

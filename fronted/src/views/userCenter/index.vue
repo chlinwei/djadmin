@@ -125,9 +125,7 @@
                                                 {{ record.recipients.join(', ') }}
                                             </template>
                                             <template v-else-if="column.key === 'enabled'">
-                                                <a-tag :color="record.enabled ? 'success' : 'default'">
-                                                    {{ record.enabled ? '已启用' : '已禁用' }}
-                                                </a-tag>
+                                                <EnabledSwitch v-model:checked="record.enabled" :endpoint="`sys/usercenter/alertMediaBindings/${record.id}/`" self-service />
                                             </template>
                                             <template v-else-if="column.key === 'operation'">
                                                 <a-space>
@@ -185,7 +183,7 @@
                                 <div class="scope-hint">订阅范围由管理员在「通知策略」中统一配置；绑定只决定告警发到哪些收件邮箱。</div>
                             </a-form-item>
                             <a-form-item label="启用此绑定">
-                                <a-switch v-model:checked="bindingForm.enabled" />
+                                <EnabledSwitch v-model:checked="bindingForm.enabled" />
                             </a-form-item>
                         </a-form>
                     </a-modal>
@@ -196,6 +194,7 @@
 
 </template>
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { ref, watch } from 'vue';
 import { tableLocale } from '@/util/tableStyle';
 import { reactive } from 'vue';

@@ -48,8 +48,8 @@
                 </template>
                 <template v-else-if="column.key === 'status'">
                     <span>
-                        <a-switch :checked="record.status === 1"
-                            @change="(checked) => onChangeStatus(checked, record.id)" :disabled="user_status" />
+                        <EnabledSwitch :checked="record.status === 1"
+                            @change="(checked) => onChangeStatus(checked, record.id)" :disabled="user_status || statusUpdating[record.id]" :loading="statusUpdating[record.id]" />
                     </span>
                 </template>
                 <template v-else-if="column.key === 'create_time'">
@@ -106,6 +106,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 
 // 缓存
 defineOptions({
@@ -126,8 +127,8 @@ import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
 
 import {checkPermission} from '@/directives/permission/permission'
-const user_status = ref()
-user_status.value = !checkPermission("system:users:update")
+const user_status = computed(() => !checkPermission("system:users:update"))
+const statusUpdating = reactive({})
 const roleassign_title = ref("角色分配")
 
 const SearchText = ref('')
@@ -170,19 +171,19 @@ const formatDateTime = (value) => {
 }
 
 var lastSearchKeyword = null
-const onChangeStatus = (e1, e2) => {
-    var status = e1 === true ? 1 : 0
-    var user_id = e2
-    changeUserStatus(user_id, status).then((result) => {
-
-        if (result.data.code == 200) {
-            run({ page: current, size: pageSize.value, keyworkd: lastSearchKeyword })
-            message.success("状态修改成功")
-        } else {
-            message.success("状态修改失败")
-        }
-
-    })
+const onChangeStatus = async (checked, id) => {
+    if (user_status.value || statusUpdating[id]) return
+    statusUpdating[id] = true
+    try {
+        const result = await changeUserStatus(id, checked ? 1 : 0)
+        if (result.data.code !== 200) throw new Error(result.data.msg || '状态修改失败')
+        await runAsync({ page: current.value, size: pageSize.value, search: lastSearchKeyword })
+        message.success("状态修改成功")
+    } catch (error) {
+        message.error(error?.message || '状态修改失败')
+    } finally {
+        statusUpdating[id] = false
+    }
 }
 const total = ref(1)
 
@@ -230,6 +231,7 @@ const openDeleteUserConfirm = (record) => {
 const {
     data: users,
     run,
+    runAsync,
     loading,
     current,
     pageSize,

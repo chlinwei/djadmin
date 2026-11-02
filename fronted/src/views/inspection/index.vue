@@ -87,7 +87,7 @@
               </a-space>
             </template>
             <template v-else-if="column.key === 'enabled'">
-              <a-switch
+              <EnabledSwitch
                 :checked="record.enabled === true"
                 :disabled="!canUpdateTask || togglingTaskId === record.id"
                 :loading="togglingTaskId === record.id"
@@ -162,7 +162,7 @@
               <span v-else class="schedule-next">未配置</span>
             </template>
             <template v-else-if="column.key === 'enabled'">
-              <a-switch
+              <EnabledSwitch
                 :checked="record.enabled === true"
                 :disabled="!canUpdateTask || togglingTaskId === record.id"
                 :loading="togglingTaskId === record.id"
@@ -560,7 +560,7 @@
           <a-form-item label="单目标超时（秒）"><a-input-number v-model:value="taskForm.timeout_seconds" :min="5" :max="3600" /></a-form-item>
         </div>
         <a-form-item label="状态">
-          <a-switch v-model:checked="taskForm.enabled" checked-children="启用" un-checked-children="停用" />
+          <EnabledSwitch v-model:checked="taskForm.enabled" />
           <div class="field-hint">停用后任务不会被定时调度，也不能手动运行。</div>
         </a-form-item>
       </a-form>
@@ -703,6 +703,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { createPagination, tableLocale } from '@/util/tableStyle'
 import { message, Modal } from 'ant-design-vue'

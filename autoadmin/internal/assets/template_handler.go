@@ -76,6 +76,9 @@ func (handler *Handler) UpdateDeploymentTemplate(context *gin.Context) {
 	if !ok {
 		return
 	}
+	if handler.enabledPatch(context, id, "template", handler.GetDeploymentTemplate) {
+		return
+	}
 	input, ok := bind[DeploymentTemplateInput](context)
 	if !ok {
 		return

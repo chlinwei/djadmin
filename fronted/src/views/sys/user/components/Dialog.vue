@@ -23,10 +23,7 @@
       <a-input v-model:value="form.phonenumber" />
     </a-form-item>
     <a-form-item name="status" label="状态">
-      <a-radio-group :value="String(form.status)" @change="e => form.status = Number(e.target.value)">
-        <a-radio value="1">正常</a-radio>
-        <a-radio value="0">禁止</a-radio>
-      </a-radio-group>
+      <EnabledSwitch :checked="Number(form.status) === 1" @update:checked="checked => form.status = checked ? 1 : 0" />
     </a-form-item>
     <a-form-item name="remark" label="备注">
       <a-textarea v-model:value="form.remark" />
@@ -36,6 +33,7 @@
     </div>
   </template>
   <script setup>
+  import EnabledSwitch from '@/components/EnabledSwitch.vue'
 
   import { ref } from 'vue';
   import { watch } from 'vue';

@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import Antd, { Form, Input, Switch, Table, Tooltip } from 'ant-design-vue'
+import Antd, { Form, Input, Table, Tooltip } from 'ant-design-vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('@/api/assets/serviceDependencies', () => ({
   getServiceDependencyTypes: vi.fn(),
@@ -54,7 +54,7 @@ describe('dependency interaction dictionary', () => {
     await edit.get('button').trigger('click')
     await flushPromises()
     expect(wrapper.findComponent(Input).props('disabled')).toBe(true)
-    wrapper.findComponent(Switch).vm.$emit('update:checked', false)
+    await wrapper.findComponent(Form).get('button[role="switch"]').trigger('click')
     await clickText('保存')
     expect(api.saveServiceDependencyType).toHaveBeenCalledWith(1, { code: 'http', name: '服务调用', enabled: false, description: 'HTTP 请求' })
   })

@@ -102,7 +102,7 @@ func requiredIDListQuery(c *gin.Context, name string) ([]int64, error) {
 }
 func bind[T any](c *gin.Context) (T, bool) {
 	var input T
-	if err := c.ShouldBindJSON(&input); err != nil {
+	if err := c.ShouldBindBodyWithJSON(&input); err != nil {
 		response.Error(c, apperror.ErrInvalidRequest)
 		return input, false
 	}
@@ -156,6 +156,9 @@ func (h *Handler) UpdateProject(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if h.enabledPatch(c, id, "project", h.GetProject) {
+		return
+	}
 	input, ok := bind[ProjectInput](c)
 	if !ok {
 		return
@@ -204,6 +207,9 @@ func (h *Handler) UpdateBusinessSystem(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if h.enabledPatch(c, id, "business-system", h.GetBusinessSystem) {
+		return
+	}
 	input, ok := bind[BusinessSystemInput](c)
 	if !ok {
 		return
@@ -243,6 +249,9 @@ func (h *Handler) CreateEnvironment(c *gin.Context) {
 func (h *Handler) UpdateEnvironment(c *gin.Context) {
 	id, ok := resourceID(c)
 	if !ok {
+		return
+	}
+	if h.enabledPatch(c, id, "environment", h.GetEnvironment) {
 		return
 	}
 	input, ok := bind[EnvironmentInput](c)

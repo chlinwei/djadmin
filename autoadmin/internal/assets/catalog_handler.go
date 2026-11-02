@@ -41,6 +41,9 @@ func (h *Handler) UpdateApplication(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if h.enabledPatch(c, id, "application", h.GetApplication) {
+		return
+	}
 	input, ok := bind[ApplicationInput](c)
 	if !ok {
 		return
@@ -103,6 +106,9 @@ func (h *Handler) UpdateVersion(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if h.enabledPatch(c, id, "version", h.GetVersion) {
+		return
+	}
 	input, ok := bind[ApplicationVersionInput](c)
 	if !ok {
 		return
@@ -147,6 +153,9 @@ func (h *Handler) CreateProfile(c *gin.Context) {
 func (h *Handler) UpdateProfile(c *gin.Context) {
 	id, ok := resourceID(c)
 	if !ok {
+		return
+	}
+	if h.enabledPatch(c, id, "profile", h.GetProfile) {
 		return
 	}
 	input, ok := bind[ClusterProfileInput](c)

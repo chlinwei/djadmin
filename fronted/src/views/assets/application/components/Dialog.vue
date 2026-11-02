@@ -25,7 +25,7 @@
                     <a-textarea v-model:value="form.description" />
                 </a-form-item>
                 <a-form-item label="允许使用">
-                    <a-switch v-model:checked="form.enabled" />
+                    <EnabledSwitch v-model:checked="form.enabled" />
                 </a-form-item>
                 <a-form-item name="remark" label="备注">
                     <a-textarea v-model:value="form.remark" />
@@ -36,6 +36,7 @@
     </div>
 </template>
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { ref, watch } from 'vue';
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 

@@ -23,7 +23,13 @@
             <a-tag :color="record.type === 'email' ? 'blue' : 'green'">{{ record.typeLabel }}</a-tag>
           </template>
           <template v-else-if="column.key === 'status'">
-            <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '已启用' : '已停用' }}</a-tag>
+            <EnabledSwitch
+              :checked="record.enabled"
+              :loading="rowStatusLoading[record.id]"
+              :disabled="!checkPermission('monitor:update') || rowStatusLoading[record.id]"
+              :aria-label="`${record.name}启用状态`"
+              @change="(enabled) => changeMediaEnabled(record, enabled)"
+            />
           </template>
           <template v-else-if="column.key === 'operation'">
             <a-row :gutter="6" class="action-row">
@@ -136,7 +142,7 @@
           <a-textarea v-model:value="createForm.description" :rows="4" />
         </a-form-item>
         <a-form-item label="已启用">
-          <a-checkbox v-model:checked="createForm.enabled" />
+          <EnabledSwitch v-model:checked="createForm.enabled" />
         </a-form-item>
       </a-form>
 
@@ -169,6 +175,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { onMounted, reactive, ref } from 'vue'
 import { checkPermission } from '@/directives/permission/permission'
 import { createPagination, tableLocale } from '@/util/tableStyle'
@@ -200,7 +207,7 @@ const pagination = reactive(createPagination())
 const columns = [
   { title: '名称', dataIndex: 'name', key: 'name', width: 200 },
   { title: '媒介类型', key: 'type', width: 180 },
-  { title: '配置状态', key: 'status', width: 140 },
+  { title: '状态', key: 'status', width: 140 },
   { title: '说明', dataIndex: 'description', key: 'description', width: 300 },
   { title: '操作', key: 'operation', fixed: 'right', width: 180 },
 ]
@@ -214,6 +221,7 @@ const testLoading = ref(false)
 const testingMediaId = ref(null)
 const editingId = ref(null)
 const rowDeleteLoading = reactive({})
+const rowStatusLoading = reactive({})
 const createForm = ref(createDefaultForm())
 const testForm = ref({
   recipients: '',
@@ -361,6 +369,30 @@ async function saveMedia() {
     await loadMedia()
   } finally {
     createLoading.value = false
+  }
+}
+
+async function changeMediaEnabled(record, enabled) {
+  if (!checkPermission('monitor:update')) {
+    message.warning('没有修改媒介状态的权限')
+    return
+  }
+  if (rowStatusLoading[record.id] || record.enabled === enabled) return
+  rowStatusLoading[record.id] = true
+  try {
+    const response = await updateAlertMedia(record.id, { enabled })
+    const data = parseApiData(response)
+    if (typeof data.enabled !== 'boolean') {
+      throw new Error('媒介状态响应无效，请刷新后重试')
+    }
+    // 服务端确认后按 ID 更新当前列表，避免保存期间刷新使旧行对象失效。
+    const currentMedia = mediaList.value.find((item) => item.id === record.id)
+    if (currentMedia) currentMedia.enabled = data.enabled
+    message.success(data.enabled ? '媒介已启用' : '媒介已停用')
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '更新媒介状态失败')
+  } finally {
+    rowStatusLoading[record.id] = false
   }
 }
 

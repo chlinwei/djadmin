@@ -33,7 +33,7 @@
           </a-tooltip>
         </template>
         <template v-else-if="column.key === 'enabled'">
-          <a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" />
+          <EnabledSwitch v-model:checked="record.enabled" :endpoint="`assets/application-deployment-templates/${record.id}/`" permission="assets:applications:update" @changed="emit('changed')" />
         </template>
         <template v-else-if="column.key === 'action'">
           <a-space>
@@ -76,6 +76,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { tableLocale } from '@/util/tableStyle'

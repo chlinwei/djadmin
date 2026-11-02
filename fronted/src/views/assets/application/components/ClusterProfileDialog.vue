@@ -16,7 +16,7 @@
           <a-col :span="12"><a-form-item name="code" label="模型编码"><a-input v-model:value="form.code" placeholder="例如 redis-sentinel" /></a-form-item></a-col>
           <a-col :span="12"><a-form-item name="application" label="应用"><a-select v-model:value="form.application" show-search :filter-option="filterOption" :options="applicationOptions" :getPopupContainer="getPopupContainer" :virtual="false" placeholder="请选择该集群对应的应用" /></a-form-item></a-col>
           <a-col :span="12"><a-form-item label="模型类型"><a-input value="自定义集群" disabled /></a-form-item></a-col>
-          <a-col :span="12"><a-form-item label="启用"><a-switch v-model:checked="form.enabled" /></a-form-item></a-col>
+          <a-col :span="12"><a-form-item label="启用"><EnabledSwitch v-model:checked="form.enabled" /></a-form-item></a-col>
           <a-col :span="24"><a-form-item label="备注"><a-textarea v-model:value="form.remark" :rows="3" /></a-form-item></a-col>
         </a-row>
       </a-form>
@@ -25,6 +25,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'

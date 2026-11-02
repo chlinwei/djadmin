@@ -39,8 +39,8 @@ RETURNING id;
 
 -- name: UpdateUserProfile :exec
 UPDATE sys_user
-SET avatar = $1, phonenumber = $2, status = $3, remark = $4, timezone = $5, update_time = $6
-WHERE id = $7;
+SET phonenumber = $1, status = $2, remark = $3, timezone = $4, update_time = $5
+WHERE id = $6;
 
 -- name: UpdateUserPassword :exec
 UPDATE sys_user SET password = $1, update_time = $2 WHERE id = $3;
@@ -124,6 +124,24 @@ UPDATE sys_user SET timezone = $1, update_time = $2 WHERE id = $3;
 -- name: UpdateUserAvatar :exec
 UPDATE sys_user SET avatar = $1, update_time = $2 WHERE id = $3;
 
+-- name: LockUserAvatar :one
+SELECT avatar FROM sys_user WHERE id = $1 FOR UPDATE;
+
+-- name: DeleteUserAvatarContent :exec
+DELETE FROM sys_user_avatar WHERE user_id = $1;
+
+-- name: CreateUserAvatarContent :exec
+INSERT INTO sys_user_avatar (user_id, filename, content, update_time) VALUES ($1, $2, $3, $4);
+
+-- name: GetUserAvatarContent :one
+SELECT content, update_time FROM sys_user_avatar WHERE filename = $1 LIMIT 1;
+
+-- name: ListDiskUserAvatars :many
+SELECT u.id, u.avatar FROM sys_user u
+LEFT JOIN sys_user_avatar a ON a.user_id = u.id
+WHERE u.avatar IS NOT NULL AND u.avatar <> '' AND a.user_id IS NULL
+ORDER BY u.id;
+
 -- ---- 用户组（sys_user_group / sys_user_group_member，identity 域）----
 
 -- name: ListUserGroups :many
@@ -168,6 +186,15 @@ WHERE b.user_id = $1 ORDER BY b.id;
 
 -- name: DeleteUserAlertMediaBindings :exec
 DELETE FROM monitor_user_alert_media_binding WHERE user_id = $1;
+
+-- name: LockOwnAlertMediaBindingEnabled :one
+SELECT b.enabled, m.enabled AS media_enabled
+FROM monitor_user_alert_media_binding b JOIN monitor_alert_media m ON m.id = b.media_id
+WHERE b.id = sqlc.arg(id) AND b.user_id = sqlc.arg(user_id) FOR UPDATE;
+
+-- name: UpdateOwnAlertMediaBindingEnabled :exec
+UPDATE monitor_user_alert_media_binding SET enabled = sqlc.arg(enabled), update_time = sqlc.arg(update_time)
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id);
 
 -- name: CreateUserAlertMediaBinding :exec
 INSERT INTO monitor_user_alert_media_binding(create_time, update_time, remark, recipients, enabled, media_id, user_id)

@@ -8,7 +8,7 @@
     <a-alert v-if="error" type="error" show-icon :message="error" style="margin-bottom: 12px" />
     <a-table :columns="columns" :data-source="types" row-key="id" size="small" :locale="tableLocale" :loading="loading" :scroll="{ x: 800 }" :pagination="pagination" @change="handleTableChange">
       <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'enabled'"><a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag></template>
+        <template v-if="column.key === 'enabled'"><EnabledSwitch v-model:checked="record.enabled" :endpoint="`assets/service-dependency-types/${record.id}/`" permission="assets:applications:update" :disabled="saving || !!deleting" @changed="emit('changed')" /></template>
         <template v-else-if="column.key === 'action'">
           <a-space>
             <a-tooltip v-if="canUpdate" title="编辑" placement="top"><a-button size="small" type="primary" :disabled="!!deleting" @click="openEditor(record)"><FontAwesomeIcon :icon="['fas', 'pen-to-square']" /></a-button></a-tooltip>
@@ -24,7 +24,7 @@
         <a-input v-model:value="form.code" :disabled="!!editingId || saving" :maxlength="64" placeholder="例如 http、database、consume" />
       </a-form-item>
       <a-form-item label="显示名称" name="name" :rules="[{ required: true, whitespace: true, message: '请输入显示名称' }]"><a-input v-model:value="form.name" :maxlength="128" :disabled="saving" /></a-form-item>
-      <a-form-item label="启用"><a-switch v-model:checked="form.enabled" :disabled="saving" /></a-form-item>
+      <a-form-item label="启用"><EnabledSwitch v-model:checked="form.enabled" :disabled="saving" /></a-form-item>
       <a-form-item label="说明"><a-textarea v-model:value="form.description" :maxlength="500" :rows="3" :disabled="saving" /></a-form-item>
     </a-form>
     <a-alert v-if="saveError" type="error" show-icon :message="saveError" />
@@ -33,6 +33,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { deleteServiceDependencyTypes, getServiceDependencyTypes, saveServiceDependencyType } from '@/api/assets/serviceDependencies'

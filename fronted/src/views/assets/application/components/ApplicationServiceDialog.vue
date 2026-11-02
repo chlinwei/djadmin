@@ -162,14 +162,14 @@
           <a-col v-for="deploymentId in selectedDeploymentIds" :key="deploymentId" :span="24">
             <div class="member-row">
               <span class="member-name">{{ deploymentLabel(deploymentId) }}</span>
-              <a-switch v-model:checked="memberEnabled[deploymentId]" checked-children="启用" un-checked-children="停用" />
+              <EnabledSwitch v-model:checked="memberEnabled[deploymentId]" />
               <a-space>
                 <a-tooltip title="编辑"><a-button size="small" @click="openDeploymentDialog(deploymentId)">编辑</a-button></a-tooltip>
                 <a-tooltip title="删除"><a-button class="delBtn" danger size="small" @click="confirmDeleteDeployment(deploymentId)">删除</a-button></a-tooltip>
               </a-space>
             </div>
           </a-col>
-          <a-col :span="12"><a-form-item label="启用"><a-switch v-model:checked="form.enabled" /></a-form-item></a-col>
+          <a-col :span="12"><a-form-item label="启用"><EnabledSwitch v-model:checked="form.enabled" /></a-form-item></a-col>
           <a-col :span="24">
             <a-divider orientation="left">日志</a-divider>
           </a-col>
@@ -259,6 +259,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { tableLocale } from '@/util/tableStyle'

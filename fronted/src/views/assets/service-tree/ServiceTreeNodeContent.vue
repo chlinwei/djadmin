@@ -63,7 +63,7 @@
       <a-descriptions v-if="scope.nodeType === 'businessSystem' && entity" bordered :column="{ xs: 1, sm: 2 }" size="small" class="node-summary">
         <a-descriptions-item label="系统编码">{{ entity.code || '-' }}</a-descriptions-item>
         <a-descriptions-item label="负责人">{{ entity.owner || '-' }}</a-descriptions-item>
-        <a-descriptions-item label="状态"><a-badge :status="entity.enabled ? 'success' : 'default'" :text="entity.enabled ? '启用' : '停用'" /></a-descriptions-item>
+        <a-descriptions-item label="状态"><EnabledSwitch v-model:checked="entity.enabled" :endpoint="`assets/business-systems/${entity.id}/`" permission="assets:service-tree:manage" /></a-descriptions-item>
         <a-descriptions-item label="备注">{{ entity.remark || '-' }}</a-descriptions-item>
       </a-descriptions>
 
@@ -180,7 +180,13 @@
               </a>
             </template>
             <template v-else-if="column.key === 'topology_type'"><a-tag :color="record.topology_type === 'cluster' ? 'blue' : record.topology_type === 'load_balancer' ? 'green' : 'default'">{{ record.topology_type === 'cluster' ? '集群' : record.topology_type === 'load_balancer' ? '负载均衡' : '单机' }}</a-tag></template>
-            <template v-else-if="column.key === 'enabled'"><a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" /></template>
+            <template v-else-if="column.key === 'enabled'">
+              <EnabledSwitch
+                v-model:checked="record.enabled"
+                :endpoint="`assets/${['all', 'project'].includes(scope.nodeType) ? 'business-systems' : scope.nodeType === 'service' ? 'application-deployments' : 'application-services'}/${record.id}/`"
+                :permission="['all', 'project'].includes(scope.nodeType) ? 'assets:service-tree:manage' : 'assets:applications:update'"
+              />
+            </template>
             <template v-else-if="column.key === 'runtime_status'">
               <a-tooltip v-if="record.runtime_status_output" :title="record.runtime_status_output" placement="top">
                 <a-badge :status="runtimeStatus[record.runtime_status]?.status || 'default'" :text="runtimeStatus[record.runtime_status]?.label || '未知'" />
@@ -243,6 +249,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Empty, message } from 'ant-design-vue'

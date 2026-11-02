@@ -350,7 +350,7 @@
               <template #title>
                 <a-space wrap>
                   <span>媒介：{{ media.name }}</span>
-                  <a-tag :color="media.enabled ? 'success' : 'default'">{{ media.enabled ? '启用' : '禁用' }}</a-tag>
+                  <EnabledSwitch :checked="media.enabled" read-only />
                 </a-space>
               </template>
               <div class="chain-media-head">
@@ -405,6 +405,7 @@
 </template>
 
 <script setup>
+import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { createPagination, tableLocale } from '@/util/tableStyle'
 import { message } from 'ant-design-vue'

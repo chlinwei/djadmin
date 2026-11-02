@@ -298,6 +298,7 @@ type Querier interface {
 	CreateTemplatePort(ctx context.Context, arg CreateTemplatePortParams) error
 	CreateUser(ctx context.Context, arg CreateUserParams) (int32, error)
 	CreateUserAlertMediaBinding(ctx context.Context, arg CreateUserAlertMediaBindingParams) error
+	CreateUserAvatarContent(ctx context.Context, arg CreateUserAvatarContentParams) error
 	CreateUserGroup(ctx context.Context, arg CreateUserGroupParams) (int64, error)
 	CreateUserGroupMember(ctx context.Context, arg CreateUserGroupMemberParams) error
 	// 本文件由 make derive 从 db/queries/mysql/assets_webssh.sql 派生，禁止手改。
@@ -410,6 +411,7 @@ type Querier interface {
 	DeleteTemplatePorts(ctx context.Context, deploymentTemplateID int64) error
 	DeleteUnsharedServiceDeployment(ctx context.Context, id int64) error
 	DeleteUserAlertMediaBindings(ctx context.Context, userID int32) error
+	DeleteUserAvatarContent(ctx context.Context, userID int32) error
 	DeleteUserByID(ctx context.Context, id int32) error
 	DeleteUserGroup(ctx context.Context, id int64) (int64, error)
 	DeleteUserGroupMembers(ctx context.Context, groupID int64) error
@@ -642,6 +644,7 @@ type Querier interface {
 	GetTemplateDockerConfig(ctx context.Context, deploymentTemplateID int64) (GetTemplateDockerConfigRow, error)
 	// 平台匹配用的软件包查询：卸载取最近一条（不论有无文件），安装只取已落文件的一批。
 	GetUninstallPackageForTarget(ctx context.Context, name string) (GetUninstallPackageForTargetRow, error)
+	GetUserAvatarContent(ctx context.Context, filename string) (GetUserAvatarContentRow, error)
 	// 本文件由 make derive 从 db/queries/mysql/user.sql 派生，禁止手改。
 	// 修改请改 MySQL 源后重新派生；规则见 internal/platform/database/derive 与
 	// docs/architecture/SQL_DESIGN.md §4.6。
@@ -717,6 +720,7 @@ type Querier interface {
 	ListDeploymentControlActions(ctx context.Context, templateID int64) ([]ListDeploymentControlActionsRow, error)
 	ListDeploymentControlContexts(ctx context.Context, id int64) ([]ListDeploymentControlContextsRow, error)
 	ListDeploymentTemplates(ctx context.Context, arg ListDeploymentTemplatesParams) ([]ListDeploymentTemplatesRow, error)
+	ListDiskUserAvatars(ctx context.Context) ([]ListDiskUserAvatarsRow, error)
 	// ---- P2-2：巡检包内联 SQL 的收纳处（调度 / 保留期清理 / 组与任务写路径 / 执行运行期）----
 	//
 	// 两条与内联版本不同的约定：
@@ -977,10 +981,19 @@ type Querier interface {
 	ListWebSSHSessions(ctx context.Context, arg ListWebSSHSessionsParams) ([]ListWebSSHSessionsRow, error)
 	// ---- P2-3：安装包 / 应用控制 / 安装模板 ----
 	LockApplicationDeployment(ctx context.Context, id int64) (int64, error)
+	LockApplicationDeploymentEnabled(ctx context.Context, id int64) (bool, error)
+	LockApplicationEnabled(ctx context.Context, id int64) (bool, error)
+	LockApplicationServiceEnabled(ctx context.Context, id int64) (bool, error)
 	LockApplicationServiceForDeletion(ctx context.Context, id int64) (int64, error)
+	LockApplicationVersionEnabled(ctx context.Context, id int64) (bool, error)
 	LockAutomationTaskForDeletion(ctx context.Context, id int64) (int64, error)
 	// 锁定读保证 MySQL 默认隔离级别下也能看到锁获取前提交的作业。
 	LockAutomationTaskJobsForDeletion(ctx context.Context, taskID sql.NullInt64) ([]LockAutomationTaskJobsForDeletionRow, error)
+	LockBusinessEnvironmentEnabled(ctx context.Context, id int64) (bool, error)
+	LockBusinessSystemEnabled(ctx context.Context, id int64) (bool, error)
+	LockClusterProfileEnabled(ctx context.Context, id int64) (LockClusterProfileEnabledRow, error)
+	LockDeploymentTemplateEnabled(ctx context.Context, id int64) (bool, error)
+	LockElasticsearchClusterEnabled(ctx context.Context, id int64) (bool, error)
 	// Serialize final-pipeline publications across API replicas, including bootstrap and deletion.
 	LockElasticsearchClusterForGuard(ctx context.Context, id int64) (int64, error)
 	LockHistoricalStreamDefinitions(ctx context.Context, serviceID int64) ([]int64, error)
@@ -990,14 +1003,24 @@ type Querier interface {
 	LockHistoricalStreamService(ctx context.Context, serviceID int64) (int64, error)
 	LockHistoricalStreamSettings(ctx context.Context, serviceID int64) ([]int64, error)
 	LockHistoricalStreamTiers(ctx context.Context) ([]int64, error)
+	LockLogCollectionFilterRuleEnabled(ctx context.Context, id int64) (bool, error)
+	LockLogRetentionTierEnabled(ctx context.Context, id int64) (bool, error)
+	LockOwnAlertMediaBindingEnabled(ctx context.Context, arg LockOwnAlertMediaBindingEnabledParams) (LockOwnAlertMediaBindingEnabledRow, error)
+	// 本文件由 make derive 从 db/queries/mysql/enabled.sql 派生，禁止手改。
+	// 修改请改 MySQL 源后重新派生；规则见 internal/platform/database/derive 与
+	// docs/architecture/SQL_DESIGN.md §4.6。
+	LockProjectEnabled(ctx context.Context, id int64) (bool, error)
 	LockSchedulerConfig(ctx context.Context) (SysConfig, error)
 	LockSchedulerTask(ctx context.Context, id int64) (SchedulerScheduledtask, error)
 	LockServiceDependency(ctx context.Context, id int64) (AssetsServiceDependency, error)
 	LockServiceDependencyDeletionTombstone(ctx context.Context, serviceID int64) (AssetsServiceDeletion, error)
 	LockServiceDependencyType(ctx context.Context, id int64) (AssetsServiceDependencyType, error)
+	LockServiceDependencyTypeEnabled(ctx context.Context, id int64) (bool, error)
 	// Serialize creation with tombstoning even when the unique service row is removed.
 	LockServiceIdentityDomain(ctx context.Context, id int64) (int64, error)
 	LockSharedLogSource(ctx context.Context, id int64) (MonitorSharedLogSource, error)
+	LockSoftwarePackageEnabled(ctx context.Context, id int64) (bool, error)
+	LockUserAvatar(ctx context.Context, id int32) (sql.NullString, error)
 	MarkAgentJobHostLogRunning(ctx context.Context, arg MarkAgentJobHostLogRunningParams) error
 	// ---- P2-3：Agent 安装/更新流程（作业与主机日志的生命周期、作业创建、活跃任务拦截）----
 	// install 与 update 两条流程用的是同一组语句，这里只定义一份，两边共用。
@@ -1085,11 +1108,16 @@ type Querier interface {
 	UpdateAgentPackageFile(ctx context.Context, arg UpdateAgentPackageFileParams) error
 	UpdateAlertHistoryHeartbeat(ctx context.Context, arg UpdateAlertHistoryHeartbeatParams) error
 	UpdateAlertMedia(ctx context.Context, arg UpdateAlertMediaParams) (int64, error)
+	UpdateAlertMediaEnabled(ctx context.Context, arg UpdateAlertMediaEnabledParams) error
 	UpdateApplication(ctx context.Context, arg UpdateApplicationParams) error
 	UpdateApplicationDeployment(ctx context.Context, arg UpdateApplicationDeploymentParams) error
+	UpdateApplicationDeploymentEnabled(ctx context.Context, arg UpdateApplicationDeploymentEnabledParams) error
+	UpdateApplicationEnabled(ctx context.Context, arg UpdateApplicationEnabledParams) error
 	UpdateApplicationService(ctx context.Context, arg UpdateApplicationServiceParams) error
+	UpdateApplicationServiceEnabled(ctx context.Context, arg UpdateApplicationServiceEnabledParams) error
 	UpdateApplicationServiceLogCollection(ctx context.Context, arg UpdateApplicationServiceLogCollectionParams) (sql.Result, error)
 	UpdateApplicationVersion(ctx context.Context, arg UpdateApplicationVersionParams) error
+	UpdateApplicationVersionEnabled(ctx context.Context, arg UpdateApplicationVersionEnabledParams) error
 	UpdateAutomationInventory(ctx context.Context, arg UpdateAutomationInventoryParams) error
 	UpdateAutomationPlaybook(ctx context.Context, arg UpdateAutomationPlaybookParams) error
 	UpdateAutomationPlaybookContent(ctx context.Context, arg UpdateAutomationPlaybookContentParams) (int64, error)
@@ -1099,33 +1127,44 @@ type Querier interface {
 	UpdateBaselineItem(ctx context.Context, arg UpdateBaselineItemParams) (int64, error)
 	UpdateBaselineItemSort(ctx context.Context, arg UpdateBaselineItemSortParams) (int64, error)
 	UpdateBusinessEnvironment(ctx context.Context, arg UpdateBusinessEnvironmentParams) error
+	UpdateBusinessEnvironmentEnabled(ctx context.Context, arg UpdateBusinessEnvironmentEnabledParams) error
 	UpdateBusinessSystem(ctx context.Context, arg UpdateBusinessSystemParams) error
+	UpdateBusinessSystemEnabled(ctx context.Context, arg UpdateBusinessSystemEnabledParams) error
 	UpdateClusterProfile(ctx context.Context, arg UpdateClusterProfileParams) error
+	UpdateClusterProfileEnabled(ctx context.Context, arg UpdateClusterProfileEnabledParams) error
 	UpdateConfigValue(ctx context.Context, arg UpdateConfigValueParams) error
 	UpdateCredential(ctx context.Context, arg UpdateCredentialParams) error
 	UpdateDeploymentRuntimeStatus(ctx context.Context, arg UpdateDeploymentRuntimeStatusParams) error
 	UpdateDeploymentTemplate(ctx context.Context, arg UpdateDeploymentTemplateParams) error
+	UpdateDeploymentTemplateEnabled(ctx context.Context, arg UpdateDeploymentTemplateEnabledParams) error
 	// 整行写（PATCH 语义由应用层"读回现值 + 合并提交的字段"承担，见 elasticsearch_config.go）。
 	UpdateElasticsearchCluster(ctx context.Context, arg UpdateElasticsearchClusterParams) (int64, error)
+	UpdateElasticsearchClusterEnabled(ctx context.Context, arg UpdateElasticsearchClusterEnabledParams) error
 	UpdateHost(ctx context.Context, arg UpdateHostParams) error
 	UpdateHostGroup(ctx context.Context, arg UpdateHostGroupParams) error
 	UpdateInspectionGroup(ctx context.Context, arg UpdateInspectionGroupParams) (int64, error)
 	UpdateInspectionTask(ctx context.Context, arg UpdateInspectionTaskParams) (int64, error)
 	UpdateLogBatchJobHeartbeat(ctx context.Context, arg UpdateLogBatchJobHeartbeatParams) error
 	UpdateLogCollectionFilterRule(ctx context.Context, arg UpdateLogCollectionFilterRuleParams) (int64, error)
+	UpdateLogCollectionFilterRuleEnabled(ctx context.Context, arg UpdateLogCollectionFilterRuleEnabledParams) error
 	UpdateLogProcessingRule(ctx context.Context, arg UpdateLogProcessingRuleParams) (int64, error)
 	UpdateLogRetentionTier(ctx context.Context, arg UpdateLogRetentionTierParams) (int64, error)
+	UpdateLogRetentionTierEnabled(ctx context.Context, arg UpdateLogRetentionTierEnabledParams) error
 	UpdateMenu(ctx context.Context, arg UpdateMenuParams) error
 	UpdateMonitorTargetPatch(ctx context.Context, arg UpdateMonitorTargetPatchParams) error
 	UpdateNotificationPolicy(ctx context.Context, arg UpdateNotificationPolicyParams) error
+	UpdateOwnAlertMediaBindingEnabled(ctx context.Context, arg UpdateOwnAlertMediaBindingEnabledParams) error
 	UpdateProject(ctx context.Context, arg UpdateProjectParams) error
+	UpdateProjectEnabled(ctx context.Context, arg UpdateProjectEnabledParams) error
 	UpdateRole(ctx context.Context, arg UpdateRoleParams) error
 	UpdateScheduledTask(ctx context.Context, arg UpdateScheduledTaskParams) error
 	UpdateServiceDependency(ctx context.Context, arg UpdateServiceDependencyParams) error
 	UpdateServiceDependencyType(ctx context.Context, arg UpdateServiceDependencyTypeParams) error
+	UpdateServiceDependencyTypeEnabled(ctx context.Context, arg UpdateServiceDependencyTypeEnabledParams) error
 	UpdateSharedLogSource(ctx context.Context, arg UpdateSharedLogSourceParams) error
 	UpdateSharedLogSourceRevocation(ctx context.Context, arg UpdateSharedLogSourceRevocationParams) error
 	UpdateSoftwarePackageConfig(ctx context.Context, arg UpdateSoftwarePackageConfigParams) error
+	UpdateSoftwarePackageEnabled(ctx context.Context, arg UpdateSoftwarePackageEnabledParams) error
 	UpdateSoftwarePackageFile(ctx context.Context, arg UpdateSoftwarePackageFileParams) error
 	UpdateSoftwarePackageFilePath(ctx context.Context, arg UpdateSoftwarePackageFilePathParams) error
 	UpdateSoftwarePackageSource(ctx context.Context, arg UpdateSoftwarePackageSourceParams) error

@@ -597,8 +597,7 @@ const stopCollectDispatchTimer = () => {
     }
 }
 
-// 同步经 gRPC 让 agent 执行 get_host_info 并落库，一次调用即返回最新主机数据。
-// 用于「打开详情页即刷」「点击刷新」以及在页面停留期间的定时刷新（保持动态指标实时）。
+// 同步读取 agent 当前主机事实并保存观察结果。查看详情的人需要能刷新，不要求主机修改权限。
 const refreshHostRuntime = async ({ showError = false } = {}) => {
     if (collectDispatching.value) {
         return

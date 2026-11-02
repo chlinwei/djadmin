@@ -7,7 +7,7 @@ vi.mock('@/util/keepAliveRefresh', () => ({
   useKeepAliveRefreshLifecycle: (start, stop) => { lifecycle.start = start; lifecycle.stop = stop },
 }))
 vi.mock('vue-router', () => ({ useRouter: () => ({ resolve: vi.fn() }) }))
-vi.mock('@/store', () => ({ default: { state: { user: {} } } }))
+vi.mock('@/store', () => ({ default: { state: { user: {}, perms: ['assets:applications:update'], role_codes: ['operator'] } } }))
 vi.mock('@/api/assets/host', () => ({ getHostById: vi.fn() }))
 vi.mock('@/api/assets/application', () => ({
   getApplicationService: vi.fn(), getApplicationServiceLogConfig: vi.fn(),
@@ -18,6 +18,7 @@ vi.mock('@/api/assets/application', () => ({
 }))
 
 import ServiceTreeNodeContent from './ServiceTreeNodeContent.vue'
+import store from '@/store'
 import {
   getApplicationService, getApplicationServiceLogConfig,
   getApplicationDeployment, getApplicationDeploymentList, refreshApplicationServiceRuntimeStatus,
@@ -44,6 +45,8 @@ describe('service-tree non-blocking runtime checks', () => {
     getApplicationService.mockImplementation((id) => Promise.resolve(response({ id, member_instances: [] })))
     getApplicationServiceLogConfig.mockResolvedValue(response({ logs: [] }))
     getApplicationDeploymentList.mockImplementation(({ application_service }) => Promise.resolve(list([deployment(application_service * 10)])))
+    store.state.perms = ['assets:applications:update']
+    store.state.role_codes = ['operator']
     refreshApplicationServiceRuntimeStatus.mockResolvedValue(response({ summary: {} }))
     vi.spyOn(message, 'success').mockImplementation(() => {})
     vi.spyOn(message, 'error').mockImplementation(() => {})
@@ -66,6 +69,15 @@ describe('service-tree non-blocking runtime checks', () => {
       },
     })
   }
+
+  it('does not dispatch a runtime check when the user can only view the service tree', async () => {
+    store.state.perms = ['assets:applications:view']
+    mountNode()
+    await flushPromises()
+    expect(wrapper.vm.loading).toBe(false)
+    expect(wrapper.vm.rows[0].runtime_status).toBe('stopped')
+    expect(refreshApplicationServiceRuntimeStatus).not.toHaveBeenCalled()
+  })
 
   it('renders cached rows and ends page loading before a slow Agent check completes', async () => {
     const check = deferred()

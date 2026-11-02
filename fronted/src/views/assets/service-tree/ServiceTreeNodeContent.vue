@@ -528,6 +528,8 @@ async function fetchAll(loader, params = {}) {
 
 // Agent 检查与页面加载解耦；同服务复用在途请求，各节点只接收自己当前加载代次的结果。
 async function refreshRuntimeStatus(silent = false) {
+  // 运行状态检查会在主机执行并回写结果，查看服务树不能代替应用更新权限。
+  if (!checkPermission('assets:applications:update')) return
   const serviceId = props.scope.nodeType === 'service' ? props.scope.applicationServiceId : null
   if (!serviceId || !viewActive) return
   const key = String(serviceId)

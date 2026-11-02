@@ -236,6 +236,8 @@ Inventory 预检沿用 `automation:inventory:view` 权限，任务预检沿用�
   不暴露 Go 数据库可空类型的 `String/Valid` 等内部字段，空字符串与 `null` 保持区别。
   Inventory 范围编辑与只读范围树共用该接口，主机标签显示实例名及 IP；
   无实例名时显示 IP，搜索和资产主机跳转沿用相同名称。此读接口不修改数据库结构。
+  此接口与下面的分组选项接口均使用 `automation:inventory:view`，不要求 `automation:jobs:create`；
+  Inventory 只读页面加载范围数据不授予任务执行能力。
 - `GET /sys/automation/playbooks/group-tree/`：返回平铺的独立分组，不包含父级或嵌套分组。
   Inventory 范围界面仍可将主机作为组内叶节点展示；分组 ID 和已选主机 ID 不因分组展示变化而改变。
 - `POST /sys/automation/inventories/`：全量创建，`name` 必填；`enabled` 缺省 true，`update_on_launch` 缺省 false，`update_cache_timeout` 缺省 300 且必须非负。

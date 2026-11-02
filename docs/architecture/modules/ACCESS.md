@@ -107,7 +107,7 @@ flowchart LR
 
 | 功能 | 查看 | 修改或管理 | 执行或破坏性动作 |
 |---|---|---|---|
-| 主机 | `assets:hosts:view` | CRUD 沿用对应 `create/update/delete` | 两个 WebSSH 入口使用 `assets:hosts:execute`；文件写仍需 `assets:hosts:update` |
+| 主机 | `assets:hosts:view`；刷新当前主机事实也用 view | CRUD 沿用对应 `create/update/delete` | 两个 WebSSH 入口使用 `assets:hosts:execute`；文件写仍需 `assets:hosts:update` |
 | 调度 | `system:scheduler:view` | Cron、启停及全局调度开关用 `system:scheduler:update` | 立即运行用 `system:scheduler:execute` |
 | 系统参数 | `sys:config:list`（含按 key 读取） | 更新、按 key 更新、恢复默认均用 `sys:config:update` | 不因已登录而允许修改全局参数 |
 | 基线与扫描记录 | `baseline:view` | 标准、类目、策略写入用 `baseline:manage` | 发起/取消扫描用 `baseline:scan` |

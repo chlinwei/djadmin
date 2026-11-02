@@ -79,6 +79,8 @@ func TestReadonlyCannotMutateAnyBusinessRoute(t *testing.T) {
 		"POST /monitor/log-targets/:id/check-status/":                 "read service status, no start/stop or config change",
 		"POST /monitor/elasticsearch-clusters/:id/pipeline-simulate/": "pipeline simulation without publishing",
 		"POST /monitor/alert-webhook/api/v2/alerts":                   "separate machine authentication",
+		"POST /assets/hosts/:id/refresh-info/":                        "observe current host facts for viewers, no config change",
+		"POST /assets/hosts/refresh-info/":                            "observe current host facts for viewers, no config change",
 	}
 	parameters := regexp.MustCompile(`[:*][^/]+`)
 	checked := 0
@@ -125,6 +127,8 @@ func TestActionPermissionsReachHandlersWithoutAdmin(t *testing.T) {
 		method, path string
 		permissions  []string
 	}{
+		{http.MethodPost, "/assets/hosts/invalid/refresh-info/", []string{"assets:hosts:view"}},
+		{http.MethodPost, "/assets/hosts/refresh-info/", []string{"assets:hosts:view"}},
 		{http.MethodGet, "/assets/hosts/invalid/webssh/", []string{"assets:hosts:execute"}},
 		{http.MethodGet, "/ws/assets/hosts/invalid/webssh/", []string{"assets:hosts:execute"}},
 		{http.MethodPatch, "/sys/scheduler/tasks/invalid/", []string{"system:scheduler:update"}},

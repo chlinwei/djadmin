@@ -229,10 +229,17 @@
                         </template>
                         <template v-else-if="column.key === 'action'">
                             <div :key="record.id">
-                                <a-row :gutter="6" class="action_row" :wrap="false">
+                                <!-- 只读只有详情。隐藏的操作列和 Tooltip 浮层在页面缓存切换时会丢掉 DOM 锚点。 -->
+                                <a-tooltip v-if="onlyHostDetailAction" title="查看详情" placement="top" :get-popup-container="getActionPopupContainer">
+                                    <a-button type="link" class="host-detail-action" @click="openDetail(record.id)">
+                                        <FontAwesomeIcon :icon="['fas', 'fa-circle-info']" />
+                                        <span>详情</span>
+                                    </a-button>
+                                </a-tooltip>
+                                <a-row v-else :gutter="6" class="action_row" :wrap="false">
                                     <a-col v-permission="'assets:hosts:view'">
-                                        <a-tooltip title="查看详情">
-                                            <a-button @click="openDetail(record.id)">
+                                        <a-tooltip title="查看详情" placement="top" :get-popup-container="getActionPopupContainer">
+                                            <a-button class="host-detail-action" @click="openDetail(record.id)">
                                                 <FontAwesomeIcon :icon="['fas', 'fa-circle-info']" />
                                             </a-button>
                                         </a-tooltip>
@@ -251,9 +258,9 @@
                                             </a-button>
                                         </a-tooltip>
                                     </a-col>
-                                    <a-col v-permission="'assets:hosts:view'">
-                                        <a-tooltip :title="getWebSshActionTooltip(record)">
-                                            <a-button v-permission="'assets:hosts:execute'" :disabled="!canOpenWebSsh(record)" @click="openWebSsh(record)">
+                                    <a-col v-permission="'assets:hosts:execute'">
+                                        <a-tooltip :title="getWebSshActionTooltip(record)" placement="top" :get-popup-container="getActionPopupContainer">
+                                            <a-button :disabled="!canOpenWebSsh(record)" @click="openWebSsh(record)">
                                                 <FontAwesomeIcon :icon="['fas', 'terminal']" />
                                             </a-button>
                                         </a-tooltip>
@@ -655,6 +662,8 @@ const MAX_HOST_LIST_REFRESH_INTERVAL_SECONDS = 300
 const hostListRefreshIntervalSeconds = ref(DEFAULT_HOST_LIST_REFRESH_INTERVAL_SECONDS)
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
+// 操作提示挂在按钮父节点，避免浮层挂到 body 后在页面缓存切换时锚点已被移走。
+const getActionPopupContainer = (triggerNode) => triggerNode?.parentNode || document.body
 
 const state = reactive({
     selectedRowKeys: [],
@@ -836,6 +845,16 @@ const rules = {
     ip: [{ required: true, message: '请输入 IP 地址' }],
 }
 
+const hostActionCodes = [
+    'assets:hosts:view',
+    'assets:hosts:update',
+    'assets:hosts:create',
+    'assets:hosts:execute',
+    'assets:hosts:delete',
+]
+const visibleHostActionCount = hostActionCodes.filter((code) => checkPermission(code)).length
+// 只读用户只有详情一个动作。沿用五个按钮的列宽会把一个图标孤零零留在大片空白里。
+const onlyHostDetailAction = visibleHostActionCount === 1 && checkPermission('assets:hosts:view')
 const columns = [
     { title: '实例名', dataIndex: 'instance_name', key: 'instance_name', width: 160 },
     { title: '状态', dataIndex: 'agent_status', key: 'agent_status', width: 110 },
@@ -847,7 +866,13 @@ const columns = [
     { title: '内存', dataIndex: 'memory_gb', key: 'memory_gb', width: 110 },
     { title: '备注', dataIndex: 'remark', key: 'remark', ellipsis: true },
     { title: '创建时间', dataIndex: 'create_time', key: 'create_time', width: 190, sorter: true },
-    { title: '操作', key: 'action', fixed: 'right', width: 340 },
+    {
+        title: '操作',
+        key: 'action',
+        fixed: 'right',
+        width: onlyHostDetailAction ? 96 : Math.max(96, visibleHostActionCount * 64 + 16),
+        align: onlyHostDetailAction ? 'center' : 'left',
+    },
 ]
 
 const pagination = reactive(createPagination())
@@ -1184,7 +1209,8 @@ const loadHostList = async ({ refreshRuntime = true } = {}) => {
                 ? (res.data.data.count || 0)
                 : filteredRows.length
 
-            // 两阶段加载：先渲染缓存列表，再异步刷新当前页在线主机的最新信息。
+            // 两阶段加载：先渲染已落库列表，再读取在线主机的当前事实。
+            // 这是查看，不要求主机修改权限。
             if (refreshRuntime && filteredRows.length) {
                 const onlineIds = filteredRows
                     .filter((item) => item?.agent_online === true)
@@ -1805,8 +1831,6 @@ const formatDateTime = (value) => {
 useKeepAliveRefreshLifecycle(startHostListAutoRefresh, stopHostListAutoRefresh)
 
 onMounted(async () => {
-    // 预取 Agent 包列表：安装/更新弹窗顶部需要展示当前激活包信息
-    loadAgentPackages()
     const environmentResponse = await getBusinessEnvironmentList({ page: 1, page_size: 1000, enabled: true })
     environmentOptions.value = (environmentResponse?.data?.data?.results || []).map((item) => ({ label: item.name, value: item.id }))
     await loadHostListRefreshIntervalConfig()
@@ -2048,6 +2072,15 @@ onBeforeUnmount(() => {
 
 .action_row :deep(.ant-col) {
     flex: 0 0 auto;
+}
+
+.host-detail-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    height: 28px;
+    padding-inline: 8px;
 }
 
 .host-page :deep(.ant-btn-lg),

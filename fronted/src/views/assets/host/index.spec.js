@@ -20,6 +20,7 @@ vi.mock('@/api/assets/host/index.js', () => ({
     })
   ),
   getHostList: vi.fn(() => Promise.resolve({ data: { code: 200, data: { results: [], count: 0 } } })),
+  batchRefreshHostInfo: vi.fn(() => Promise.resolve({ data: { code: 200, data: { hosts: [] } } })),
   saveOrCreateHost: vi.fn(() => Promise.resolve({ data: { code: 200, msg: 'success' } })),
   installAgents: vi.fn(() => Promise.resolve({ data: { code: 200, data: { automation_job_id: 1, jobs: [1] } } })),
 }))
@@ -134,7 +135,9 @@ vi.mock('vue-router', async () => {
 })
 
 import * as hostApi from '@/api/assets/host/index.js'
+import { listAgentPackages } from '@/api/assets/agentPackage.js'
 import * as hostGroupApi from '@/api/assets/hostgroup/index.js'
+import store from '@/store'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { Button, Col, Empty, Row, Spin, Tooltip, message } from 'ant-design-vue'
 import HostPage from './index.vue'
@@ -147,6 +150,54 @@ const flushPromises = async () => {
 describe('Host Agent 凭证安装与主机编辑保存', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+  })
+
+  it.each([false, true])('主机列表不预取管理数据，管理权限=%s 时按需加载 Agent 包', async (canUpdate) => {
+    const originalPermissions = store.state.perms
+    store.state.perms = ['assets:hosts:view', ...(canUpdate ? ['assets:hosts:update'] : [])]
+    const wrapper = shallowMount(HostPage, {
+      global: {
+        stubs: { Dialog: true, FontAwesomeIcon: true },
+        directives: { permission: () => {} },
+      },
+    })
+    try {
+      await flushPromises()
+      expect(listAgentPackages).not.toHaveBeenCalled()
+      if (canUpdate) {
+        const state = wrapper.vm.$.setupState
+        state.state.selectedRowKeys = [101]
+        state.datasources = [{ id: 101, instance_name: 'host-101', agent_online: false }]
+        state.openAgentManage()
+        await flushPromises()
+        expect(listAgentPackages).toHaveBeenCalledOnce()
+      }
+    } finally {
+      wrapper.unmount()
+      store.state.perms = originalPermissions
+    }
+  })
+
+  it('只读用户打开主机列表时仍刷新在线主机的当前信息', async () => {
+    const originalPermissions = store.state.perms
+    store.state.perms = ['assets:hosts:view']
+    hostApi.getHostList.mockResolvedValueOnce({
+      data: { code: 200, data: { results: [{ id: 7, agent_online: true, instance_name: 'host-7' }], count: 1 } },
+    })
+    const wrapper = shallowMount(HostPage, {
+      global: {
+        stubs: { Dialog: true, FontAwesomeIcon: true },
+        directives: { permission: () => {} },
+      },
+    })
+    try {
+      await flushPromises()
+      expect(hostApi.batchRefreshHostInfo).toHaveBeenCalledWith([7])
+      expect(wrapper.vm.$.setupState.columns.at(-1)).toMatchObject({ key: 'action', width: 96, align: 'center' })
+    } finally {
+      wrapper.unmount()
+      store.state.perms = originalPermissions
+    }
   })
 
   it('主机分组可收起展开，列表占满宽度且筛选、分页和勾选不变', async () => {

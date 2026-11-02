@@ -111,8 +111,9 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	playbooks := engine.Group("/sys/automation/playbooks", middleware.Authenticate(tokens))
 	playbooks.GET("/", middleware.RequirePermission("automation:playbooks:view"), playbookHandler.List)
 	playbooks.POST("/validate/", middleware.RequirePermission("automation:playbooks:view"), playbookHandler.Validate)
-	playbooks.GET("/host-options/", middleware.RequirePermission("automation:jobs:create"), playbookHandler.HostOptions)
-	playbooks.GET("/group-tree/", middleware.RequirePermission("automation:jobs:create"), playbookHandler.GroupTree)
+	// Inventory 范围查看也需要这些纯查询数据，不得要求用户拥有作业执行权限。
+	playbooks.GET("/host-options/", middleware.RequirePermission("automation:inventory:view"), playbookHandler.HostOptions)
+	playbooks.GET("/group-tree/", middleware.RequirePermission("automation:inventory:view"), playbookHandler.GroupTree)
 	// shellcheck 组件管理：上传/状态/删除，权限沿用模板管理（能建模板的人就能维护该组件）。
 	shellcheck := engine.Group("/sys/automation/shellcheck", middleware.Authenticate(tokens))
 	shellcheck.GET("/binary/", middleware.RequirePermission("automation:playbooks:view"), playbookHandler.ShellcheckStatus)
@@ -291,9 +292,10 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	hosts.POST("/:id/files/rename/", middleware.RequirePermission("assets:hosts:update"), assetsHandler.RenameWebSSHFile)
 	hosts.DELETE("/:id/files/delete/", middleware.RequirePermission("assets:hosts:update"), assetsHandler.DeleteWebSSHFile)
 	hosts.POST("/:id/files/create-dir/", middleware.RequirePermission("assets:hosts:update"), assetsHandler.CreateWebSSHDirectory)
-	hosts.POST("/:id/refresh-info/", middleware.RequirePermission("assets:hosts:update"), assetsHandler.RefreshHostInfo)
+	// 刷新只读取 Agent 上的当前主机事实并保存观察结果，供详情和列表展示，不是修改主机配置。
+	hosts.POST("/:id/refresh-info/", middleware.RequirePermission("assets:hosts:view"), assetsHandler.RefreshHostInfo)
 	hosts.GET("/", middleware.RequirePermission("assets:hosts:view"), assetsHandler.ListHosts)
-	hosts.POST("/refresh-info/", middleware.RequirePermission("assets:hosts:update"), assetsHandler.BatchRefreshHostInfo)
+	hosts.POST("/refresh-info/", middleware.RequirePermission("assets:hosts:view"), assetsHandler.BatchRefreshHostInfo)
 	hosts.POST("/batch-delete/", middleware.RequirePermission("assets:hosts:delete"), assetsHandler.DeleteHosts)
 	hosts.GET("/:id/", middleware.RequirePermission("assets:hosts:view"), assetsHandler.GetHost)
 	hosts.POST("/", middleware.RequirePermission("assets:hosts:create"), assetsHandler.CreateHost)

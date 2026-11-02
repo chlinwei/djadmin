@@ -123,6 +123,9 @@ WebSocket 必须使用执行权限；POST 校验不因方法是 POST 就被当�
 - 路由同时包含静态入口和菜单驱动入口；`src/router/index.js` 通过 `import.meta.glob`
   扫描 `../views/**`，排除 `*.spec.js/ts`、`*.test.js/ts`，避免组件测试及测试框架进入生产懒加载包。
   按菜单的 `component` 字段解析页面，不能仅凭缺少显式 import 判定视图未使用。
+- 标签页的 `key` 与 `activeKey` 保留完整地址（含 query/hash），侧栏菜单的 `selectedKeys`
+  仅使用页面路径；切换节点或筛选条件不能清除所属菜单高亮。服务树、日志中心按页面路径复用标签，
+  其他页面仍可按完整地址保留多个标签；切回标签时恢复完整定位地址。
 - SVG 图标由 Vite 的 `createSvgIconsPlugin` 扫描 `src/assets/icons/svg`，通过
   `virtual:svg-icons-register` 注册；图标名属于运行时引用，不以单个 SVG 的 import 数量判定存活。
 - API 模块由调用页面/控制器显式导入；保留实际调用的请求封装，后端仍提供某个端点不代表前端需要为其保留未使用的封装。

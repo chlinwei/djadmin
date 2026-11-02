@@ -15,7 +15,7 @@ beforeEach(() => {
 //  3. 容量反推（预计占用）按单位折算——小时档位不折算会虚高 24 倍。
 vi.mock('@/api/monitor', () => ({
   getLogRetentionTiers: vi.fn(() => Promise.resolve({ data: { data: { results: [
-    { id: 1, code: 'std', name: '标准', daily_size_gb: 5, retention_value: 30, retention_unit: 'd', rollover_min_index_age: '1d', rollover_min_primary_shard_size: '5gb', estimated_total_gb: 150, enabled: true, is_default: true, service_count: 2 },
+    { id: 1, code: 'std', name: '标准', daily_size_gb: 5, retention_value: 30, retention_unit: 'd', rollover_min_index_age: '1d', rollover_min_primary_shard_size: '5gb', estimated_total_gb: 150, enabled: true, is_default: true, service_count: 2, remark: '标准日志\n保留三十天' },
     { id: 2, code: 'short', name: '短期', daily_size_gb: 5, retention_value: 12, retention_unit: 'h', rollover_min_index_age: '30m', rollover_min_primary_shard_size: '5gb', estimated_total_gb: 2.5, enabled: true, is_default: false, service_count: 0 },
   ] } } })),
   saveLogRetentionTier: vi.fn(() => Promise.resolve({ data: { data: { id: 1 } } })),
@@ -52,6 +52,108 @@ describe('日志保留档位：保留期的值 + 单位', () => {
     wrapper.unmount()
   })
 
+  it('view 用户可通过顶部提示的详情按钮查看全部配置，但没有编辑或保存控件', async () => {
+    store.state.perms = ['monitor:view']
+    const api = await import('@/api/monitor')
+    const { openDeleteConfirm } = await import('@/util/deleteConfirm')
+    const wrapper = await mountPage()
+    try {
+      expect(wrapper.findAll('[data-view-tier]')).toHaveLength(2)
+      const tooltips = wrapper.findAllComponents({ name: 'ATooltip' })
+      expect(tooltips.find((item) => item.props('title') === '编辑').find('button').exists()).toBe(false)
+      expect(tooltips.find((item) => item.props('title') === '删除').find('button').exists()).toBe(false)
+      const tooltip = tooltips.find((item) => item.props('title') === '查看详情')
+      expect(tooltip.props('placement')).toBe('top')
+      const entry = wrapper.findAll('[data-view-tier]')[0]
+      await entry.trigger('mouseenter')
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      await flushPromises()
+      expect(document.body.querySelector('.ant-tooltip-inner')?.textContent).toBe('查看详情')
+      await entry.trigger('click')
+      await flushPromises()
+
+      expect(document.body.querySelector('.ant-modal-title').textContent).toBe('保留档位详情：标准')
+      const dialog = document.body.querySelector('.ant-modal-content')
+      const details = Object.fromEntries(Array.from(dialog.querySelectorAll('.ant-descriptions-item-label')).map((label) => [
+        label.textContent, label.nextElementSibling.textContent.trim(),
+      ]))
+      expect(details).toEqual({
+        档位编码: 'std',
+        档位名称: '标准',
+        每天写入量: '5 GB/天',
+        保留期: '30 天',
+        预计占用: '150 GB',
+        引用服务: '2',
+        滚动最小时长: '1d',
+        滚动最小主分片大小: '5gb',
+        状态: '启用',
+        默认档位: '是',
+        备注: '标准日志\n保留三十天',
+      })
+      expect(dialog.querySelector('input, textarea, .ant-select, .ant-switch')).toBeNull()
+      expect(dialog.querySelector('.ant-modal-footer')).toBeNull()
+      expect(wrapper.vm.editorOpen).toBe(false)
+      wrapper.vm.openEdit(wrapper.vm.tiers[0])
+      wrapper.vm.openCreate()
+      await wrapper.vm.submit()
+      wrapper.vm.confirmDelete(wrapper.vm.tiers[0])
+      expect(wrapper.vm.editorOpen).toBe(false)
+      expect(api.saveLogRetentionTier).not.toHaveBeenCalled()
+      expect(api.batchDeleteLogRetentionTiers).not.toHaveBeenCalled()
+      expect(openDeleteConfirm).not.toHaveBeenCalled()
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('关闭详情后可查看另一档位，小时、零引用和空备注均正确显示', async () => {
+    store.state.perms = ['monitor:view']
+    const wrapper = await mountPage()
+    try {
+      await wrapper.findAll('[data-view-tier]')[0].trigger('click')
+      await flushPromises()
+      document.body.querySelector('.ant-modal-close').click()
+      await flushPromises()
+      expect(wrapper.vm.detailTier).toBeNull()
+      await wrapper.findAll('[data-view-tier]')[1].trigger('click')
+      await flushPromises()
+      const dialog = document.body.querySelector('.ant-modal-content')
+      expect(dialog.querySelector('.ant-modal-title').textContent).toBe('保留档位详情：短期')
+      for (const text of ['12 小时', '2.5 GB', '30m']) expect(dialog.textContent).toContain(text)
+      const details = Object.fromEntries(Array.from(dialog.querySelectorAll('.ant-descriptions-item-label')).map((label) => [
+        label.textContent, label.nextElementSibling.textContent.trim(),
+      ]))
+      expect(details.引用服务).toBe('0')
+      expect(details.默认档位).toBe('否')
+      expect(details.备注).toBe('-')
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('管理员沿用详情权限，普通用户缺少查看权限时不能打开详情', async () => {
+    store.state.perms = []
+    const wrapper = await mountPage()
+    try {
+      expect(wrapper.find('[data-view-tier]').exists()).toBe(false)
+      wrapper.vm.openDetails(wrapper.vm.tiers[0])
+      expect(wrapper.vm.detailTier).toBeNull()
+      store.state.role_codes = ['admin']
+      await flushPromises()
+      const initialForm = JSON.stringify(wrapper.vm.form)
+      await wrapper.findAll('[data-view-tier]')[0].trigger('click')
+      await flushPromises()
+      expect(document.body.querySelector('.ant-descriptions')).not.toBeNull()
+      expect(document.body.querySelector('.ant-modal-footer')).toBeNull()
+      expect(JSON.stringify(wrapper.vm.form)).toBe(initialForm)
+      const action = wrapper.vm.columns.find((column) => column.key === 'action')
+      expect(action).toMatchObject({ fixed: 'right', width: 180 })
+      expect(wrapper.findComponent({ name: 'ATable' }).props('scroll')).toEqual({ x: 1250 })
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('edits a tier with value + unit and never sends the legacy days field', async () => {
     const { saveLogRetentionTier } = await import('@/api/monitor')
     const wrapper = await mountPage()
@@ -64,6 +166,9 @@ describe('日志保留档位：保留期的值 + 单位', () => {
 
     // 容量反推按小时折算：5GB/天 × 12 小时 = 2.5GB（不折算会是 60GB）。
     expect(wrapper.vm.estimatedTotal).toBe(2.5)
+    const select = wrapper.findComponent({ name: 'ASelect' })
+    const trigger = document.body.querySelector('.ant-modal-content .ant-select')
+    expect(select.props('getPopupContainer')(trigger)).toBe(trigger.closest('.ant-modal-wrap'))
 
     await wrapper.vm.submit()
     await flushPromises()

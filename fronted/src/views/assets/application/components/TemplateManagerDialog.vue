@@ -37,6 +37,11 @@
         </template>
         <template v-else-if="column.key === 'action'">
           <a-space>
+            <a-tooltip title="查看详情" placement="top">
+              <a-button v-permission="'assets:applications:view'" data-view-template size="small" @click="openView(record)">
+                <FontAwesomeIcon :icon="['fas', 'fa-circle-info']" />
+              </a-button>
+            </a-tooltip>
             <a-tooltip title="编辑">
               <a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openEdit(record)">
                 <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
@@ -61,6 +66,7 @@
       :open="templateDialogOpen"
       :template-id="selectedTemplateId"
       :copy-from-id="selectedTemplateCopyId"
+      :read-only="templateReadOnly"
       :initial-application-id="application?.id"
       @update:open="templateDialogOpen = $event"
       @saved="handleTemplateSaved"
@@ -95,13 +101,14 @@ const columns = [
   { title: 'App Home', dataIndex: 'app_home', key: 'app_home', width: 260 },
   { title: '状态', key: 'enabled', width: 90 },
   { title: '备注', dataIndex: 'remark', key: 'remark', width: 200 },
-  { title: '操作', key: 'action', width: 130, fixed: 'right' },
+  { title: '操作', key: 'action', width: 180, fixed: 'right' },
 ]
 const templates = ref([])
 const loading = ref(false)
 const templateDialogOpen = ref(false)
 const selectedTemplateId = ref(null)
 const selectedTemplateCopyId = ref(null)
+const templateReadOnly = ref(false)
 
 async function loadTemplates() {
   if (!props.application?.id) return
@@ -115,18 +122,27 @@ async function loadTemplates() {
 }
 
 function openCreate() {
+  templateReadOnly.value = false
   selectedTemplateId.value = null
   selectedTemplateCopyId.value = null
   templateDialogOpen.value = true
 }
 function openEdit(record) {
+  templateReadOnly.value = false
   selectedTemplateId.value = record.id
   selectedTemplateCopyId.value = null
   templateDialogOpen.value = true
 }
 function openCopy(record) {
+  templateReadOnly.value = false
   selectedTemplateId.value = null
   selectedTemplateCopyId.value = record.id
+  templateDialogOpen.value = true
+}
+function openView(record) {
+  templateReadOnly.value = true
+  selectedTemplateId.value = record.id
+  selectedTemplateCopyId.value = null
   templateDialogOpen.value = true
 }
 

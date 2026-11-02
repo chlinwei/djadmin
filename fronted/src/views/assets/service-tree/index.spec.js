@@ -24,6 +24,7 @@ import ServiceTreePage from './index.vue'
 
 let panelObserver
 beforeEach(() => {
+  initChart.mockClear()
   vi.stubGlobal('ResizeObserver', class {
     constructor(callback) {
       this.callback = callback
@@ -33,7 +34,21 @@ beforeEach(() => {
     }
   })
 })
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+})
+
+function mockChartSize(width = 400, height = 220) {
+  const size = { width, height }
+  for (const [property, dimension] of [['clientWidth', 'width'], ['clientHeight', 'height']]) {
+    const getter = Object.getOwnPropertyDescriptor(Element.prototype, property).get
+    vi.spyOn(Element.prototype, property, 'get').mockImplementation(function () {
+      return this.classList.contains('service-tree-right-chart') ? size[dimension] : getter.call(this)
+    })
+  }
+  return size
+}
 
 const ServiceTreeStub = {
   name: 'ServiceTree',
@@ -65,7 +80,7 @@ const ServiceDependencyWorkspaceStub = {
   methods: { refresh: vi.fn() },
 }
 
-async function mountPage(query = {}) {
+async function mountPage(query = {}, { keepAlive = false } = {}) {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -75,7 +90,9 @@ async function mountPage(query = {}) {
   })
   router.push({ path: '/assets/service-tree', query })
   await router.isReady()
-  return mount(ServiceTreePage, {
+  return mount(keepAlive ? {
+    template: '<router-view v-slot="{ Component }"><keep-alive><component :is="Component" /></keep-alive></router-view>',
+  } : ServiceTreePage, {
     global: {
       plugins: [Antd, router],
       stubs: {
@@ -94,6 +111,91 @@ async function mountPage(query = {}) {
 }
 
 describe('service-tree capacity charts', () => {
+  it('waits for positive width and height, then initializes with the latest data on layout resize', async () => {
+    const size = mockChartSize(0, 0)
+    const wrapper = await mountPage()
+    await flushPromises()
+    wrapper.findComponent(ServiceTreeStub).vm.$emit('stats-change', {
+      cpuRows: [{ name: 'API', value: 12 }], memoryRows: [], totalCpu: 12,
+    })
+    await flushPromises()
+    expect(initChart).not.toHaveBeenCalled()
+    size.width = 400
+    panelObserver.callback()
+    await flushPromises()
+    expect(initChart).not.toHaveBeenCalled()
+    size.height = 220
+    panelObserver.callback()
+    await flushPromises()
+    expect(initChart).toHaveBeenCalledTimes(2)
+    const charts = initChart.mock.results.map((result) => result.value)
+    expect(charts[0].setOption.mock.calls.at(-1)[0].series[0].data).toEqual([{ name: 'API', value: 12 }])
+    charts.forEach((chart) => chart.resize.mockClear())
+    size.width = 0
+    panelObserver.callback()
+    expect(charts.every((chart) => chart.resize.mock.calls.length === 0)).toBe(true)
+    size.width = 500
+    panelObserver.callback()
+    expect(initChart).toHaveBeenCalledTimes(2)
+    expect(charts.every((chart) => chart.resize.mock.calls.length === 1)).toBe(true)
+    wrapper.unmount()
+    expect(charts.every((chart) => chart.dispose.mock.calls.length === 1)).toBe(true)
+  })
+
+  it('does not draw hidden service/deployment or dependency panels and redraws when statistics return', async () => {
+    mockChartSize()
+    const wrapper = await mountPage({ application_service_id: '21' })
+    await flushPromises()
+    const tree = wrapper.findComponent(ServiceTreeStub)
+    tree.vm.$emit('stats-change', { cpuRows: [], memoryRows: [] })
+    await flushPromises()
+    panelObserver.callback()
+    expect(initChart).not.toHaveBeenCalled()
+    tree.vm.$emit('select', { nodeType: 'deployment', applicationServiceId: 21, deploymentId: 31 })
+    await flushPromises()
+    expect(initChart).not.toHaveBeenCalled()
+    tree.vm.$emit('select', { nodeType: 'all', nodeTitle: '全部业务' })
+    await flushPromises()
+    expect(initChart).toHaveBeenCalledTimes(2)
+    const charts = initChart.mock.results.map((result) => result.value)
+    charts.forEach((chart) => { chart.setOption.mockClear(); chart.resize.mockClear() })
+    await wrapper.findAll('[role="tab"]').find((tab) => tab.text() === '依赖关系').trigger('click')
+    tree.vm.$emit('stats-change', { cpuRows: [{ name: 'Latest', value: 8 }], memoryRows: [] })
+    await flushPromises()
+    panelObserver.callback()
+    expect(charts.every((chart) => chart.setOption.mock.calls.length === 0 && chart.resize.mock.calls.length === 0)).toBe(true)
+    await wrapper.findAll('[role="tab"]').find((tab) => tab.text() === '服务信息').trigger('click')
+    await flushPromises()
+    expect(initChart).toHaveBeenCalledTimes(2)
+    expect(charts[0].setOption.mock.calls.at(-1)[0].series[0].data).toEqual([{ name: 'Latest', value: 8 }])
+    wrapper.unmount()
+  })
+
+  it('pauses drawing while cached and redraws latest data on activation without recreating charts', async () => {
+    mockChartSize()
+    const wrapper = await mountPage({}, { keepAlive: true })
+    await flushPromises()
+    const tree = wrapper.findComponent(ServiceTreeStub)
+    const observer = panelObserver
+    expect(initChart).toHaveBeenCalledTimes(2)
+    const charts = initChart.mock.results.map((result) => result.value)
+    await wrapper.vm.$router.push('/other')
+    await flushPromises()
+    charts.forEach((chart) => { chart.setOption.mockClear(); chart.resize.mockClear() })
+    tree.vm.$emit('stats-change', { cpuRows: [{ name: 'Cached', value: 6 }], memoryRows: [] })
+    await flushPromises()
+    observer.callback()
+    expect(charts.every((chart) => chart.setOption.mock.calls.length === 0 && chart.resize.mock.calls.length === 0)).toBe(true)
+    expect(charts.every((chart) => chart.dispose.mock.calls.length === 0)).toBe(true)
+    await wrapper.vm.$router.push('/assets/service-tree')
+    await flushPromises()
+    expect(initChart).toHaveBeenCalledTimes(2)
+    expect(charts[0].setOption.mock.calls.at(-1)[0].series[0].data).toEqual([{ name: 'Cached', value: 6 }])
+    expect(charts.every((chart) => chart.resize.mock.calls.length > 0)).toBe(true)
+    wrapper.unmount()
+    expect(charts.every((chart) => chart.dispose.mock.calls.length === 1)).toBe(true)
+  })
+
   it('opens dependencies in the existing tree scope and unmounts status-checking details while hidden', async () => {
     const wrapper = await mountPage()
     const tree = wrapper.findComponent(ServiceTreeStub)
@@ -206,6 +308,7 @@ describe('service-tree capacity charts', () => {
   })
 
   it('preserves pie charts while showing deduplicated totals and explaining overlapping groups', async () => {
+    mockChartSize()
     const wrapper = await mountPage()
     await flushPromises()
     const tree = wrapper.findComponent(ServiceTreeStub)

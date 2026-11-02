@@ -83,10 +83,134 @@ function applicationLabels(wrapper) {
   return wrapper.findAll('.application-label').map((node) => node.text())
 }
 
-describe('日志处理规则：左侧应用筛选', () => {
+describe('日志处理规则', () => {
   afterEach(() => {
     document.body.innerHTML = ''
     vi.clearAllMocks()
+  })
+
+  describe('解析试算语义与权限', () => {
+    it('只读用户打开解析试算而不是运行或编辑，试算不发布规则', async () => {
+      store.state.perms = ['monitor:view']
+      const api = await import('@/api/monitor')
+      api.simulateElasticsearchPipeline.mockResolvedValueOnce({
+        data: { data: { docs: [{ doc: { _source: { log_message: 'sample' } } }], missing_fields: [], schema_violations: [] } },
+      })
+      const wrapper = await mountPage()
+      try {
+        const entry = wrapper.findAll('[data-simulate-rule]')[0]
+        const tooltip = wrapper.findAllComponents({ name: 'ATooltip' })
+          .find((item) => item.props('title') === '解析试算')
+        expect(tooltip.props('placement')).toBe('top')
+        await entry.trigger('mouseenter')
+        await new Promise((resolve) => setTimeout(resolve, 150))
+        await flushPromises()
+        expect(document.body.querySelector('.ant-tooltip-inner')?.textContent).toBe('解析试算')
+        expect(entry.find('.anticon-experiment').exists()).toBe(true)
+        await entry.trigger('click')
+        await flushPromises()
+        expect(document.body.querySelector('.ant-modal-title').textContent).toBe('解析试算：springboot-tomcat-exception')
+        const dialog = document.body.querySelector('.ant-modal-content')
+        expect(dialog.textContent).toContain('不保存或发布规则，不下发配置，不写入日志索引')
+        expect(dialog.querySelector('.ant-modal-footer').textContent.replace(/\s/g, '')).toBe('关闭')
+        expect(api.simulateElasticsearchPipeline).not.toHaveBeenCalled()
+        wrapper.vm.sampleMode = 'json'
+        wrapper.vm.sampleText = '{"message":"sample"}'
+        wrapper.vm.extraProcessorsText = '[{"drop":{}}]'
+        await flushPromises()
+        dialog.querySelector('[data-simulate-sample]').click()
+        await flushPromises()
+        expect(api.simulateElasticsearchPipeline).toHaveBeenCalledWith(2, expect.objectContaining({
+          pipeline: { processors: [] }, docs: [{ message: 'sample' }], rule_name: 'springboot-tomcat-exception',
+        }))
+        expect(api.simulateElasticsearchPipeline.mock.calls[0][1]).not.toHaveProperty('extra_processors')
+        expect(dialog.textContent).toContain('试算结果')
+        expect(dialog.textContent).not.toContain('运行结果')
+        await wrapper.vm.publishPipeline()
+        expect(api.saveLogProcessingRule).not.toHaveBeenCalled()
+        expect(api.saveLogCollectionFilterRule).not.toHaveBeenCalled()
+        expect(api.batchDeleteLogProcessingRules).not.toHaveBeenCalled()
+      } finally {
+        wrapper.unmount()
+      }
+    })
+
+    it.each([
+      ['仅查看权限', ['monitor:view']],
+      ['有新增删除权限但无修改权限', ['monitor:view', 'monitor:create', 'monitor:delete']],
+    ])('%s时规则配置只读，只有日志样例可输入', async (_label, perms) => {
+      store.state.perms = perms
+      const wrapper = await mountPage()
+      try {
+        const originalRule = JSON.stringify(wrapper.vm.processingRules[0])
+        await wrapper.findAll('[data-simulate-rule]')[0].trigger('click')
+        await flushPromises()
+        const dialog = document.body.querySelector('.ant-modal-content')
+        const selectTab = async (label) => {
+          Array.from(dialog.querySelectorAll('.ant-tabs-tab-btn')).find((tab) => tab.textContent === label).click()
+          await flushPromises()
+        }
+        const samplePane = dialog.querySelector('.ant-tabs-tabpane-active')
+        expect(samplePane.textContent).not.toContain('条件丢弃预览')
+        expect(samplePane.querySelectorAll('textarea')).toHaveLength(1)
+        const sampleInput = samplePane.querySelector('textarea')
+        expect(sampleInput.readOnly).toBe(false)
+        sampleInput.value = '用于试算的新日志样例'
+        sampleInput.dispatchEvent(new Event('input', { bubbles: true }))
+        await flushPromises()
+        expect(wrapper.vm.sampleText).toBe('用于试算的新日志样例')
+
+        await selectTab('发送前处理（Filebeat）')
+        const preprocessPane = dialog.querySelector('.ant-tabs-tabpane-active')
+        expect(preprocessPane.querySelector('.ant-descriptions')).not.toBeNull()
+        expect(preprocessPane.querySelector('input, textarea, .ant-select, .ant-switch, .ant-segmented')).toBeNull()
+        for (const text of ['springboot-tomcat-exception', '/logs/mqif_RS.log', '/logs/mqif_SS1.log', 'Tomcat', '文本', '开启', '首行正则', '合并超时（毫秒）']) {
+          expect(preprocessPane.textContent).toContain(text)
+        }
+        expect(dialog.textContent).toContain('规则配置不可修改，仅可更换日志样例进行试算')
+
+        await selectTab('字段解析（Elasticsearch Ingest）')
+        const pipelineInput = dialog.querySelector('.ant-tabs-tabpane-active textarea')
+        expect(pipelineInput.readOnly).toBe(true)
+        expect(pipelineInput.disabled).toBe(false)
+        expect(JSON.parse(pipelineInput.value)).toEqual({ processors: [] })
+        pipelineInput.select()
+        expect(pipelineInput.selectionEnd - pipelineInput.selectionStart).toBe(pipelineInput.value.length)
+        expect(JSON.stringify(wrapper.vm.processingRules[0])).toBe(originalRule)
+      } finally {
+        wrapper.unmount()
+      }
+    })
+
+    it('有修改权限时保留发布入口，重新编辑不会残留试算标题', async () => {
+      const wrapper = await mountPage()
+      try {
+        await wrapper.findAll('[data-simulate-rule]')[0].trigger('click')
+        await flushPromises()
+        expect(document.body.querySelector('.ant-modal-title').textContent).toContain('解析试算：')
+        expect(document.body.querySelector('.ant-modal-footer').textContent.replace(/\s/g, '')).toContain('发布')
+        const dialog = document.body.querySelector('.ant-modal-content')
+        expect(dialog.querySelector('.ant-tabs-tabpane-active').textContent).toContain('条件丢弃预览')
+        wrapper.vm.activeTab = 'ingest'
+        await flushPromises()
+        expect(dialog.querySelector('.ant-tabs-tabpane-active textarea').readOnly).toBe(false)
+        wrapper.vm.openEdit(wrapper.vm.processingRules[0])
+        await flushPromises()
+        expect(document.body.querySelector('.ant-modal-title').textContent).toBe('编辑处理规则：springboot-tomcat-exception')
+        expect(wrapper.vm.activeTab).toBe('preprocess')
+        expect(dialog.querySelector('.ant-tabs-tabpane-active .ant-select')).not.toBeNull()
+        store.state.perms = ['monitor:view']
+        await flushPromises()
+        expect(document.body.querySelector('.ant-modal-footer').textContent.replace(/\s/g, '')).toBe('关闭')
+        expect(dialog.querySelector('.ant-tabs-tabpane-active input')).toBeNull()
+        store.state.perms = ['monitor:view', 'monitor:create', 'monitor:update']
+        wrapper.vm.openCreate()
+        await flushPromises()
+        expect(document.body.querySelector('.ant-modal-title').textContent).toBe('新增日志处理规则')
+      } finally {
+        wrapper.unmount()
+      }
+    })
   })
 
   it('左侧有筛选框，默认列出全部应用与「通用」', async () => {
@@ -200,7 +324,7 @@ describe('日志处理规则：关联模板 tab', () => {
 // 回归（2026-09-21 现场）：日志规则"运行"出结果后点复制，报"复制失败，请手动选中复制"。
 // 根因是 copyResult 直接调 navigator.clipboard.writeText，而内网多为 HTTP（非安全上下文），
 // 该 API 不存在，必然抛错进 catch。修复后统一走 @/util/clipboard 的 execCommand 兜底。
-describe('日志处理规则：运行结果复制', () => {
+describe('日志处理规则：试算结果复制', () => {
   afterEach(() => {
     document.body.innerHTML = ''
     vi.clearAllMocks()
@@ -225,7 +349,7 @@ describe('日志处理规则：运行结果复制', () => {
     wrapper.unmount()
   })
 
-  it('运行结果为空时给提示、不触发复制', async () => {
+  it('试算结果为空时给提示、不触发复制', async () => {
     const wrapper = await mountPage()
     wrapper.vm.simulationText = ''
 

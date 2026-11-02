@@ -30,6 +30,7 @@
         rowKey="id"
         size="small"
         :locale="tableLocale"
+        :scroll="{ x: 1100 }"
         @change="onTableChange"
       >
         <template #bodyCell="{ column, record }">
@@ -53,6 +54,11 @@
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
+              <a-tooltip title="查看详情" placement="top">
+                <a-button size="small" data-view-inventory @click="openScopeViewer(record)" v-permission="'automation:inventory:view'">
+                  <FontAwesomeIcon :icon="['fas', 'fa-circle-info']" />
+                </a-button>
+              </a-tooltip>
               <a-tooltip title="编辑">
                 <a-button size="small" type="primary" @click="openEditModal(record)" v-permission="'automation:inventory:update'">
                   <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
@@ -145,6 +151,18 @@
       :footer="null"
       @cancel="scopeViewVisible = false"
     >
+      <a-descriptions v-if="scopeViewInventory" bordered size="small" :column="2" class="scope-viewer__details">
+        <a-descriptions-item label="名称">{{ scopeViewInventory.name }}</a-descriptions-item>
+        <a-descriptions-item label="启用状态">
+          <a-tag :color="scopeViewInventory.enabled ? 'green' : 'default'">{{ scopeViewInventory.enabled ? '启用' : '禁用' }}</a-tag>
+        </a-descriptions-item>
+        <a-descriptions-item label="可用主机">{{ Number(scopeViewInventory.resolved_host_count || 0) }} 台</a-descriptions-item>
+        <a-descriptions-item label="健康状态">
+          <a-tag :color="getHealthTagColor(scopeViewInventory)">{{ scopeViewInventory.health_status?.label || '未知' }}</a-tag>
+          <span>{{ scopeViewInventory.health_status?.message || '' }}</span>
+        </a-descriptions-item>
+        <a-descriptions-item label="备注" :span="2">{{ scopeViewInventory.remark || '-' }}</a-descriptions-item>
+      </a-descriptions>
       <div class="scope-editor__desc">仅展示当前 Inventory 执行范围（主机组与主机），未命中节点已隐藏</div>
       <div class="scope-viewer__summary">{{ scopeViewSummary }}</div>
       <a-input
@@ -209,6 +227,7 @@ const inventoryStatusUpdatingId = ref(null)
 const modalVisible = ref(false)
 const scopeModalVisible = ref(false)
 const scopeViewVisible = ref(false)
+const scopeViewInventory = ref(null)
 const scopeViewTitle = ref('查看 Inventory 范围')
 const scopeViewSummary = ref('')
 const scopeViewTreeData = ref([])
@@ -573,10 +592,11 @@ function formatInventoryHostDisplayName(host) {
 }
 
 function openScopeViewer(record) {
+  scopeViewInventory.value = record
   scopeViewKeyword.value = ''
   const selectedHostIds = Array.isArray(record?.selected_host_ids) ? record.selected_host_ids : []
 
-  scopeViewTitle.value = `查看 Inventory 范围 - ${record?.name || ''}`
+  scopeViewTitle.value = `查看 Inventory 详情 - ${record?.name || ''}`
 
   if (selectedHostIds.length > 0) {
     const treeWithHosts = buildViewerTreeWithHosts(groupTreeData.value, hostOptions.value)
@@ -898,5 +918,9 @@ watch(
 .scope-viewer__search {
   max-width: 360px;
   margin-bottom: 10px;
+}
+
+.scope-viewer__details {
+  margin-bottom: 16px;
 }
 </style>

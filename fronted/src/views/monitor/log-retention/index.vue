@@ -31,7 +31,7 @@
       :loading="loading"
       :pagination="false"
       size="small"
-      :scroll="{ x: 1180 }"
+      :scroll="{ x: 1250 }"
       :locale="{ emptyText: '暂无保留档位' }"
     >
       <template #bodyCell="{ column, record }">
@@ -61,12 +61,17 @@
         </template>
         <template v-else-if="column.key === 'action'">
           <a-space :size="6">
-            <a-tooltip title="编辑">
+            <a-tooltip title="查看详情" placement="top">
+              <a-button v-if="checkPermission('monitor:view')" size="small" data-view-tier @click="openDetails(record)">
+                <FontAwesomeIcon :icon="['fas', 'fa-circle-info']" />
+              </a-button>
+            </a-tooltip>
+            <a-tooltip title="编辑" placement="top">
               <a-button v-if="checkPermission('monitor:update')" type="primary" @click="openEdit(record)">
                 <FontAwesomeIcon :icon="['fa', 'edit']" />
               </a-button>
             </a-tooltip>
-            <a-tooltip title="删除">
+            <a-tooltip title="删除" placement="top">
               <a-button v-if="checkPermission('monitor:delete')" class="delBtn" danger type="primary" @click="confirmDelete(record)">
                 <FontAwesomeIcon :icon="['fas', 'trash-can']" />
               </a-button>
@@ -75,6 +80,31 @@
         </template>
       </template>
     </a-table>
+
+    <a-modal
+      :open="Boolean(detailTier)"
+      :title="`保留档位详情：${detailTier?.name || ''}`"
+      :width="720"
+      :footer="null"
+      centered
+      @cancel="detailTier = null"
+    >
+      <a-descriptions v-if="detailTier" bordered :column="2" size="small">
+        <a-descriptions-item label="档位编码">{{ detailTier.code }}</a-descriptions-item>
+        <a-descriptions-item label="档位名称">{{ detailTier.name }}</a-descriptions-item>
+        <a-descriptions-item label="每天写入量">{{ detailTier.daily_size_gb }} GB/天</a-descriptions-item>
+        <a-descriptions-item label="保留期">{{ retentionText(detailTier) }}</a-descriptions-item>
+        <a-descriptions-item label="预计占用">{{ detailTier.estimated_total_gb }} GB</a-descriptions-item>
+        <a-descriptions-item label="引用服务">{{ detailTier.service_count }}</a-descriptions-item>
+        <a-descriptions-item label="滚动最小时长">{{ detailTier.rollover_min_index_age }}</a-descriptions-item>
+        <a-descriptions-item label="滚动最小主分片大小">{{ detailTier.rollover_min_primary_shard_size }}</a-descriptions-item>
+        <a-descriptions-item label="状态">{{ detailTier.enabled ? '启用' : '停用' }}</a-descriptions-item>
+        <a-descriptions-item label="默认档位">{{ detailTier.is_default ? '是' : '否' }}</a-descriptions-item>
+        <a-descriptions-item label="备注" :span="2">
+          <span style="white-space: pre-wrap; overflow-wrap: anywhere">{{ detailTier.remark || '-' }}</span>
+        </a-descriptions-item>
+      </a-descriptions>
+    </a-modal>
 
     <a-modal
       v-model:open="editorOpen"
@@ -120,6 +150,7 @@
                 <a-select
                   v-model:value="form.retention_unit"
                   :options="RETENTION_UNIT_OPTIONS"
+                  :getPopupContainer="getPopupContainer"
                   style="width: 90px"
                 />
               </a-input-group>
@@ -164,9 +195,12 @@ import {
   saveLogRetentionTier,
 } from '@/api/monitor'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
+import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { RETENTION_UNIT_DAY, RETENTION_UNIT_HOUR, RETENTION_UNIT_OPTIONS, estimatedTotalGB, retentionText } from '@/util/logRetention'
 
+const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 const tiers = ref([])
+const detailTier = ref(null)
 const loading = ref(false)
 const saving = ref(false)
 const editorOpen = ref(false)
@@ -195,7 +229,7 @@ const columns = [
   { title: '滚动条件（时长/分片）', key: 'rollover', width: 180, align: 'center' },
   { title: '状态', key: 'enabled', width: 90, align: 'center' },
   { title: '引用服务', key: 'service_count', width: 100, align: 'center' },
-  { title: '操作', key: 'action', width: 130, fixed: 'right' },
+  { title: '操作', key: 'action', width: 180, fixed: 'right' },
 ]
 
 const formRules = {
@@ -245,6 +279,11 @@ function resetForm() {
     is_default: false,
     remark: '',
   })
+}
+
+function openDetails(record) {
+  if (!checkPermission('monitor:view')) return
+  detailTier.value = record
 }
 
 function openCreate() {

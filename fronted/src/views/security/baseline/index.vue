@@ -107,7 +107,7 @@
               :columns="itemColumns"
               :data-source="categoryRows"
               :loading="itemsLoading"
-              :scroll="{ x: 760 }"
+              :scroll="{ x: 800 }"
               :pagination="itemPagination"
               size="small"
               :locale="{ emptyText: selectedCategory ? '该类目暂无策略，点击右上角「添加策略」' : (selectedBaseline ? '左侧选择一个类目查看策略' : '左侧选择一个基线标准') }"
@@ -118,6 +118,11 @@
                 </template>
                 <template v-else-if="column.key === 'action'">
                   <a-space :size="6">
+                    <a-tooltip title="查看详情" placement="top">
+                      <a-button v-permission="'baseline:view'" size="small" data-view-policy @click="openItemDetails(record)">
+                        <FontAwesomeIcon :icon="['fas', 'fa-circle-info']" />
+                      </a-button>
+                    </a-tooltip>
                     <a-tooltip title="上移" placement="top">
                       <a-button v-permission="'baseline:manage'" size="small" :disabled="itemsMoving || itemsLoading || itemEditModalOpen || record.id === categoryRows[0]?.id" @click="moveItem(record, 'up')">
                         <FontAwesomeIcon :icon="['fas', 'arrow-up']" />
@@ -203,6 +208,48 @@
         </div>
         <a-form-item label="描述"><a-textarea v-model:value="baselineForm.description" :rows="2" /></a-form-item>
       </a-form>
+    </a-modal>
+
+    <a-modal
+      :open="Boolean(itemDetail)"
+      :title="`策略详情：${itemDetail?.name || ''}`"
+      width="80vw"
+      style="max-width: 1200px"
+      centered
+      :footer="null"
+      @cancel="itemDetail = null"
+    >
+      <template v-if="itemDetail">
+        <a-descriptions bordered :column="2" size="small">
+          <a-descriptions-item label="策略名称" :span="2">{{ itemDetail.name }}</a-descriptions-item>
+          <a-descriptions-item label="所属基线">{{ itemDetail.baseline_name || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="所属类目">{{ itemDetail.category_name || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="严重级别">{{ severityLabel(itemDetail.severity) }}</a-descriptions-item>
+          <a-descriptions-item label="运行用户">{{ itemDetail.run_user || 'root（默认）' }}</a-descriptions-item>
+          <a-descriptions-item label="说明" :span="2">
+            <span class="policy-detail-text">{{ itemDetail.description || '-' }}</span>
+          </a-descriptions-item>
+          <a-descriptions-item label="修复建议" :span="2">
+            <span class="policy-detail-text">{{ itemDetail.remediation || '-' }}</span>
+          </a-descriptions-item>
+        </a-descriptions>
+        <h4>采集命令（{{ itemDetail.input_commands.length }}）</h4>
+        <p v-if="!itemDetail.input_commands.length">未配置采集命令</p>
+        <a-descriptions v-for="(input, index) in itemDetail.input_commands" :key="index" bordered :column="2" size="small" class="policy-detail-input">
+          <a-descriptions-item label="采集 key">{{ input.key }}</a-descriptions-item>
+          <a-descriptions-item label="解析方式">{{ opaParseOptions.find((option) => option.value === input.parse)?.label || input.parse || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="命令" :span="2"><pre class="policy-detail-code">{{ input.exec }}</pre></a-descriptions-item>
+        </a-descriptions>
+        <h4>文件采集（{{ itemDetail.input_files.length }}）</h4>
+        <p v-if="!itemDetail.input_files.length">未配置文件采集</p>
+        <a-descriptions v-for="(input, index) in itemDetail.input_files" :key="index" bordered :column="2" size="small" class="policy-detail-input">
+          <a-descriptions-item label="采集 key">{{ input.key }}</a-descriptions-item>
+          <a-descriptions-item label="解析方式">{{ opaParseOptions.find((option) => option.value === input.parse)?.label || input.parse || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="路径" :span="2"><pre class="policy-detail-code">{{ input.path }}</pre></a-descriptions-item>
+        </a-descriptions>
+        <h4>Rego 策略</h4>
+        <pre class="policy-detail-code">{{ itemDetail.policy || '未配置 Rego 策略' }}</pre>
+      </template>
     </a-modal>
 
     <a-modal v-model:open="itemEditModalOpen" :title="itemEditIndex === null ? '添加策略' : `编辑策略 - ${itemEditForm.name}`" width="80vw" style="max-width: 1200px" centered :mask-closable="false" :confirm-loading="itemsSaving" @ok="confirmItemEdit">
@@ -360,7 +407,7 @@ const itemColumns = [
   { title: '策略名称', dataIndex: 'name' },
   { title: '级别', key: 'severity', width: 70 },
   { title: '说明', dataIndex: 'description', key: 'description', ellipsis: true, width: 180 },
-  { title: '操作', key: 'action', fixed: 'right', width: 184 },
+  { title: '操作', key: 'action', fixed: 'right', width: 224 },
 ]
 
 const scans = ref([])
@@ -638,6 +685,15 @@ function mapBaselineItems(items) {
 const categoryRows = computed(() => itemForm.value
   .map((item, index) => ({ ...item, sourceIndex: index }))
   .filter((item) => item.category_id === selectedCategoryId.value))
+const itemDetail = ref(null)
+function openItemDetails(record) {
+  if (!checkPermission('baseline:view')) return
+  itemDetail.value = {
+    ...record,
+    baseline_name: selectedBaseline.value?.name,
+    category_name: categories.value.find((category) => category.id === record.category_id)?.name,
+  }
+}
 const itemEditModalOpen = ref(false)
 const itemEditIndex = ref(null)
 const itemsSaving = ref(false)
@@ -893,6 +949,19 @@ defineOptions({ name: 'ViewSecurityBaseline' })
 </script>
 
 <style scoped>
+.policy-detail-text,
+.policy-detail-code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.policy-detail-code {
+  margin: 0;
+  color: #262626;
+  font-family: "JetBrains Mono", "Cascadia Code", monospace;
+}
+.policy-detail-input {
+  margin-bottom: 12px;
+}
 /* 条目编辑器：与巡检组检查项编辑器保持一致的布局语义（fronted/src/views/inspection/index.vue）。 */
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .input-grid { display: grid; grid-template-columns: minmax(150px, 200px) 1fr minmax(110px, 150px) auto; gap: 8px; align-items: center; margin-bottom: 8px; }

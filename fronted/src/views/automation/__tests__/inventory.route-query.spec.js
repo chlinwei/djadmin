@@ -1,8 +1,10 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { nextTick, reactive } from 'vue'
 import InventoryPage from '../inventory/index.vue'
-import { message } from 'ant-design-vue'
-import { batchDeleteInventories } from '@/api/sys/automation'
+import Antd, { message } from 'ant-design-vue'
+import { batchDeleteInventories, createInventory, updateInventory } from '@/api/sys/automation'
+import store from '@/store'
+import permission from '@/directives/permission/index.js'
 
 const routeState = reactive({
   query: {},
@@ -51,6 +53,8 @@ const componentStubs = {
   'a-textarea': true,
   'a-tree': true,
   'a-empty': true,
+  'a-descriptions': true,
+  'a-descriptions-item': true,
   FontAwesomeIcon: true,
 }
 
@@ -98,6 +102,91 @@ describe('inventory route query auto search', () => {
       },
     })
   }
+
+  it('只读用户可通过操作列查看详情与范围，但不能编辑、删除或切换状态', async () => {
+    const originalRoles = store.state.role_codes
+    const originalPerms = store.state.perms
+    store.state.role_codes = ['readonly']
+    store.state.perms = ['automation:inventory:view']
+    vi.clearAllMocks()
+    getInventoryList.mockResolvedValue({
+      data: { data: { count: 1, results: [{
+        id: 9, name: 'Production Inventory', enabled: true, remark: '生产主机只读查看',
+        selected_host_ids: [201], resolved_host_count: 1,
+        health_status: { status: 'healthy', label: '正常', message: '已选主机可用' },
+      }] } },
+    })
+    getAutomationGroupTree.mockResolvedValue({
+      data: { data: [{ id: 1, name: 'production', children: [] }] },
+    })
+    getAutomationHostOptions.mockResolvedValue({
+      data: { data: { count: 1, next: null, results: [
+        { id: 201, instance_name: 'prod-01', ip: '10.0.0.1', group_id: 1 },
+      ] } },
+    })
+    const wrapper = mount(InventoryPage, {
+      attachTo: document.body,
+      global: { plugins: [Antd], directives: { permission }, stubs: { FontAwesomeIcon: true } },
+    })
+    try {
+      await flushPromises()
+      const view = wrapper.get('[data-view-inventory]')
+      expect(view.isVisible()).toBe(true)
+      const tooltip = wrapper.findAllComponents({ name: 'ATooltip' })
+        .find((item) => item.props('title') === '查看详情')
+      expect(tooltip.props('placement')).toBe('top')
+      await view.trigger('mouseenter')
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      await flushPromises()
+      expect(document.body.querySelector('.ant-tooltip-inner')?.textContent).toBe('查看详情')
+      const visibleButtons = wrapper.findAll('tbody button').filter((button) => button.isVisible())
+      expect(visibleButtons).toHaveLength(3) // 主机数量、禁用状态开关与查看详情。
+      expect(wrapper.get('tbody .ant-switch').attributes('disabled')).toBeDefined()
+      expect(wrapper.findComponent({ name: 'ATable' }).props('scroll')).toEqual({ x: 1100 })
+      expect(wrapper.vm.columns.find((column) => column.key === 'action')).toMatchObject({ fixed: 'right', width: 180 })
+      await view.trigger('click')
+      await flushPromises()
+      const dialog = document.body.querySelector('.ant-modal-content')
+      expect(dialog.textContent).toContain('查看 Inventory 详情 - Production Inventory')
+      expect(dialog.textContent).toContain('生产主机只读查看')
+      expect(dialog.textContent).toContain('已选主机可用')
+      expect(dialog.textContent).toContain('当前范围：1台主机')
+      expect(dialog.textContent).toContain('prod-01(10.0.0.1)')
+      expect(dialog.querySelector('.ant-modal-footer')).toBeNull()
+      expect(dialog.querySelector('.ant-switch')).toBeNull()
+      expect(dialog.querySelectorAll('input.ant-input')).toHaveLength(1)
+      expect(dialog.querySelector('input.ant-input').placeholder).toBe('搜索分组/主机/IP')
+      expect(dialog.querySelector('form')).toBeNull()
+      expect(wrapper.vm.modalVisible).toBe(false)
+      expect(createInventory).not.toHaveBeenCalled()
+      expect(updateInventory).not.toHaveBeenCalled()
+      expect(batchDeleteInventories).not.toHaveBeenCalled()
+    } finally {
+      wrapper.unmount()
+      store.state.role_codes = originalRoles
+      store.state.perms = originalPerms
+      document.body.innerHTML = ''
+    }
+  })
+
+  it('查看空范围仍显示状态、健康信息及备注占位，不复用编辑表单', async () => {
+    const wrapper = mountPage()
+    try {
+      await flushPromises()
+      wrapper.vm.openScopeViewer({
+        id: 9, name: 'Empty Inventory', enabled: false, selected_host_ids: [],
+        resolved_host_count: 0, health_status: { status: 'empty', label: '空范围', message: '未选择主机' },
+      })
+      await nextTick()
+      expect(wrapper.vm.scopeViewInventory).toMatchObject({ name: 'Empty Inventory', enabled: false })
+      expect(wrapper.vm.scopeViewTitle).toBe('查看 Inventory 详情 - Empty Inventory')
+      expect(wrapper.vm.scopeViewSummary).toBe('当前范围：0台主机')
+      expect(wrapper.vm.scopeViewTreeData).toEqual([])
+      expect(wrapper.vm.modalVisible).toBe(false)
+    } finally {
+      wrapper.unmount()
+    }
+  })
 
   it.each([true, false])('删除逐项结果 ok=%s 时正确提示', async (ok) => {
     const success = vi.spyOn(message, 'success').mockImplementation(() => {})

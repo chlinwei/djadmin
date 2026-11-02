@@ -160,27 +160,24 @@ func quoteAll(values []string) []string {
 	return quoted
 }
 
+// Mapping 只声明可检索的标准字段；service_id 等内部事件标记保留在 _source，不要求建索引。
 var standardLogFields = gin.H{
-	"@timestamp":               gin.H{"type": "date"},
-	"message":                  gin.H{"type": "text"},
-	"project":                  gin.H{"type": "keyword"},
-	"business_system":          gin.H{"type": "keyword"},
-	"environment":              gin.H{"type": "keyword"},
-	"service":                  gin.H{"type": "keyword"},
-	"service_id":               gin.H{"type": "keyword"},
-	"application":              gin.H{"type": "keyword"},
-	"instance":                 gin.H{"type": "keyword"},
-	"host_ip":                  gin.H{"type": "keyword"},
-	"log_name":                 gin.H{"type": "keyword"},
-	"log_path":                 gin.H{"type": "keyword"},
-	"log_level":                gin.H{"type": "keyword"},
-	"log_message":              gin.H{"type": "text"},
-	"error_fingerprint":        gin.H{"type": "keyword"},
-	"shared_source_id":         gin.H{"type": "keyword"},
-	"shared_source_generation": gin.H{"type": "keyword"},
-	"shared_source_name":       gin.H{"type": "keyword"},
+	"@timestamp":        gin.H{"type": "date"},
+	"message":           gin.H{"type": "text"},
+	"project":           gin.H{"type": "keyword"},
+	"business_system":   gin.H{"type": "keyword"},
+	"environment":       gin.H{"type": "keyword"},
+	"service":           gin.H{"type": "keyword"},
+	"application":       gin.H{"type": "keyword"},
+	"instance":          gin.H{"type": "keyword"},
+	"host_ip":           gin.H{"type": "keyword"},
+	"log_name":          gin.H{"type": "keyword"},
+	"log_path":          gin.H{"type": "keyword"},
+	"log_level":         gin.H{"type": "keyword"},
+	"log_message":       gin.H{"type": "text"},
+	"error_fingerprint": gin.H{"type": "keyword"},
 	// 平台标记字段（不是规则产出要求）：LOG_MAPPING_GUARD_MODE=tag 时，必备字段不齐的文档
-	// 会被打上它，检索侧据此默认排除。放进 mapping 是因为 dynamic:false 下未声明的字段会被丢弃。
+	// 会被打上它；声明 mapping 才能按此字段检索，dynamic:false 下未声明字段只保留在 _source。
 	"mapping_violation": gin.H{"type": "boolean"},
 	// flat_object 是 Elasticsearch 专有类型；Elasticsearch 用 flattened（8.x 自带，无需额外插件）。
 	"app_fields": gin.H{"type": "flattened"},

@@ -26,12 +26,20 @@ flowchart TD
 
 安装成功只是软件部署结果，仍需确认服务状态和 Prometheus 抓取结果。
 Filebeat 不在 Exporter 列表中维护，去「日志管理 → 日志采集」。
+软件仓库中的 Exporter 与 Filebeat 软件包下载使用 API 返回的 `download_url`，
+通过公共媒体地址解析工具将 `/media/...` 路径绑定到 `VITE_API_BASE_URL` 指定的后端，
+未配置时使用当前主机的 `9000` 端口，而不是前端开发端口。完整 HTTP(S) 下载地址保持原样；
+未同步或没有下载地址的软件包不提供可点击的下载链接。查看用户保留软件下载能力，不要求管理或执行权限。
 
 `monitor:view` 只提供查询。新增、修改/上传、删除分别需要
 `monitor:create`、`monitor:update`、`monitor:delete`，安装、重试、取消、启停和通知测试
 需要 `monitor:execute`。新增或删除监控目标可能安装/卸载服务，必须同时拥有对应资源动作
 与执行权限。Filebeat 采集使用独立的 `monitor:log_collect:*` 动作权限，
 日志数据清理另需 `monitor:logs:delete`，不能用监控查看权限替代。
+Exporter 目标表的主机勾选、全选与顶部批量栏仅在拥有 `monitor:execute` 时展示；
+仅授予 create/update/delete 而缺少 execute 时也不提供勾选。日志采集页的同类入口使用
+`monitor:view`、`monitor:log_collect:view` 与 `monitor:log_collect:execute` 的交集。
+只读用户仍可搜索、切换分组、筛选、翻页及查看状态；权限收回时立即清空已有勾选，避免残留批量操作上下文。
 完整矩阵与升级要求见 [登录认证与权限](ACCESS.md#只读与动作权限矩阵)。
 
 <a id="rules"></a>

@@ -1,6 +1,6 @@
 <template>
   <div class="host-target-panel">
-    <div class="host-target-panel__batch-bar">
+    <div v-if="rowSelection" class="host-target-panel__batch-bar">
       <div class="host-target-panel__batch-head">
         <span class="host-target-panel__count">已选 {{ selectedCount }} 台主机</span>
         <slot name="batch-actions" />
@@ -79,7 +79,7 @@ defineProps({
   loading: { type: Boolean, default: false },
   scrollX: { type: Number, default: undefined },
   pagination: { type: Object, required: true },
-  rowSelection: { type: Object, default: () => ({}) },
+  rowSelection: { type: Object, default: null },
   selectedCount: { type: Number, default: 0 },
   keyword: { type: String, default: '' },
   groupKeyword: { type: String, default: '' },

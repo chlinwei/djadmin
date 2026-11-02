@@ -408,6 +408,7 @@ const statusLoading = reactive({})
 const realStatusMap = reactive({})
 
 const table = useHostTargetTable({
+  canSelect: () => canExecute.value,
   extraQuery: () => ({
     filebeat_managed: managedFilter.value || undefined,
     config_state: configStateFilter.value || undefined,

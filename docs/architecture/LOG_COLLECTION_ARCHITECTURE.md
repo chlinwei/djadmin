@@ -262,7 +262,8 @@ Filebeat input，新的采集配置不得创建共享源数据流。数据库表
    按不可变 `service_id` 精确匹配的 `drop`，并将此前缀既有索引/数据流的 `index.final_pipeline`
    指向该 guard。Filebeat input 将服务 ID 作为字符串注入顶层 `service_id`；有 ID 的事件
    只按 ID 匹配墓碑，同编码新服务不受旧墓碑影响。没有 ID 的既有缓冲事件仍按墓碑四维编码拦截，
-   不能因重建服务而重新放行。索引模板将 `service_id` 声明为 keyword。
+   不能因重建服务而重新放行。`service_id` 是事件内部身份标记，final guard 直接读取写入事件，
+   不依赖 keyword Mapping；`dynamic:false` 下它仍可保留在 `_source`，但不建立索引。
    ES 侧屏障覆盖离线 agent、缓存事件及旧配置下发。bootstrap 与删除均锁同一集群行，
    在锁内重新读取全部墓碑再发布，避免并发覆盖别的服务的撤销规则。
    同时校验平台基础/档位索引模板均引用该 final guard；缺失时要求先 bootstrap 再重试，
@@ -673,6 +674,11 @@ cold 0.1GB/天 × 90 天 =   9 GB
 **索引模板里实际声明的字段（= 唯一权威清单，与 `log_management.go` 的 `standardLogFields` 一致）**
 共 16 个，分三类：
 
+`service_id`、`shared_source_id`、`shared_source_generation`、`shared_source_name` 不属于标准 Mapping，
+基础模板、档位模板与链路体检均不要求这些字段，缺失不会标记“待下发”。
+`service_id` 仍由采集片段携带，供 ingest 删除撤销保护读取，不要求用户为内部标记建立索引。
+已有索引中额外声明的字段不被自动删除；无需为修正体检要求重建索引或补充 Mapping。
+
 | 字段                                                                                                                     | 类型                     | 谁保证它存在                                                                                                                                                                                                                      |
 | ------------------------------------------------------------------------------------------------------------------------ | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@timestamp`                                                                                                           | date                     | Filebeat filestream（平台；值是否被 pipeline 的`date` processor 覆盖成日志时间另说）                                                                                                                                            |
@@ -686,11 +692,12 @@ cold 0.1GB/天 × 90 天 =   9 GB
 > **2026-09-19 的字段变更**：删掉 `log_time`（全仓库只有模板声明它，Go/前端/文档都没有读者——
 > 检索按 `@timestamp` 排序、时间归一由 pipeline 的 `date` processor 负责），加 `mapping_violation`
 > （平台标记，同上是唯一读者）。删列对已有 backing index 无影响（ES mapping 只增不减），
-> 只影响新滚动出来的索引；`dynamic:false` 下残留的写入会被静默丢弃。
+> 只影响新滚动出来的索引；`dynamic:false` 下未声明字段不建索引，但原值仍保留在 `_source`。
 
 **业务特有字段**：一律写进 `app_fields.<字段名>`（`flattened` 类型）。`error_message`、
 `error_template`、`stack_trace`、`exception_*` 这类**不在**索引模板里，属于业务附加字段，
-不要当固定字段用——写进顶层会被 `dynamic:false` 静默丢弃（§5.4 的 `schema_violations` 就是查这个）。
+不要当固定字段用——写进顶层不会建立索引，不能按这些顶层字段检索或聚合，原值仍保留在 `_source`
+（§5.4 的 `schema_violations` 就是查这个）。
 
 > ⚠️ **`extra_fields` 目前不影响任何东西**（2026-09-19 核实）：片段渲染
 > （`log_config_render.go`）与渲染查询（`ListHostLogRenderEntries`）都没有读

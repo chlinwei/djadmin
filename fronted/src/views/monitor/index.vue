@@ -420,7 +420,7 @@
                     </a-button>
                   </a-tooltip>
                   <a-tooltip title="下载">
-                    <a-button type="primary" ghost :disabled="!record.synced" :href="record.download_url" target="_blank">
+                    <a-button type="primary" ghost :disabled="!record.synced || !record.download_url" :href="record.download_url ? getMediaUrl(record.download_url) : undefined" target="_blank">
                       <FontAwesomeIcon :icon="['fas', 'download']" />
                     </a-button>
                   </a-tooltip>
@@ -886,6 +886,7 @@ import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import { copyTextWithFallback } from '@/util/clipboard'
+import { getMediaUrl } from '@/util/request'
 import store from '@/store'
 import { checkPermission } from '@/directives/permission/permission'
 // 纳管会安装、删除会卸载：资源权限和执行权限必须同时具备，数组权限是 ANY，不能用于这里。
@@ -951,6 +952,7 @@ const {
   handleTableChange: handleOverviewTableChange,
   handleGroupSelect: handleOverviewGroupSelect,
 } = useHostTargetTable({
+  canSelect: () => checkPermission('monitor:execute'),
   extraQuery: () => ({
     exporter_type: exporterFilterType.value || undefined,
     exporter_managed: overviewManagedFilter.value || undefined,

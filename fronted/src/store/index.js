@@ -39,7 +39,8 @@ export default createStore({
                 state.tabs[flag] = { title: tab.title, key: tab.key };
             }
             state.activeKey = tab.key;
-            state.selectedKeys = [tab.key];
+            // 标签保留完整定位地址；侧栏菜单键只有路径，不能带节点 query 或 hash。
+            state.selectedKeys = [pagePath];
 
         },
         remove_tab: (state, targetKey) => {

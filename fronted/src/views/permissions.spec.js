@@ -4,7 +4,7 @@ import { computed, nextTick, ref } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import store from '@/store'
 import permission from '@/directives/permission/index.js'
-import request from '@/util/request'
+import request, { getMediaUrl } from '@/util/request'
 import Scheduler from './sys/scheduler/index.vue'
 import SysConfig from './sys/sysconfig/index.vue'
 import Media from './monitor/media/index.vue'
@@ -19,6 +19,7 @@ vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }), useRoute: (
 vi.mock('@/util/keepAliveRefresh', () => ({ useKeepAliveRefreshLifecycle: vi.fn() }))
 vi.mock('@/util/request', () => ({
   default: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), del: vi.fn(), fileUpload: vi.fn() },
+  getMediaUrl: vi.fn((value) => new URL(value, 'http://api.example.test:9000').href),
 }))
 
 const task = { id: 1, name: '测试任务', enabled: true, supported: true, code: 'test', cron_expression: '* * * * *' }
@@ -36,6 +37,13 @@ beforeEach(() => {
   store.state.perms = []
   request.get.mockImplementation((url) => {
     if (url === 'sys/menus/getMenuTree/') return Promise.resolve(response([]))
+    if (url === 'monitor/targets/host-overview/') return Promise.resolve(response({
+      count: 2,
+      results: [17, 18].map((id) => ({
+        host_id: id, host_name: `host-${id}`, host_ip: `10.0.0.${id}`, host_agent_online: false,
+        exporters: [], filebeat: { managed: false },
+      })),
+    }))
     const rows = url === 'sys/scheduler/tasks/' ? [task]
       : url === 'sys/configs/' ? [config]
         : url === 'monitor/media/' ? [media] : []
@@ -161,6 +169,14 @@ describe('分离读取、修改与执行权限', () => {
   it('Exporter 安装/卸载分别要求 create/delete 与 execute 的交集', async () => {
     const { default: Monitor } = await import('./monitor/index.vue')
     await render(Monitor, ['monitor:view'])
+    wrapper.vm.activeTabKey = 'managed-targets'
+    await flushPromises()
+    const panel = () => wrapper.get('.host-target-panel')
+    expect(panel().text()).toContain('host-17')
+    expect(panel().findAll('input[type="checkbox"]')).toHaveLength(0)
+    expect(panel().find('.host-target-panel__batch-bar').exists()).toBe(false)
+    expect(panel().find('input[placeholder="搜索主机名 / IP"]').exists()).toBe(true)
+    expect(panel().find('.host-target-panel__tree').exists()).toBe(true)
     expect(wrapper.vm.canCreateTarget).toBe(false)
     expect(wrapper.vm.canDeleteTarget).toBe(false)
     wrapper.vm.openExporterCreateModal()
@@ -171,16 +187,62 @@ describe('分离读取、修改与执行权限', () => {
     store.state.perms.push('monitor:create', 'monitor:delete')
     expect(wrapper.vm.canCreateTarget).toBe(false)
     expect(wrapper.vm.canDeleteTarget).toBe(false)
+    await nextTick()
+    expect(panel().findAll('input[type="checkbox"]')).toHaveLength(0)
     store.state.perms.push('monitor:execute')
     expect(wrapper.vm.canCreateTarget).toBe(true)
     expect(wrapper.vm.canDeleteTarget).toBe(true)
+    await nextTick()
+    expect(panel().findAll('input[type="checkbox"]')).toHaveLength(3)
+    await panel().findAll('tbody input[type="checkbox"]')[0].setValue(true)
+    expect(wrapper.vm.overviewSelectedHostIds).toEqual([17])
+    expect(panel().get('.host-target-panel__count').text()).toBe('已选 1 台主机')
+    store.state.perms = ['monitor:view']
+    await nextTick()
+    expect(wrapper.vm.overviewSelectedHostIds).toEqual([])
+    expect(panel().findAll('input[type="checkbox"]')).toHaveLength(0)
+    expect(panel().find('.host-target-panel__batch-bar').exists()).toBe(false)
+  })
+
+  it.each(['exporter', 'filebeat'])('只读用户下载 %s 软件包使用后端媒体地址，不跳到前端相对路径', async (packageType) => {
+    const originalGet = request.get.getMockImplementation()
+    const mediaPath = `/media/monitor_packages/${packageType}/amd64/linux/package.tar.gz`
+    request.get.mockImplementation((url, params) => {
+      if (url === 'monitor/packages/') return Promise.resolve(response({
+        count: 3,
+        results: [
+          { id: 5, name: packageType, package_type: packageType, version: '1.8.2', synced: true, download_url: mediaPath },
+          { id: 6, name: 'unsynced', package_type: packageType, synced: false, download_url: mediaPath },
+          { id: 7, name: 'missing-url', package_type: packageType, synced: true, download_url: '' },
+        ],
+      }))
+      return originalGet(url, params)
+    })
+    const { default: Monitor } = await import('./monitor/index.vue')
+    await render(Monitor, ['monitor:view'])
+    wrapper.vm.activeTabKey = 'packages'
+    wrapper.vm.packageTypeFilter = packageType
+    await flushPromises()
+    expect(getMediaUrl).toHaveBeenCalledWith(mediaPath)
+    const links = wrapper.findAll(`a[href="http://api.example.test:9000${mediaPath}"]`)
+    expect(links.filter((link) => link.isVisible() && link.attributes('disabled') === undefined)).toHaveLength(1)
+    expect(wrapper.find(`a[href="${mediaPath}"]`).exists()).toBe(false)
+    expect(wrapper.find('a[href=""]').exists()).toBe(false)
+    expect(request.post).not.toHaveBeenCalled()
+    expect(request.patch).not.toHaveBeenCalled()
   })
 
   it('日志采集纳管/删除不能用 ANY 权限；只读挂载不提交作业', async () => {
     const { default: Collectors } = await import('./monitor/log-collectors/index.vue')
     await render(Collectors, ['monitor:view', 'monitor:log_collect:view'])
+    const panel = () => wrapper.get('.host-target-panel')
+    expect(panel().text()).toContain('host-17')
+    expect(panel().findAll('input[type="checkbox"]')).toHaveLength(0)
+    expect(panel().find('.host-target-panel__batch-bar').exists()).toBe(false)
     expect(wrapper.vm.canCreate).toBe(false)
     expect(wrapper.vm.canDelete).toBe(false)
+    await nextTick()
+    expect(panel().findAll('input[type="checkbox"]')).toHaveLength(0)
     expect(buttons('装（')).toHaveLength(0)
     expect(buttons('启动')).toHaveLength(0)
     await wrapper.vm.handleBatchCreate()
@@ -194,6 +256,15 @@ describe('分离读取、修改与执行权限', () => {
     expect(wrapper.vm.canDelete).toBe(true)
     await nextTick()
     expect(buttons('启动')).toHaveLength(1)
+    expect(panel().findAll('input[type="checkbox"]')).toHaveLength(3)
+    await panel().get('thead input[type="checkbox"]').setValue(true)
+    expect(wrapper.vm.table.selectedHostIds.value).toEqual([17, 18])
+    expect(panel().get('.host-target-panel__count').text()).toBe('已选 2 台主机')
+    store.state.perms = ['monitor:view', 'monitor:log_collect:view']
+    await nextTick()
+    expect(wrapper.vm.table.selectedHostIds.value).toEqual([])
+    expect(panel().findAll('input[type="checkbox"]')).toHaveLength(0)
+    expect(panel().find('.host-target-panel__batch-bar').exists()).toBe(false)
   })
 
   it('baseline view 不能通过行内编辑、排序或弹窗保存绕过 manage', async () => {

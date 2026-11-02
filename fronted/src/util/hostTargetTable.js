@@ -1,4 +1,4 @@
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 
 import { getMonitorHostGroupTree, getMonitorHostOverview } from '@/api/monitor'
@@ -56,6 +56,8 @@ export function buildHostGroupTreeData(groups, keyword, totals) {
 
 export function useHostTargetTable(options = {}) {
   const {
+    // 批量勾选属于执行入口准备，必须由页面传入对应业务域的动作权限，不能默认开放给查看用户。
+    canSelect,
     // 目标类型特有的查询参数（exporter_type/… 或 filebeat_managed/config_state）。
     extraQuery = () => ({}),
     // 列表加载后刷新当前页每行的**真实运行态**（exporter/systemctl 与 Filebeat 各自实现）。
@@ -81,12 +83,20 @@ export function useHostTargetTable(options = {}) {
     hosts.value.filter((item) => selectedHostIds.value.includes(item.host_id)),
   )
 
-  const rowSelection = computed(() => ({
+  const rowSelection = computed(() => canSelect() ? {
     selectedRowKeys: selectedHostIds.value,
     onChange: (keys) => {
+      if (!canSelect()) {
+        message.warning('没有主机批量操作权限')
+        return
+      }
       selectedHostIds.value = keys
     },
-  }))
+  } : null)
+
+  watch(canSelect, (allowed) => {
+    if (!allowed) clearSelection()
+  }, { flush: 'sync' })
 
   async function load() {
     loading.value = true

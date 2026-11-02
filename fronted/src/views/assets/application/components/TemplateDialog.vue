@@ -1,7 +1,7 @@
 <template>
   <a-modal
     :open="open"
-    :title="templateId ? `编辑部署模板：${form.name || '加载中'}` : copyFromId ? `复制部署模板：${form.name || '加载中'}` : '新增部署模板'"
+    :title="readOnly ? `查看部署模板：${form.name || '加载中'}` : templateId ? `编辑部署模板：${form.name || '加载中'}` : copyFromId ? `复制部署模板：${form.name || '加载中'}` : '新增部署模板'"
     :width="1180"
     :confirm-loading="saving"
     ok-text="保存模板"
@@ -12,8 +12,11 @@
     @ok="saveTemplate"
     @cancel="emit('update:open', false)"
   >
+    <template v-if="readOnly" #footer>
+      <a-button @click="emit('update:open', false)">关闭</a-button>
+    </template>
     <a-spin :spinning="loading">
-      <a-form ref="formRef" :model="form" :rules="rules" layout="vertical">
+      <a-form ref="formRef" :class="{ 'template-readonly': readOnly }" :model="form" :rules="readOnly ? {} : rules" :disabled="readOnly" layout="vertical">
         <a-tabs>
           <a-tab-pane key="base" tab="运行配置">
             <a-row :gutter="16">
@@ -49,7 +52,7 @@
                       <template v-else-if="column.key === 'action'"><a-tooltip title="删除"><a-button class="delBtn" danger size="small" @click="macroDefinitions.splice(index, 1)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip></template>
                     </template>
                   </a-table>
-                  <a-button class="macro-add-button" @click="addMacro"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" /><span>&nbsp;新增宏</span></a-button>
+                  <a-button v-if="!readOnly" class="macro-add-button" @click="addMacro"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" /><span>&nbsp;新增宏</span></a-button>
                 </a-form-item>
               </a-col>
               <a-col :span="12">
@@ -73,7 +76,7 @@
                 </a-col>
                 <a-col :span="12">
                   <a-form-item name="systemd_scope" label="Systemd 作用域">
-                    <a-segmented v-model:value="form.systemd_scope" :options="systemdScopeOptions" block />
+                    <a-segmented v-model:value="form.systemd_scope" :options="systemdScopeOptions" :disabled="readOnly" block />
                   </a-form-item>
                 </a-col>
               </a-row>
@@ -129,6 +132,7 @@
               </a-row>
             </template>
             <a-form-item label="允许新部署"><a-switch v-model:checked="form.enabled" /></a-form-item>
+            <a-form-item label="备注"><a-textarea v-model:value="form.remark" :rows="3" /></a-form-item>
           </a-tab-pane>
 
           <a-tab-pane key="ports" tab="端口">
@@ -138,9 +142,9 @@
               <a-input v-model:value="item.port" :maxlength="64" placeholder="端口或 ${PORT}" />
               <a-input v-model:value="item.bind_address" placeholder="监听地址" />
               <a-checkbox v-model:checked="item.external_access">外部访问</a-checkbox>
-              <a-button danger @click="form.ports.splice(index, 1)">移除</a-button>
+              <a-button v-if="!readOnly" danger @click="form.ports.splice(index, 1)">移除</a-button>
             </div>
-            <a-button type="dashed" block @click="addPort">新增端口</a-button>
+            <a-button v-if="!readOnly" type="dashed" block @click="addPort">新增端口</a-button>
           </a-tab-pane>
 
           <a-tab-pane key="paths" tab="路径与文件">
@@ -149,24 +153,26 @@
               <a-input v-model:value="item.name" placeholder="名称" />
               <a-select v-model:value="item.path_type" :options="pathTypeOptions" :getPopupContainer="getPopupContainer" />
               <a-input v-model:value="item.path" placeholder="例如 ${APP_HOME}/logs" />
-              <a-button danger @click="form.paths.splice(index, 1)">移除</a-button>
+              <a-button v-if="!readOnly" danger @click="form.paths.splice(index, 1)">移除</a-button>
             </div>
-            <a-button type="dashed" block @click="addPath">新增路径</a-button>
+            <a-button v-if="!readOnly" type="dashed" block @click="addPath">新增路径</a-button>
             <a-divider />
             <h4>配置文件</h4>
             <div v-for="(item, index) in form.config_files" :key="`config-${index}`" class="repeat-row config-row">
               <a-input v-model:value="item.name" placeholder="名称" />
               <a-input v-model:value="item.path" placeholder="例如 ${APP_HOME}/conf/server.xml" />
               <a-select v-model:value="item.file_format" :options="fileFormatOptions" :getPopupContainer="getPopupContainer" />
-              <a-button danger @click="form.config_files.splice(index, 1)">移除</a-button>
+              <a-button v-if="!readOnly" danger @click="form.config_files.splice(index, 1)">移除</a-button>
             </div>
-            <a-button type="dashed" block @click="addConfigFile">新增配置文件</a-button>
+            <a-button v-if="!readOnly" type="dashed" block @click="addConfigFile">新增配置文件</a-button>
             <a-divider />
             <h4>日志</h4>
             <div v-for="(item, index) in form.logs" :key="`log-${index}`" class="repeat-row log-row">
               <a-input v-model:value="item.name" placeholder="名称" />
               <a-input v-model:value="item.path_pattern" placeholder="例如 ${APP_HOME}/logs/*.log" />
+              <a-input v-if="readOnly" :value="item.processing_rule == null ? '无处理规则' : `处理规则 ID: ${item.processing_rule}`" />
               <a-select
+                v-else
                 v-model:value="item.processing_rule"
                 :options="processingRuleOptions"
                 :getPopupContainer="getPopupContainer"
@@ -176,7 +182,9 @@
                 option-filter-prop="label"
                 placeholder="日志处理规则"
               />
+              <a-input v-if="readOnly" :value="item.filter_include_rule == null ? '无保留规则' : `保留规则 ID: ${item.filter_include_rule}`" />
               <a-select
+                v-else
                 v-model:value="item.filter_include_rule"
                 :options="filterRuleOptions('include')"
                 :getPopupContainer="getPopupContainer"
@@ -186,7 +194,9 @@
                 option-filter-prop="label"
                 placeholder="只保留匹配的记录（可选）"
               />
+              <a-input v-if="readOnly" :value="item.filter_exclude_rule == null ? '无丢弃规则' : `丢弃规则 ID: ${item.filter_exclude_rule}`" />
               <a-select
+                v-else
                 v-model:value="item.filter_exclude_rule"
                 :options="filterRuleOptions('exclude')"
                 :getPopupContainer="getPopupContainer"
@@ -196,9 +206,9 @@
                 option-filter-prop="label"
                 placeholder="丢掉匹配的记录（可选）"
               />
-              <a-button danger @click="form.logs.splice(index, 1)">移除</a-button>
+              <a-button v-if="!readOnly" danger @click="form.logs.splice(index, 1)">移除</a-button>
             </div>
-            <a-button type="dashed" block @click="addLog">新增日志</a-button>
+            <a-button v-if="!readOnly" type="dashed" block @click="addLog">新增日志</a-button>
             <div class="field-hint">
               模板描述"这条日志的路径怎么算、挂哪条处理规则"，以及**采集过滤的默认值**（可选）：
               「只保留」是白名单、「丢掉」是黑名单，两者可同时配（先保留、后排除）。逻辑服务可以继承、
@@ -232,6 +242,7 @@ const props = defineProps({
   templateId: { type: Number, default: null },
   copyFromId: { type: Number, default: null },
   initialApplicationId: { type: Number, default: null },
+  readOnly: { type: Boolean, default: false },
 })
 const emit = defineEmits(['update:open', 'saved'])
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
@@ -282,12 +293,12 @@ const form = reactive(createInitialForm())
 const macroDefinitions = ref([])
 // 行的唯一标识，与后端无关，提交前剔除；只在创建时赋值一次，不随编辑/删除重新计算。
 let macroKeySeq = 0
-const macroColumns = [
+const macroColumns = computed(() => [
   { title: '宏 Key', key: 'name', width: 260 },
   { title: '值', key: 'value', width: 240 },
   { title: '说明', key: 'description' },
-  { title: '操作', key: 'action', width: 70, fixed: 'right' },
-]
+  ...(props.readOnly ? [] : [{ title: '操作', key: 'action', width: 70, fixed: 'right' }]),
+])
 const rules = {
   application: [{ required: true, message: '请选择所属应用' }],
   name: [{ required: true, message: '请输入模板名称' }],
@@ -345,6 +356,7 @@ async function loadTemplate(id) {
     const data = response?.data?.data || {}
     const initial = createInitialForm()
     Object.assign(form, initial, data)
+    if (props.readOnly) applications.value = [{ id: data.application, name: data.application_name }]
     macroDefinitions.value = (data.macro_definitions || []).map((item) => ({
       _uid: ++macroKeySeq,
       name: item.name || '', value: item.value || item.default || '', description: item.description || '',
@@ -373,6 +385,11 @@ function validateControlConfig() {
   return ''
 }
 async function saveTemplate() {
+  // 查看复用编辑表单，但不能通过弹窗事件或直接调用进入保存路径。
+  if (props.readOnly) {
+    message.warning('只读模式不能保存部署模板')
+    return
+  }
   try {
     await formRef.value?.validate()
   } catch {
@@ -440,6 +457,11 @@ watch(() => props.open, (visible) => {
     return
   }
   resetForm()
+  // 只读内容全部来自详情；不为展示模板额外要求日志规则管理模块的权限。
+  if (props.readOnly) {
+    loadTemplate(props.templateId)
+    return
+  }
   Promise.all([
     loadApplications(),
     loadProcessingRules(),
@@ -452,6 +474,28 @@ watch(() => props.open, (visible) => {
 </script>
 
 <style scoped>
+/* 查看态仍禁用交互，但内容应保持正常对比度，不能沿用不可用控件的浅灰文字。 */
+.template-readonly :deep(.ant-input:disabled),
+.template-readonly :deep(.ant-select-disabled .ant-select-selector) {
+  color: #262626;
+  -webkit-text-fill-color: #262626;
+  background-color: #fafafa;
+  cursor: default;
+  opacity: 1;
+}
+.template-readonly :deep(.ant-input:disabled::placeholder) {
+  color: #8c8c8c;
+  -webkit-text-fill-color: #8c8c8c;
+}
+.template-readonly :deep(.ant-select-disabled .ant-select-selection-item),
+.template-readonly :deep(.ant-segmented-disabled .ant-segmented-item-label),
+.template-readonly :deep(.ant-checkbox-wrapper-disabled > span) {
+  color: #262626;
+  -webkit-text-fill-color: #262626;
+}
+.template-readonly :deep(.ant-switch-disabled) {
+  opacity: 1;
+}
 .ha-status-command {
   margin-top: 16px;
 }

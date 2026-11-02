@@ -16,11 +16,21 @@ describe('service tree workspace tabs', () => {
       '/index', `${key}&node_title=test`, '/other',
     ])
     expect(store.state.activeKey).toBe(`${key}&node_title=test`)
+    expect(store.state.selectedKeys).toEqual([path])
   })
 
   it('preserves distinct query tabs on other pages', () => {
     store.commit('add_tab', { title: '其他页面', key: '/other?id=1' })
     store.commit('add_tab', { title: '其他页面', key: '/other?id=2' })
     expect(store.state.tabs.map((tab) => tab.key)).toEqual(['/index', '/other?id=1', '/other?id=2'])
+    expect(store.state.selectedKeys).toEqual(['/other'])
+  })
+
+  it('keeps query and hash in tab locations but not sidebar menu keys', () => {
+    const key = '/assets/service-tree/index?node_type=service&application_service_id=21#details'
+    store.commit('add_tab', { title: '服务树', key })
+    expect(store.state.activeKey).toBe(key)
+    expect(store.state.tabs.at(-1).key).toBe(key)
+    expect(store.state.selectedKeys).toEqual(['/assets/service-tree/index'])
   })
 })

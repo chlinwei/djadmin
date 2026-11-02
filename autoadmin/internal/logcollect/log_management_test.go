@@ -2,6 +2,8 @@ package logcollect
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -118,6 +120,88 @@ func TestBuildIndexTemplateBody(t *testing.T) {
 	settings := body["template"].(gin.H)["settings"].(gin.H)
 	if settings["index.final_pipeline"] != "logs-mapping-guard" {
 		t.Fatalf("index.final_pipeline = %v", settings["index.final_pipeline"])
+	}
+}
+
+func TestIndexTemplatesOnlyDeclareStandardLogFields(t *testing.T) {
+	for name, body := range map[string]gin.H{
+		"base": buildIndexTemplateBody("logs"),
+		"tier": buildTierIndexTemplateBody("logs", retentionTierRow{Code: "std"}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			properties := body["template"].(gin.H)["mappings"].(gin.H)["properties"].(gin.H)
+			if len(properties) != 16 {
+				t.Fatalf("mapping has %d fields, want 16", len(properties))
+			}
+			for _, field := range []string{"service_id", "shared_source_id", "shared_source_generation", "shared_source_name"} {
+				if _, exists := properties[field]; exists {
+					t.Errorf("internal event field %s must not be required by the index template", field)
+				}
+			}
+		})
+	}
+}
+
+func TestLogIndexTemplateHealthUsesStandardMappingOnly(t *testing.T) {
+	for _, name := range []string{"standard fields", "existing internal mappings", "missing standard field", "wrong standard type"} {
+		t.Run(name, func(t *testing.T) {
+			properties := gin.H{}
+			for field, fieldType := range map[string]string{
+				"@timestamp": "date", "message": "text", "project": "keyword",
+				"business_system": "keyword", "environment": "keyword", "service": "keyword",
+				"application": "keyword", "instance": "keyword", "host_ip": "keyword",
+				"log_name": "keyword", "log_path": "keyword", "log_level": "keyword",
+				"log_message": "text", "error_fingerprint": "keyword",
+				"mapping_violation": "boolean", "app_fields": "flattened",
+			} {
+				properties[field] = gin.H{"type": fieldType}
+			}
+			wantStatus := logHealthOK
+			switch name {
+			case "existing internal mappings":
+				for _, field := range []string{"service_id", "shared_source_id", "shared_source_generation", "shared_source_name"} {
+					properties[field] = gin.H{"type": "keyword"}
+				}
+			case "missing standard field":
+				delete(properties, "log_path")
+				wantStatus = logHealthDrift
+			case "wrong standard type":
+				properties["service"] = gin.H{"type": "text"}
+				wantStatus = logHealthDrift
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.Method != http.MethodGet || request.URL.Path != "/_index_template/logs-template" {
+					t.Errorf("unexpected template request: %s %s", request.Method, request.URL.Path)
+					writer.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				writer.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(writer).Encode(gin.H{"index_templates": []any{gin.H{
+					"index_template": gin.H{"template": gin.H{"mappings": gin.H{
+						"dynamic": false, "properties": properties,
+					}}},
+				}}}); err != nil {
+					t.Errorf("encode template: %v", err)
+				}
+			}))
+			defer server.Close()
+			ginContext, _ := gin.CreateTestContext(httptest.NewRecorder())
+			handler := &Handler{}
+			layer := handler.checkLogIndexTemplate(ginContext, elasticsearchCluster{Hosts: server.URL, IndexPrefix: "logs"})
+			if layer["status"] != wantStatus {
+				t.Fatalf("index template health = %v, want %s", layer, wantStatus)
+			}
+			items := layer["items"].([]gin.H)
+			if len(items) != 17 {
+				t.Fatalf("health has %d items, want 16 standard fields and dynamic", len(items))
+			}
+			for _, item := range items {
+				switch item["name"] {
+				case "service_id", "shared_source_id", "shared_source_generation", "shared_source_name":
+					t.Errorf("internal event field must not be a mapping health requirement: %v", item)
+				}
+			}
+		})
 	}
 }
 

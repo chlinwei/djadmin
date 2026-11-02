@@ -101,9 +101,9 @@
                     <FontAwesomeIcon :icon="['fa', 'edit']" />
                   </a-button>
                 </a-tooltip>
-                <a-tooltip title="运行">
-                  <a-button @click="openTest(record)">
-                    <FontAwesomeIcon :icon="['fas', 'play']" />
+                <a-tooltip title="解析试算" placement="top">
+                  <a-button data-simulate-rule @click="openTest(record)">
+                    <ExperimentOutlined />
                   </a-button>
                 </a-tooltip>
                 <a-tooltip title="删除">
@@ -179,18 +179,46 @@
 
     <a-modal
       v-model:open="editorOpen"
-      :title="editingOriginalName ? `编辑处理规则：${editingOriginalName}` : '新增日志处理规则'"
+      :title="isSimulationEntry ? `解析试算：${editingOriginalName}` : editingOriginalName ? `编辑处理规则：${editingOriginalName}` : '新增日志处理规则'"
       :width="960"
       centered
       :confirm-loading="saving"
       ok-text="发布"
       cancel-text="取消"
       @ok="publishPipeline"
-      :ok-button-props="{ disabled: !checkPermission(form.id ? 'monitor:update' : 'monitor:create') }"
     >
+      <template v-if="!canPublish" #footer>
+        <a-button @click="editorOpen = false">关闭</a-button>
+      </template>
+      <a-alert
+        v-if="!canPublish || activeTab === 'test'"
+        type="info"
+        show-icon
+        :message="canPublish
+          ? '仅对当前样例进行解析试算，不保存或发布规则，不下发配置，不写入日志索引。'
+          : '当前为只读查看：规则配置不可修改，仅可更换日志样例进行试算；不保存或发布规则，不下发配置，不写入日志索引。'"
+        style="margin-bottom: 12px"
+      />
       <a-tabs v-model:activeKey="activeTab">
         <a-tab-pane key="preprocess" tab="发送前处理（Filebeat）">
-          <a-form ref="formRef" :model="form" :rules="formRules" layout="vertical">
+          <a-descriptions v-if="!canPublish" bordered :column="2" size="small">
+            <a-descriptions-item label="规则名称" :span="2">{{ form.name || '-' }}</a-descriptions-item>
+            <a-descriptions-item label="说明" :span="2">
+              <span style="white-space: pre-wrap; overflow-wrap: anywhere">{{ form.description || '-' }}</span>
+            </a-descriptions-item>
+            <a-descriptions-item label="所属应用" :span="2">
+              {{ form.application ? applicationNameById.get(String(form.application)) || `应用 ID：${form.application}` : '通用（不限应用）' }}
+            </a-descriptions-item>
+            <a-descriptions-item label="日志格式">
+              {{ inputFormatOptions.find((option) => option.value === form.input_format)?.label || form.input_format }}
+            </a-descriptions-item>
+            <a-descriptions-item label="多行合并">{{ form.multiline_enabled ? '开启' : '关闭' }}</a-descriptions-item>
+            <template v-if="form.multiline_enabled">
+              <a-descriptions-item label="首行正则">{{ form.start_pattern || '-' }}</a-descriptions-item>
+              <a-descriptions-item label="合并超时（毫秒）">{{ form.flush_timeout }}</a-descriptions-item>
+            </template>
+          </a-descriptions>
+          <a-form v-else ref="formRef" :model="form" :rules="formRules" layout="vertical">
             <a-form-item name="name" label="规则名称">
               <a-input
                 v-model:value="form.name"
@@ -250,6 +278,7 @@
             <a-form-item label="Pipeline JSON">
               <a-textarea
                 v-model:value="form.bodyText"
+                :readonly="!canPublish"
                 class="json-editor"
                 :rows="18"
                 spellcheck="false"
@@ -257,12 +286,12 @@
             </a-form-item>
           </a-form>
         </a-tab-pane>
-        <a-tab-pane key="test" tab="在线调试">
+        <a-tab-pane key="test" tab="解析试算">
           <a-form layout="vertical">
             <a-form-item label="样例格式">
               <a-segmented v-model:value="sampleMode" :options="sampleModeOptions" />
             </a-form-item>
-            <a-form-item>
+            <a-form-item v-if="canPublish">
               <template #label>
                 <a-tooltip title="可选。与日志中心「条件丢弃」相同：粘贴条件对应的处理器数组，调试时会模拟包装 pipeline：先跑本规则的解析，再执行丢弃（要求规则已发布）。" placement="top">
                   <span>条件丢弃预览（可选，模拟包装串联）</span>
@@ -285,9 +314,9 @@
                 spellcheck="false"
               />
             </a-form-item>
-            <a-button type="primary" :loading="simulating" @click="simulate">
-              <FontAwesomeIcon :icon="['fas', 'play']" />
-              <span>&nbsp;运行</span>
+            <a-button type="primary" :loading="simulating" data-simulate-sample @click="simulate">
+              <ExperimentOutlined />
+              <span>&nbsp;试算</span>
             </a-button>
             <a-alert
               v-if="missingFields.length"
@@ -319,7 +348,7 @@
             </a-alert>
             <div v-if="simulationText" class="result-field">
               <div class="result-header">
-                <span class="result-title">运行结果</span>
+                <span class="result-title">试算结果</span>
                 <a-space>
                   <a-tooltip title="展开日志换行">
                     <a-switch
@@ -391,7 +420,7 @@
 
     <a-modal
       v-model:open="resultFullscreen"
-      title="运行结果"
+      title="试算结果"
       class="result-fullscreen-modal"
       :width="'96vw'"
       :footer="null"
@@ -423,7 +452,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { checkPermission } from '@/directives/permission/permission'
 import { message } from 'ant-design-vue'
-import { RightOutlined } from '@ant-design/icons-vue'
+import { ExperimentOutlined, RightOutlined } from '@ant-design/icons-vue'
 import { useRouter } from 'vue-router'
 import {
   batchDeleteLogCollectionFilterRules,
@@ -459,6 +488,7 @@ const filterSaving = ref(false)
 const simulating = ref(false)
 const editorOpen = ref(false)
 const editingOriginalName = ref('')
+const isSimulationEntry = ref(false)
 const activeTab = ref('preprocess')
 const catalogTab = ref('processing')
 const formRef = ref(null)
@@ -484,14 +514,14 @@ const resultDisplayText = computed(() => {
 async function copyResult() {
   const content = String(resultDisplayText.value || '')
   if (!content) {
-    message.warning('暂无可复制的运行结果')
+    message.warning('暂无可复制的试算结果')
     return
   }
   // 不能直接用 navigator.clipboard：内网多是 HTTP（非安全上下文），该 API 不存在，
   // 必须走 @/util/clipboard 的 execCommand 兜底，否则一复制就报"请手动选中"。
   const copied = await copyTextWithFallback(content)
   if (copied) {
-    message.success('已复制运行结果')
+    message.success('已复制试算结果')
     return
   }
   message.error('复制失败，请手动选中复制')
@@ -508,6 +538,7 @@ const form = reactive({
   flush_timeout: 1000,
   bodyText: '',
 })
+const canPublish = computed(() => checkPermission(form.id ? 'monitor:update' : 'monitor:create'))
 const filterForm = reactive({ id: null, name: '', application: null, description: '', pattern: '', rule_type: 'include', enabled: true })
 const filterRuleTypeOptions = [
   { label: '保留（include）', value: 'include' },
@@ -807,6 +838,7 @@ async function loadFilterRules() {
 }
 
 function resetEditor() {
+  isSimulationEntry.value = false
   Object.assign(form, {
     id: null,
     name: '',
@@ -852,6 +884,7 @@ function openEdit(record) {
 
 function openTest(record) {
   openEdit(record)
+  isSimulationEntry.value = true
   activeTab.value = 'test'
 }
 
@@ -1021,7 +1054,7 @@ async function simulate() {
       rule_name: form.name,
       application_id: form.application || null,
     }
-    if (extraProcessorsText.value.trim()) {
+    if (canPublish.value && extraProcessorsText.value.trim()) {
       let extra
       try {
         extra = JSON.parse(extraProcessorsText.value)
@@ -1037,19 +1070,19 @@ async function simulate() {
     missingFields.value = result.missing_fields || []
     simulationText.value = JSON.stringify(result, null, 2)
     if (missingFields.value.length) {
-      // 不说"运行成功"：管道跑起来了，但**判定没通过**，而认证用的是同一个判定函数与同一套
+      // 不说"试算成功"：管道跑起来了，但**判定没通过**，而认证用的是同一个判定函数与同一套
       // 必备字段口径——把它呈成成功，就会让人以为"规则没问题、认证在挑刺"。
       message.error(`判定不通过：缺少必备字段 ${missingFields.value.join('、')}（认证会用同一口径判不通过）`)
     } else if (schemaViolations.value.length) {
-      message.warning(`运行成功，但有 ${schemaViolations.value.length} 个字段不符合标准字段规范`)
+      message.warning(`试算完成，但有 ${schemaViolations.value.length} 个字段不符合标准字段规范`)
     } else {
-      message.success(`运行成功，共 ${docs.length} 条事件`)
+      message.success(`试算完成，共 ${docs.length} 条样例事件`)
     }
   } catch (error) {
     simulationText.value = ''
     schemaViolations.value = []
     missingFields.value = []
-    message.error(error?.response?.data?.msg || error?.message || '运行失败')
+    message.error(error?.response?.data?.msg || error?.message || '试算失败')
   } finally {
     simulating.value = false
   }

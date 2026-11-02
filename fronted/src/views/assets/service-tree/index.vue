@@ -109,6 +109,7 @@ import { ReloadOutlined } from '@ant-design/icons-vue'
 import ServiceTreeLayout from '@/components/ServiceTreeLayout.vue'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { useServiceTreeLocation } from '@/util/serviceTreeLocation'
+import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { batchDeleteBusinessSystems, batchDeleteApplicationServices } from '@/api/assets/application'
 import { checkPermission } from '@/directives/permission/permission'
 import ServiceTree from '../application/components/ServiceTree.vue'
@@ -148,6 +149,7 @@ const hostPieRef = ref(null)
 const deploymentPieRef = ref(null)
 let hostPieChart = null
 let deploymentPieChart = null
+let chartsActive = true
 
 function handleStatsChange(payload) {
   statsData.value = {
@@ -187,27 +189,33 @@ function buildPieOption(title, rows, unit) {
 }
 
 function ensureCharts() {
-  if (hostPieRef.value && !hostPieChart) {
+  // v-show 隐藏的详情面板和 KeepAlive 缓存页没有有效尺寸，不能初始化或调整图表。
+  if (!chartsActive || activePanel.value !== 'info' || !showResourceStats.value
+    || ![hostPieRef.value, deploymentPieRef.value].every((element) => element?.clientWidth > 0 && element?.clientHeight > 0)) return false
+  if (!hostPieChart) {
     hostPieChart = echarts.init(hostPieRef.value)
   }
-  if (deploymentPieRef.value && !deploymentPieChart) {
+  if (!deploymentPieChart) {
     deploymentPieChart = echarts.init(deploymentPieRef.value)
   }
+  return true
 }
 
 function renderCharts() {
-  ensureCharts()
+  if (!ensureCharts()) return
   if (hostPieChart) {
     hostPieChart.setOption(buildPieOption('CPU 归集占比', statsData.value.cpuRows || [], '核'), true)
   }
   if (deploymentPieChart) {
     deploymentPieChart.setOption(buildPieOption('内存归集占比', statsData.value.memoryRows || [], 'GB'), true)
   }
+  hostPieChart.resize()
+  deploymentPieChart.resize()
 }
 
 function resizeCharts() {
-  hostPieChart?.resize()
-  deploymentPieChart?.resize()
+  // 布局尺寸通知也负责首次可见后的补画，不能只 resize 尚未创建的实例。
+  renderCharts()
 }
 
 function destroyCharts() {
@@ -312,13 +320,21 @@ watch(
   async () => {
     await nextTick()
     renderCharts()
-    if (showResourceStats.value) resizeCharts()
   },
   { deep: true },
 )
 
 onMounted(() => {
   window.addEventListener('resize', resizeCharts)
+  renderCharts()
+})
+
+useKeepAliveRefreshLifecycle(async () => {
+  chartsActive = true
+  await nextTick()
+  renderCharts()
+}, () => {
+  chartsActive = false
 })
 
 const { selectScope, syncLocation } = useServiceTreeLocation(serviceScope, activePanel, {
@@ -326,6 +342,7 @@ const { selectScope, syncLocation } = useServiceTreeLocation(serviceScope, activ
 })
 
 onBeforeUnmount(() => {
+  chartsActive = false
   window.removeEventListener('resize', resizeCharts)
   destroyCharts()
 })

@@ -48,7 +48,7 @@ const LEVEL_BUCKETS = [
 
 const getElasticsearchClusterList = vi.fn(() => Promise.resolve({ data: { data: { results: [CLUSTER], count: 1 } } }))
 const refreshElasticsearchLogIndex = vi.fn(() => Promise.resolve({ data: { data: { count: 1 } } }))
-const searchElasticsearchLogs = vi.fn(() => Promise.resolve({ data: { data: { results: [LOG_DOC], count: 1, size: 100, offset: 0 } } }))
+const searchElasticsearchLogs = vi.fn(() => Promise.resolve({ data: { data: { results: [LOG_DOC], count: 1, size: 50, offset: 0 } } }))
 const getHostList = vi.fn()
 const emptyLiveTailStatus = () => ({ max_viewers: 5, max_files: 5, user_files: 0, files: [] })
 const getLogLiveTailStatus = vi.fn(async () => ({ data: { data: emptyLiveTailStatus() } }))
@@ -89,6 +89,26 @@ function mountPanel(scope = { nodeType: 'all', nodeTitle: '全部业务' }) {
 }
 
 describe('LogQueryPanel（日志中心的日志查询面板）', () => {
+  it('首次查询默认每页 50 条，并保留手动切换每页条数', async () => {
+    const wrapper = mountPanel({ nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' })
+    try {
+      await flushPromises()
+      const table = wrapper.findComponent(Table)
+      expect(table.props('pagination')).toMatchObject({
+        current: 1, pageSize: 50, pageSizeOptions: ['50', '100', '200'], showSizeChanger: true,
+      })
+      expect(searchElasticsearchLogs).toHaveBeenLastCalledWith(CLUSTER.id, expect.objectContaining({ size: 50, offset: 0 }))
+      for (const pageSize of [100, 200, 50]) {
+        table.vm.$emit('change', { current: 1, pageSize })
+        await flushPromises()
+        expect(table.props('pagination').pageSize).toBe(pageSize)
+        expect(searchElasticsearchLogs).toHaveBeenLastCalledWith(CLUSTER.id, expect.objectContaining({ size: pageSize, offset: 0 }))
+      }
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('强制刷新索引要求 execute；view-only 仍能查询但不提交 refresh 请求', async () => {
     store.state.role_codes = []
     store.state.perms = ['monitor:view']
@@ -165,7 +185,7 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
         expect(tables[0].props('sticky')).toBe(true)
         expect(tables[1].props('sticky')).toBeUndefined()
         expect(tables[0].props('scroll')).toEqual({ x: wrapper.vm.tableScrollX })
-        expect(tables[0].props('pagination')).toMatchObject({ pageSize: 100, total: 1 })
+        expect(tables[0].props('pagination')).toMatchObject({ pageSize: 50, total: 1 })
         const header = wrapper.get('.ant-table-sticky-holder')
         expect(header.element.style.top).toBe('0px')
         expect(window.getComputedStyle(header.element).position).toBe('sticky')

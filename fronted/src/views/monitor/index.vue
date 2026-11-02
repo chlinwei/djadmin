@@ -1044,7 +1044,6 @@ const exporterFilterOptions = computed(
 
 
 const packageColumns = [
-  { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
   { title: '类型', dataIndex: 'package_type', key: 'package_type', width: 110 },
   { title: '名称', dataIndex: 'name', key: 'name', width: 150 },
   { title: '版本', dataIndex: 'version', key: 'version', width: 120 },

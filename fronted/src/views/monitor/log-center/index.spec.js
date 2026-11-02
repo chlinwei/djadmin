@@ -257,6 +257,16 @@ function configWithTwoLogs() {
   }
 }
 
+function storagePageRows(count) {
+  return Array.from({ length: count }, (_, index) => ({
+    name: `logs-nginx-${String(index).padStart(3, '0')}`,
+    recognized: true, service: 'nginx', tier: 'std',
+    project: 'yilake', business_system: 'tib', environment: 'poc',
+    docs: index + 1, bytes: 100, health: 'green', historical: false,
+    service_enabled: true, service_collection_enabled: true, backing_indices: [],
+  }))
+}
+
 // 勾选日志行：用真实的表格勾选列（多选这个功能本身也是被验的对象）。
 async function selectConfigRows(wrapper, indexes = [0, 1]) {
   const boxes = wrapper.findAll('.ant-table-tbody .ant-checkbox-input')
@@ -287,6 +297,67 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     expect(saveApplicationServiceLogSetting).not.toHaveBeenCalled()
     expect(setApplicationServiceLogCollection).not.toHaveBeenCalled()
     expect(cleanupLogDataStreamByStream).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('存储水位仅查看权限不显示操作整列，保留后备索引查看', async () => {
+    store.state.perms = ['monitor:view', 'monitor:log_collect:view']
+    const wrapper = await mountPage()
+    wrapper.vm.activeTab = 'storage'
+    await flushPromises()
+    const table = wrapper.findAllComponents({ name: 'ATable' })
+      .find((item) => item.props('columns').some((column) => column.key === 'tier_usage_percent'))
+    expect(table.props('columns').some((column) => column.key === 'actions')).toBe(false)
+    expect(table.findAll('th').map((th) => th.text())).not.toContain('操作')
+    expect(table.findAll('button').some((button) => /清理数据|切回该档位/.test(button.text()))).toBe(false)
+    expect(table.props('columns').some((column) => column.key === 'backing')).toBe(true)
+    await table.findAll('button').find((button) => button.text().includes('个')).trigger('click')
+    await flushPromises()
+    expect(table.text()).toContain('的后备索引')
+    wrapper.unmount()
+  })
+
+  it('存储水位操作列随权限、服务上下文和可见行动作动态显示', async () => {
+    store.state.perms = ['monitor:view', 'monitor:log_collect:view']
+    const wrapper = await mountPage()
+    wrapper.vm.activeTab = 'storage'
+    await flushPromises()
+    const table = () => wrapper.findAllComponents({ name: 'ATable' })
+      .find((item) => item.props('columns').some((column) => column.key === 'tier_usage_percent'))
+    const actionColumn = () => table().props('columns').find((column) => column.key === 'actions')
+    expect(actionColumn()).toBeUndefined()
+    store.state.perms = ['monitor:view', 'monitor:log_collect:view', 'monitor:logs:delete']
+    await flushPromises()
+    expect(actionColumn()).toMatchObject({ fixed: 'right', width: 160 })
+    expect(table().text()).toContain('清理数据')
+    store.state.perms = ['monitor:view', 'monitor:log_collect:view', 'assets:applications:update']
+    await flushPromises()
+    expect(actionColumn()).toBeUndefined()
+
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    expect(actionColumn()).toMatchObject({ fixed: 'right', width: 160 })
+    expect(table().text()).toContain('切回该档位')
+    expect(table().text()).not.toContain('清理数据')
+    wrapper.vm.storageKeyword = 'nginx-hot'
+    await flushPromises()
+    expect(actionColumn()).toBeUndefined()
+    wrapper.vm.storageKeyword = ''
+    await flushPromises()
+    expect(actionColumn()).toBeDefined()
+    wrapper.vm.storageRows = [{ name: 'shared-history', shared_source_id: 7, recognized: true, historical: true }]
+    await flushPromises()
+    expect(actionColumn()).toBeUndefined()
+    store.state.perms = ['monitor:view', 'monitor:log_collect:view', 'monitor:logs:delete']
+    await flushPromises()
+    expect(actionColumn()).toBeDefined()
+    store.state.perms = ['monitor:view', 'monitor:log_collect:view']
+    await flushPromises()
+    expect(actionColumn()).toBeUndefined()
+    store.state.perms = ['monitor:view', 'monitor:log_collect:view', 'monitor:logs:delete']
+    wrapper.vm.storageRows = []
+    await flushPromises()
+    expect(actionColumn()).toBeUndefined()
     wrapper.unmount()
   })
 
@@ -403,6 +474,103 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     }
     wrapper.unmount()
   })
+  it('存储水位默认每页50条，支持翻页和全量排序且不改变汇总或重新查询ES', async () => {
+    store.state.perms = ['monitor:view', 'monitor:log_collect:view']
+    const { getLogStorageOverview } = await import('@/api/monitor')
+    const wrapper = await mountPage()
+    wrapper.vm.activeTab = 'storage'
+    await flushPromises()
+    wrapper.vm.storageDims = fullOverviewPayload().dims
+    wrapper.vm.storageRows = storagePageRows(61)
+    await flushPromises()
+    const table = wrapper.findAllComponents({ name: 'ATable' })
+      .find((item) => item.props('columns').some((column) => column.key === 'tier_usage_percent'))
+    const rows = () => table.findAll('tbody > tr.ant-table-row')
+    const requests = getLogStorageOverview.mock.calls.length
+    expect(table.props('pagination')).toMatchObject({
+      current: 1, pageSize: 50, total: 61,
+      pageSizeOptions: ['50', '100', '200'], showQuickJumper: true, showSizeChanger: true,
+    })
+    expect(rows()).toHaveLength(50)
+    expect(table.text()).toContain('共 61 条记录')
+    const summary = { ...wrapper.vm.storageSummary }
+    expect(summary).toMatchObject({ streams: 61, docs: 1891, bytes: 6100 })
+    expect(wrapper.vm.storageGroups.find((group) => group.name === 'yilake').streams).toBe(61)
+    wrapper.vm.toggleBackingIndices(wrapper.vm.storageRows[0])
+    await flushPromises()
+    expect(wrapper.vm.expandedRowKeys).toHaveLength(1)
+    await table.get('.ant-pagination-next button').trigger('click')
+    await flushPromises()
+    expect(table.props('pagination').current).toBe(2)
+    expect(rows()).toHaveLength(11)
+    expect(rows()[0].attributes('data-row-key')).toBe('logs-nginx-050')
+    expect(wrapper.vm.expandedRowKeys).toEqual([])
+    expect(wrapper.vm.storageSummary).toEqual(summary)
+
+    await table.findAll('th').find((header) => header.text() === '文档数').trigger('click')
+    await flushPromises()
+    expect(table.props('pagination').current).toBe(1)
+    await table.findAll('th').find((header) => header.text() === '文档数').trigger('click')
+    await flushPromises()
+    expect(rows()[0].attributes('data-row-key')).toBe('logs-nginx-060')
+    for (const pageSize of [100, 200, 50]) {
+      table.vm.$emit('change', { current: 2, pageSize }, {}, {}, { action: 'paginate' })
+      await flushPromises()
+      expect(table.props('pagination')).toMatchObject({ current: 1, pageSize, total: 61 })
+      expect(rows()).toHaveLength(Math.min(pageSize, 61))
+    }
+    expect(wrapper.vm.storageSummary).toEqual(summary)
+    expect(getLogStorageOverview).toHaveBeenCalledTimes(requests)
+    wrapper.unmount()
+  }, 20000)
+
+  it('存储水位搜索和切换范围重置页码，刷新数据减少时自动收敛页码', async () => {
+    store.state.perms = ['monitor:view', 'monitor:log_collect:view']
+    const { getLogStorageOverview } = await import('@/api/monitor')
+    const wrapper = await mountPage()
+    wrapper.vm.activeTab = 'storage'
+    await flushPromises()
+    const records = storagePageRows(61).map((row, index) => ({
+      ...row, project: index < 20 ? 'yilake' : 'nkg',
+    }))
+    wrapper.vm.storageDims = fullOverviewPayload().dims
+    wrapper.vm.storageRows = records
+    await flushPromises()
+    const table = wrapper.findAllComponents({ name: 'ATable' })
+      .find((item) => item.props('columns').some((column) => column.key === 'tier_usage_percent'))
+    table.vm.$emit('change', { current: 2, pageSize: 50 }, {}, {}, { action: 'paginate' })
+    await flushPromises()
+    wrapper.vm.storageKeyword = 'nginx-060'
+    await flushPromises()
+    expect(table.props('pagination')).toMatchObject({ current: 1, total: 1 })
+    expect(table.findAll('tbody > tr.ant-table-row')).toHaveLength(1)
+    wrapper.vm.storageKeyword = ''
+    await flushPromises()
+    table.vm.$emit('change', { current: 2, pageSize: 50 }, {}, {}, { action: 'paginate' })
+    await flushPromises()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', {
+      nodeType: 'project', projectId: 15, nodeTitle: 'yilake',
+    })
+    await flushPromises()
+    expect(table.props('pagination')).toMatchObject({ current: 1, total: 20, pageSize: 50 })
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', { nodeType: 'all', nodeTitle: '全部业务' })
+    await flushPromises()
+    table.vm.$emit('change', { current: 2, pageSize: 50 }, {}, {}, { action: 'paginate' })
+    await flushPromises()
+    expect(table.props('pagination').current).toBe(2)
+    getLogStorageOverview.mockResolvedValueOnce({ data: { data: {
+      data_streams: [records[0]], dims: fullOverviewPayload().dims,
+    } } })
+    await wrapper.vm.loadStorage()
+    await flushPromises()
+    expect(table.props('pagination')).toMatchObject({ current: 1, total: 1 })
+    wrapper.vm.storageKeyword = 'no-matching-stream'
+    await flushPromises()
+    expect(table.props('pagination')).toMatchObject({ current: 1, total: 0 })
+    expect(table.findAll('tbody > tr.ant-table-row')).toHaveLength(0)
+    wrapper.unmount()
+  }, 20000)
+
   it('flags missing tiers and separates ILM management from configured collection', async () => {
     const wrapper = await mountPage()
     wrapper.vm.activeTab = 'storage'
@@ -1111,6 +1279,73 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     expect(getLogBatchJob).toHaveBeenCalledWith(77)
     expect(wrapper.vm.applyJob.total_count).toBe(2)
     expect(wrapper.vm.applyJobPercent).toBe(100)
+    wrapper.unmount()
+  })
+
+  it('展示档位参考容量和真实使用率，副本占用独立且历史流单独标注', async () => {
+    store.state.perms = ['monitor:view', 'monitor:log_collect:view']
+    const wrapper = await mountPage()
+    wrapper.vm.activeTab = 'storage'
+    await flushPromises()
+    wrapper.vm.storageRows = [
+      { name: 'logs-normal', recognized: true, tier: 'std', bytes: 120 * 1024 ** 3, primary_bytes: 60 * 1024 ** 3, tier_capacity_bytes: 150 * 1024 ** 3, tier_usage_percent: 40, tier_capacity_status: 'available' },
+      { name: 'logs-over', recognized: true, tier: 'std', bytes: 300 * 1024 ** 3, primary_bytes: 225 * 1024 ** 3, tier_capacity_bytes: 150 * 1024 ** 3, tier_usage_percent: 150, tier_capacity_status: 'available' },
+      { name: 'logs-empty', recognized: true, tier: 'std', bytes: 0, primary_bytes: 0, tier_capacity_bytes: 150 * 1024 ** 3, tier_usage_percent: 0, tier_capacity_status: 'available' },
+      { name: 'logs-history', recognized: true, historical: true, tier: 'old', bytes: 60 * 1024 ** 3, primary_bytes: 30 * 1024 ** 3, tier_capacity_bytes: 150 * 1024 ** 3, tier_usage_percent: 20, tier_capacity_status: 'available' },
+    ]
+    await flushPromises()
+    const table = wrapper.findAllComponents({ name: 'ATable' })
+      .find((item) => item.props('columns').some((column) => column.key === 'tier_usage_percent'))
+    expect(table.props('scroll').x).toBe(1800)
+    expect(table.props('columns').map((column) => column.title)).toEqual(expect.arrayContaining([
+      '索引占用（含副本）', '主分片占用', '档位参考容量', '档位容量使用率',
+    ]))
+    const rows = table.findAll('tr[data-row-key]')
+    const normal = rows.find((row) => row.attributes('data-row-key') === 'logs-normal')
+    expect(normal.text()).toContain('120.0 GB')
+    expect(normal.text()).toContain('60.0 GB')
+    expect(normal.text()).toContain('150.0 GB')
+    expect(normal.text()).toContain('40.0%')
+    const over = rows.find((row) => row.attributes('data-row-key') === 'logs-over')
+    expect(over.text()).toContain('150.0%')
+    expect(over.findComponent({ name: 'AProgress' }).props()).toMatchObject({ percent: 100, status: 'exception' })
+    expect(rows.find((row) => row.attributes('data-row-key') === 'logs-empty').text()).toContain('0.0%')
+    const history = rows.find((row) => row.attributes('data-row-key') === 'logs-history')
+    expect(history.text()).toContain('20.0%')
+    expect(history.text()).toContain('历史流 · 当前参数参考')
+    expect(wrapper.text()).toContain('不是硬配额')
+    expect(wrapper.text()).toContain('超过 100% 不代表磁盘已满')
+    wrapper.unmount()
+  })
+
+  it('无法计算的档位容量显示明确原因，不把 null 显示成零使用率', async () => {
+    const wrapper = await mountPage()
+    wrapper.vm.activeTab = 'storage'
+    await flushPromises()
+    wrapper.vm.storageRows = ['unrecognized', 'tier_missing', 'invalid_budget', 'primary_size_unavailable'].map((status) => ({
+      name: `logs-${status}`, recognized: status !== 'unrecognized', tier: 'std',
+      bytes: 10, primary_bytes: null, tier_capacity_bytes: status === 'primary_size_unavailable' ? 1024 ** 3 : null,
+      tier_usage_percent: null, tier_capacity_status: status,
+    }))
+    await flushPromises()
+    const table = wrapper.findAllComponents({ name: 'ATable' })
+      .find((item) => item.props('columns').some((column) => column.key === 'tier_usage_percent'))
+    const rows = table.findAll('tr[data-row-key]')
+    for (const row of rows) {
+      expect(row.text()).toContain('无法计算')
+      expect(row.text()).not.toContain('0.0%')
+      expect(row.findComponent({ name: 'AProgress' }).exists()).toBe(false)
+    }
+    const primaryMissing = rows.find((row) => row.attributes('data-row-key') === 'logs-primary_size_unavailable')
+    expect(primaryMissing.text()).toContain('1.0 GB')
+    expect(primaryMissing.text()).toContain('未知')
+    const reason = primaryMissing.findAllComponents({ name: 'ATooltip' })
+      .find((tooltip) => tooltip.props('title')?.includes('主分片占用不可用'))
+    expect(reason.props('placement')).toBe('top')
+    await reason.find('span').trigger('mouseenter')
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    await flushPromises()
+    expect(document.body.textContent).toContain('不能将缺失数据当作 0')
     wrapper.unmount()
   })
 

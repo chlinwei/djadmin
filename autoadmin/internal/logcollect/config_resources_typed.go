@@ -45,11 +45,16 @@ type retentionTierResponse struct {
 // estimatedTierTotalGB 按"每天写入量 × 保留期"反推该档位的稳态占用（容量规划用，见 §4.6）。
 // 保留期以小时为单位时要折算成天（12h = 0.5 天），否则小时档位的预估容量会虚高 24 倍。
 func estimatedTierTotalGB(dailySizeGB float64, value int64, unit string) float64 {
+	return math.Round(tierTotalGB(dailySizeGB, value, unit)*100) / 100
+}
+
+// tierTotalGB 保留原始精度，容量使用率不能使用展示时四舍五入后的预算。
+func tierTotalGB(dailySizeGB float64, value int64, unit string) float64 {
 	days := float64(value)
 	if strings.ToLower(strings.TrimSpace(unit)) == "h" {
 		days = float64(value) / 24
 	}
-	return math.Round(dailySizeGB*days*100) / 100
+	return dailySizeGB * days
 }
 
 func (handler *Handler) retentionTierResponse(context *gin.Context, row db.MonitorLogRetentionTier) retentionTierResponse {

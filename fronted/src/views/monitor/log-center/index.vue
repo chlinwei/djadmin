@@ -428,7 +428,7 @@
                 <template v-else-if="column.key === 'data_stream'"><code>{{ record.data_stream }}</code></template>
               </template>
             </a-table>
-            <a-alert
+              <a-alert
               type="info"
               show-icon
               class="apply-unmanaged"
@@ -581,6 +581,12 @@
             type="info"
             show-icon
             class="apply-unmanaged"
+            message="档位容量使用率 = 主分片占用 ÷ 档位参考容量（每天写入量 × 保留期）。这是容量规划参考，不是硬配额；超过 100% 不代表磁盘已满，也不会自动停止写入。参考容量按当前档位参数计算，历史流不计入当前流的预算；真实磁盘压力请看上方节点磁盘。"
+          />
+          <a-alert
+            type="info"
+            show-icon
+            class="apply-unmanaged"
             message="非当前档位自动回收：主机配置已同步后，空流自动删除；有日志的旧流按原流的 ILM 保留策略到期后删除整个数据流及底层索引。系统每 10 分钟检查，离线、未同步或归属不明时暂缓。"
           />
           <a-input-search
@@ -600,13 +606,14 @@
             :columns="storageColumns"
             :data-source="visibleStorageRows"
             :loading="storageLoading"
-            :pagination="false"
+            :pagination="storagePagination"
             row-key="name"
             size="small"
             :locale="tableLocale"
-            :scroll="{ x: 1200 }"
+            :scroll="{ x: 1800 }"
             :expanded-row-keys="expandedRowKeys"
             :show-expand-column="false"
+            @change="handleStorageTableChange"
           >
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'owner'">
@@ -615,6 +622,33 @@
                 <a-tag v-else color="orange">未识别</a-tag>
               </template>
               <template v-else-if="column.key === 'bytes'">{{ formatBytes(record.bytes) }}</template>
+              <template v-else-if="column.key === 'primary_bytes'">
+                {{ record.primary_bytes == null ? '未知' : formatBytes(record.primary_bytes) }}
+              </template>
+              <template v-else-if="column.key === 'tier_capacity_bytes'">
+                <template v-if="record.tier_capacity_bytes != null">{{ formatBytes(record.tier_capacity_bytes) }}</template>
+                <a-tooltip v-else :title="tierCapacityUnavailableReason(record)" placement="top">
+                  <span class="apply-muted">无法计算</span>
+                </a-tooltip>
+              </template>
+              <template v-else-if="column.key === 'tier_usage_percent'">
+                <template v-if="record.tier_usage_percent != null">
+                  <div class="tier-capacity-usage">
+                    <a-progress
+                      :percent="Math.min(record.tier_usage_percent, 100)"
+                      :show-info="false"
+                      :status="record.tier_usage_percent >= 100 ? 'exception' : 'normal'"
+                      size="small"
+                      style="width: 100px"
+                    />
+                    <span>{{ record.tier_usage_percent.toFixed(1) }}%</span>
+                  </div>
+                  <div v-if="record.historical" class="field-hint">历史流 · 当前参数参考</div>
+                </template>
+                <a-tooltip v-else :title="tierCapacityUnavailableReason(record)" placement="top">
+                  <span class="apply-muted">无法计算</span>
+                </a-tooltip>
+              </template>
               <template v-else-if="column.key === 'docs'">{{ Number(record.docs || 0).toLocaleString() }}</template>
               <template v-else-if="column.key === 'ilm_state'">
                 <a-tag :color="ilmStateColor(record.ilm_state)">{{ ilmStateLabel(record.ilm_state) }}</a-tag>
@@ -637,19 +671,14 @@
                   {{ (record.backing_indices || []).length }} 个{{ expandedStream?.name === record.name ? '（收起）' : '' }}
                 </a-button>
               </template>
-              <!-- 操作列（2026-09-19）：**每条流都能清**，不再只给历史档位流。
-                   历史档位流多一个「切回该档位」（回收前还能救回来）。 -->
               <template v-else-if="column.key === 'actions'">
-                <!-- 「切回该档位」要改"这个服务的哪条日志定义"，只有选中服务时才有上下文；
-                     全量视图下只给清理（清理按服务维度执行，服务 id 由 dims 映射得到，不需要选中）。 -->
-                <template v-if="isHistoricalTier(record) && serviceId && !record.shared_source_id">
+                <template v-if="canSwitchStreamTier(record)">
                   <a-tooltip title="把这条日志的档位改回该档位，写入会继续进入这条流（不会新建）；改完需要重新下发才在主机上生效。" placement="top">
-                    <a-button v-if="canEditConfig" type="link" size="small" @click="openSwitchTier(record)">切回该档位</a-button>
+                    <a-button type="link" size="small" @click="openSwitchTier(record)">切回该档位</a-button>
                   </a-tooltip>
                 </template>
-                <a-tooltip :title="streamCleanupTooltip(record)" placement="top">
+                <a-tooltip v-if="canCleanupStream(record)" :title="streamCleanupTooltip(record)" placement="top">
                   <a-button
-                    v-if="checkPermission('monitor:logs:delete') && streamCleanupTarget(record)"
                     type="link"
                     size="small"
                     danger
@@ -661,7 +690,7 @@
                     清理数据
                   </a-button>
                 </a-tooltip>
-                <span v-if="!streamCleanupTarget(record) && !(isHistoricalTier(record) && serviceId)" class="apply-muted">-</span>
+                <span v-if="!canCleanupStream(record) && !canSwitchStreamTier(record)" class="apply-muted">-</span>
               </template>
             </template>
             <!-- 后备索引直接展开在点击的那条流下面（真实磁盘占用的最细粒度，一个流由多个
@@ -930,7 +959,7 @@ const canApply = computed(() => checkPermission('monitor:view') && checkPermissi
 import { message } from 'ant-design-vue'
 import { ReloadOutlined, SearchOutlined, CloseOutlined, CloudUploadOutlined } from '@ant-design/icons-vue'
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons-vue'
-import { tableLocale } from '@/util/tableStyle'
+import { createPagination, tableLocale } from '@/util/tableStyle'
 import { previewApplicationServiceLogGlob, getApplicationServiceLogConfig, getApplicationDeploymentList, batchSaveApplicationServiceLogSettings, getApplicationServiceLogStatusSummary, getBusinessEnvironmentList, getBusinessSystemList, getProjectList, getApplicationServiceList, saveApplicationServiceLogSetting, setApplicationServiceLogCollection } from '@/api/assets/application'
 import { createLogBatchJob, applyLogTargetsForService, checkLogCollectionStatus, getLogTargetConfigDiff, getElasticsearchClusterList, getLogBatchJob, getLogCollectionFilterRules, getLogRetentionTiers, getLogStorageOverview, getServiceCollectionChain, getServiceLogConfigState } from '@/api/monitor'
 import ServiceTree from '@/views/assets/application/components/ServiceTree.vue'
@@ -994,6 +1023,7 @@ const levelLoading = ref(false)
 const storageLoading = ref(false)
 const storageError = ref('')
 const storageRows = ref([])
+const storagePagination = reactive(createPagination(0, 50, { pageSizeOptions: ['50', '100', '200'] }))
 // 水位是"集群 + 时刻"的快照：把集群前缀与数据时间一起存下来，不展示就没法解读这些数字。
 const storageCluster = ref(null)
 const storageGeneratedAt = ref('')
@@ -1222,15 +1252,36 @@ const storageColumns = computed(() => [
   { title: '归属服务/共享源', key: 'owner', width: 150, sorter: byText('service') },
   { title: '档位', dataIndex: 'tier', key: 'tier', width: 120, sorter: byText('tier') },
   { title: '文档数', key: 'docs', width: 110, sorter: byNumber('docs') },
-  { title: '磁盘占用', key: 'bytes', width: 110, sorter: byNumber('bytes') },
+  { title: '索引占用（含副本）', key: 'bytes', width: 160, sorter: byNumber('bytes') },
+  { title: '主分片占用', key: 'primary_bytes', width: 120, sorter: byNumber('primary_bytes') },
+  { title: '档位参考容量', key: 'tier_capacity_bytes', width: 130, sorter: byNumber('tier_capacity_bytes') },
+  { title: '档位容量使用率', key: 'tier_usage_percent', width: 200, sorter: byNumber('tier_usage_percent') },
   { title: 'ILM', key: 'ilm_state', width: 100, sorter: byText('ilm_state') },
   { title: '状态', key: 'collect_state', width: 150 },
   { title: '后备索引', key: 'backing', width: 100 },
-  // 操作列**恒在**（2026-09-19 修）：清理对每条流都成立（未识别流也能清），
-  // 之前整列按"是否选中服务"开关，于是全量视图/项目/业务系统/环境节点下根本没有这一列。
-  // 只有「切回该档位」需要服务上下文（要改该服务的日志定义），它在单元格里单独把门。
-  { title: '操作', key: 'actions', width: 160, fixed: 'right' },
+  // 整列与按钮复用相同可用条件，避免只读或筛选后留下空操作列。
+  ...(visibleStorageRows.value.some((row) => canCleanupStream(row) || canSwitchStreamTier(row))
+    ? [{ title: '操作', key: 'actions', width: 160, fixed: 'right' }]
+    : []),
 ])
+
+function canCleanupStream(stream) {
+  return checkPermission('monitor:logs:delete') && Boolean(streamCleanupTarget(stream))
+}
+
+function canSwitchStreamTier(stream) {
+  return canEditConfig.value && Boolean(serviceId.value) && isHistoricalTier(stream) && !stream.shared_source_id
+}
+
+function tierCapacityUnavailableReason(record) {
+  const reasons = {
+    unrecognized: '无法识别流的档位归属，不能计算参考容量。',
+    tier_missing: '未配置档位或档位已删除，无法取得参考容量。',
+    invalid_budget: '档位每天写入量或保留期无效，无法计算参考容量。',
+    primary_size_unavailable: '部分后备索引的主分片占用不可用，不能将缺失数据当作 0。',
+  }
+  return reasons[record.tier_capacity_status] || '档位容量数据不可用，请刷新水位重试。'
+}
 
 const allocationColumns = [
   { title: '节点', dataIndex: 'name', key: 'name' },
@@ -2498,6 +2549,26 @@ const visibleStorageRows = computed(() => {
     || String(left.name).localeCompare(String(right.name), 'zh-CN'))
 })
 
+// 分页仅影响流明细的渲染；汇总、排行和排序仍使用当前范围的全部匹配流。
+watch(visibleStorageRows, (rows) => {
+  storagePagination.total = rows.length
+  const lastPage = Math.max(1, Math.ceil(rows.length / storagePagination.pageSize))
+  storagePagination.current = Math.min(storagePagination.current, lastPage)
+  expandedStream.value = null
+}, { immediate: true })
+
+watch([scope, storageKeyword], () => {
+  storagePagination.current = 1
+  expandedStream.value = null
+}, { deep: true })
+
+function handleStorageTableChange(pager, _filters, _sorter, extra) {
+  const sizeChanged = pager.pageSize !== storagePagination.pageSize
+  storagePagination.pageSize = pager.pageSize
+  storagePagination.current = sizeChanged || extra?.action === 'sort' ? 1 : pager.current
+  expandedStream.value = null
+}
+
 function storageKeywordMatch(row) {
   const keyword = String(storageKeyword.value || '').trim().toLowerCase()
   if (!keyword) return true
@@ -2740,6 +2811,12 @@ getLogRetentionTiers({ page_size: 100 })
 </script>
 
 <style scoped>
+.tier-capacity-usage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* 长日志列表随页面滚动，服务树保持可见；仅覆盖本页，避免影响其他资产页。 */
 .log-center :deep(.tree-panel) {
   position: sticky;

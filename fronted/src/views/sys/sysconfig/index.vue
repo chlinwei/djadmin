@@ -33,6 +33,7 @@
         :loading="loading"
         rowKey="id"
         :pagination="tablePagination"
+        :scroll="{ x: 1600 }"
         size="small"
         :locale="tableLocale"
         @change="handleTableChange"
@@ -173,7 +174,7 @@ watch(filteredConfigs, (list) => {
   }
 })
 
-const columns = [
+const columns = computed(() => [
   { title: '参数名称', dataIndex: 'name', key: 'name', width: 180 },
   { title: '参数键', dataIndex: 'key', key: 'key', width: 220 },
   { title: '当前值', dataIndex: 'value', key: 'value' },
@@ -182,8 +183,10 @@ const columns = [
   { title: '属性', dataIndex: 'is_readonly', key: 'is_readonly', width: 100 },
   { title: '修改时间', dataIndex: 'update_time', key: 'update_time', width: 180 },
   { title: '说明', dataIndex: 'description', key: 'description' },
-  { title: '操作', key: 'action', width: 180 },
-]
+  ...(checkPermission('sys:config:update')
+    ? [{ title: '操作', key: 'action', width: 180, fixed: 'right' }]
+    : []),
+])
 
 const valueTypeLabel = (type) => {
   const map = { string: '字符串', int: '整数', bool: '布尔值', json: 'JSON' }

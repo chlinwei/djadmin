@@ -720,7 +720,7 @@ function onTimeRangeOpenChange(open) {
   if (open) refreshTimeRangePresets()
 }
 
-const pagination = reactive(createPagination(0, 100, { pageSizeOptions: ['50', '100', '200'] }))
+const pagination = reactive(createPagination(0, 50, { pageSizeOptions: ['50', '100', '200'] }))
 const actionColumnWidth = computed(() => 100 + (liveTailEnabled.value ? 160 : 0) + (canOpenWebSsh.value ? 60 : 0))
 
 // 跨服务模式多一列「逻辑服务」：记录上只有 service 编码，名字用候选清单反查

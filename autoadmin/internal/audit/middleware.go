@@ -10,21 +10,28 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"autoadmin/internal/identity"
 
 	"github.com/gin-gonic/gin"
 )
 
-const auditTextLimit = 4000
+const (
+	auditTextLimit            = 4000
+	auditResponseCaptureLimit = 1 << 20
+	auditTruncationNotice     = "\n[truncated]"
+)
 
 type captureWriter struct {
 	gin.ResponseWriter
-	body bytes.Buffer
+	body      bytes.Buffer
+	truncated bool
 }
 
 func (writer *captureWriter) Write(data []byte) (int, error) {
-	remaining := auditTextLimit - writer.body.Len()
+	remaining := auditResponseCaptureLimit - writer.body.Len()
+	writer.truncated = writer.truncated || len(data) > remaining
 	if remaining > 0 {
 		writer.body.Write(data[:min(len(data), remaining)])
 	}
@@ -32,7 +39,8 @@ func (writer *captureWriter) Write(data []byte) (int, error) {
 }
 
 func (writer *captureWriter) WriteString(value string) (int, error) {
-	remaining := auditTextLimit - writer.body.Len()
+	remaining := auditResponseCaptureLimit - writer.body.Len()
+	writer.truncated = writer.truncated || len(value) > remaining
 	if remaining > 0 {
 		writer.body.WriteString(value[:min(len(value), remaining)])
 	}
@@ -53,7 +61,7 @@ func Capture(recorder Recorder) gin.HandlerFunc {
 		if !authenticated || shouldSkip(ginContext) {
 			return
 		}
-		responseData, message := captureResponse(writer.body.Bytes())
+		responseData, message := captureResponse(writer.body.Bytes(), writer.truncated)
 		duration := time.Since(startedAt).Milliseconds()
 		if duration > int64(^uint32(0)>>1) {
 			duration = int64(^uint32(0) >> 1)
@@ -126,7 +134,14 @@ func parseBody(contentType string, body []byte) any {
 	return nil
 }
 
-func captureResponse(body []byte) (string, string) {
+func captureResponse(body []byte, truncated bool) (string, string) {
+	// A partial JSON body cannot be safely redacted; never persist its raw prefix.
+	if truncated {
+		return encodeLimited(map[string]any{
+			"capture_status": "response_too_large",
+			"limit_bytes":    auditResponseCaptureLimit,
+		}), ""
+	}
 	var value any
 	if json.Unmarshal(body, &value) != nil {
 		return "", ""
@@ -188,11 +203,19 @@ func encodeLimited(value any) string {
 	if object, ok := value.(map[string]any); ok && len(object) == 0 {
 		return ""
 	}
-	encoded, err := json.Marshal(value)
-	if err != nil {
+	var encoded strings.Builder
+	encoder := json.NewEncoder(&encoded)
+	// Audit details render as plain text; keep XML readable even after truncation.
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
 		return ""
 	}
-	return truncate(string(encoded), auditTextLimit)
+	text := strings.TrimSuffix(encoded.String(), "\n")
+	// Parse and redact complete JSON before limiting persisted text.
+	if len(text) > auditTextLimit {
+		return truncate(text, auditTextLimit-len(auditTruncationNotice)) + auditTruncationNotice
+	}
+	return text
 }
 
 func clientIP(ginContext *gin.Context) string {
@@ -205,6 +228,9 @@ func clientIP(ginContext *gin.Context) string {
 func truncate(value string, limit int) string {
 	if len(value) <= limit {
 		return value
+	}
+	for limit > 0 && !utf8.RuneStart(value[limit]) {
+		limit--
 	}
 	return value[:limit]
 }

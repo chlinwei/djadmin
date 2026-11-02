@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -37,19 +38,32 @@ func (handler *Handler) startHistoricalStreamRecycler(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(historicalStreamSweepInterval)
 		defer ticker.Stop()
-		for {
-			sweep, cancel := context.WithTimeout(ctx, 5*time.Minute)
-			if err := handler.recycleHistoricalStreams(sweep); err != nil && ctx.Err() == nil {
-				slog.Error("historical data stream recycling failed", "error", err)
-			}
-			cancel()
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-			}
-		}
+		// 首轮可能早于 gRPC 监听和 Agent 重连；追加一次启动复查，避免空历史流因此空等整个周期。
+		// 只额外执行一次，正常运行仍保持十分钟间隔，所有主机与写入安全检查照常执行。
+		startupRetry := time.NewTimer(time.Minute)
+		defer startupRetry.Stop()
+		runHistoricalStreamRecycler(ctx, handler.recycleHistoricalStreams, ticker.C, startupRetry.C)
 	}()
+}
+
+func runHistoricalStreamRecycler(ctx context.Context, collect func(context.Context) error, ticks, startupRetry <-chan time.Time) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		sweep, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		if err := collect(sweep); err != nil && ctx.Err() == nil {
+			slog.Error("historical data stream recycling failed", "error", err)
+		}
+		cancel()
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks:
+		case <-startupRetry:
+			startupRetry = nil
+		}
+	}
 }
 
 func (handler *Handler) recycleHistoricalStreams(ctx context.Context) error {
@@ -263,9 +277,6 @@ func (handler *Handler) recycleHistoricalStream(ctx context.Context, cluster ela
 		return err
 	}
 	deleted, reason, err := handler.deleteExpiredHistoricalStream(ctx, cluster, stream, time.Now().UTC())
-	if isElasticsearchIndexNotFound(err) {
-		deleted, reason, err = true, "stream already absent", nil
-	}
 	if err != nil {
 		return err
 	}
@@ -279,10 +290,6 @@ func (handler *Handler) recycleHistoricalStream(ctx context.Context, cluster ela
 		slog.Info("historical data stream retained", "stream", stream.Name, "service_id", owner.ServiceID, "reason", reason)
 	}
 	return nil
-}
-
-func isElasticsearchIndexNotFound(err error) bool {
-	return err != nil && isElasticsearchNotFound(err) && strings.Contains(err.Error(), "index_not_found_exception")
 }
 
 func (handler *Handler) historicalStreamHostsReady(ctx context.Context, serviceID int64) error {
@@ -322,7 +329,8 @@ func checkHistoricalStreamHosts(now time.Time, serviceID int64, managed, unmanag
 	current := map[int64]serviceApplyTarget{}
 	for _, host := range managed {
 		if !host.AgentOnline || host.ConfigState != LogConfigSynced {
-			return fmt.Errorf("host %s is offline or configuration is not synced", host.HostInstanceName)
+			return fmt.Errorf("host %s is not ready: agent_online=%t config_state=%s",
+				host.HostInstanceName, host.AgentOnline, host.ConfigState)
 		}
 		current[host.HostID] = host
 	}
@@ -521,6 +529,68 @@ func (handler *Handler) deleteExpiredHistoricalStream(ctx context.Context, clust
 	return handler.deleteExpiredStream(ctx, cluster, stream, now, false, nil)
 }
 
+func (handler *Handler) readHistoricalDataStream(ctx context.Context, cluster elasticsearchCluster, name string) (*historicalDataStream, error) {
+	raw, err := handler.elasticsearchRequestRaw(ctx, cluster, http.MethodGet, "/_data_stream/"+url.PathEscape(name), nil)
+	if err != nil {
+		if isElasticsearchNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var result struct {
+		Streams *[]historicalDataStream `json:"data_streams"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, err
+	}
+	if result.Streams == nil || len(*result.Streams) != 1 || (*result.Streams)[0].Name != name {
+		return nil, fmt.Errorf("incomplete data stream identity response")
+	}
+	return &(*result.Streams)[0], nil
+}
+
+func (handler *Handler) waitForHistoricalStreamWrites(ctx context.Context, cluster elasticsearchCluster) error {
+	raw, err := handler.elasticsearchRequestRaw(ctx, cluster, http.MethodGet,
+		"/_tasks?actions=indices:data/write/*&group_by=none", nil)
+	if err != nil {
+		return fmt.Errorf("list in-flight write tasks: %w", err)
+	}
+	var result struct {
+		Tasks *[]struct {
+			Node string `json:"node"`
+			ID   int64  `json:"id"`
+		} `json:"tasks"`
+		NodeFailures []json.RawMessage `json:"node_failures"`
+		TaskFailures []json.RawMessage `json:"task_failures"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return err
+	}
+	if result.Tasks == nil || len(result.NodeFailures) != 0 || len(result.TaskFailures) != 0 {
+		return fmt.Errorf("incomplete in-flight write task evidence")
+	}
+	// settings 写阻断不等待在途请求；ack 后新请求会被拒绝，等待此刻已登记的写任务完成才能复查空流。
+	// 连同父 bulk/ingest 请求一起等待，避免排队但尚未进入 indexing 统计的旧写入被遗漏。
+	for _, task := range *result.Tasks {
+		if task.Node == "" || task.ID < 0 {
+			return fmt.Errorf("invalid in-flight write task identity")
+		}
+		id := task.Node + ":" + strconv.FormatInt(task.ID, 10)
+		state, err := handler.elasticsearchRequest(ctx, cluster, http.MethodGet,
+			"/_tasks/"+url.PathEscape(id)+"?wait_for_completion=true&timeout=5s", nil)
+		if err != nil {
+			if isElasticsearchNotFound(err) {
+				continue // 非持久化任务完成后即从任务表移除。
+			}
+			return fmt.Errorf("wait for in-flight write task %s: %w", id, err)
+		}
+		if state["completed"] != true {
+			return fmt.Errorf("write task %s has not completed", id)
+		}
+	}
+	return nil
+}
+
 func (handler *Handler) deleteExpiredStream(ctx context.Context, cluster elasticsearchCluster, stream historicalDataStream, now time.Time, orphan bool, beforeDelete func() error) (deleted bool, reason string, err error) {
 	if err := validateCleanupStreamName(cluster.IndexPrefix, stream.Name); err != nil {
 		return false, "", err
@@ -528,6 +598,16 @@ func (handler *Handler) deleteExpiredStream(ctx context.Context, cluster elastic
 	if len(stream.Indices) == 0 {
 		return false, "", fmt.Errorf("missing backing index evidence")
 	}
+	backingNames := make([]string, 0, len(stream.Indices))
+	for _, index := range stream.Indices {
+		if !strings.HasPrefix(index.Name, ".ds-"+stream.Name+"-") || strings.ContainsAny(index.Name, " ,/*?\"<>|\\") {
+			return false, "", fmt.Errorf("invalid backing index identity")
+		}
+		backingNames = append(backingNames, index.Name)
+	}
+	// data stream 写索引不支持专用 Add index block API，使用动态设置阻断并单独等待在途写入。
+	// 阻断与恢复都针对本轮快照，避免恢复意外波及 rollover 后的新索引。
+	backingPath := "/" + url.PathEscape(strings.Join(backingNames, ","))
 	snapshotFn := handler.historicalStreamSnapshot
 	if orphan {
 		snapshotFn = handler.orphanStreamSnapshot
@@ -551,7 +631,7 @@ func (handler *Handler) deleteExpiredStream(ctx context.Context, cluster elastic
 		reason = "historical stream retention expired"
 	}
 	raw, err := handler.elasticsearchRequestRaw(ctx, cluster, http.MethodGet,
-		"/"+url.PathEscape(stream.Name)+"/_settings?filter_path=*.settings.index.blocks.write", nil)
+		backingPath+"/_settings?filter_path=*.settings.index.blocks.write", nil)
 	if err != nil {
 		return false, "", err
 	}
@@ -582,7 +662,7 @@ func (handler *Handler) deleteExpiredStream(ctx context.Context, cluster elastic
 		}
 		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 		defer cancel()
-		result, restoreErr := handler.elasticsearchRequest(restoreCtx, cluster, http.MethodPut, "/"+url.PathEscape(stream.Name)+"/_settings",
+		result, restoreErr := handler.elasticsearchRequest(restoreCtx, cluster, http.MethodPut, backingPath+"/_settings",
 			map[string]any{"index.blocks.write": false})
 		if restoreErr != nil {
 			if !isElasticsearchNotFound(restoreErr) {
@@ -592,13 +672,13 @@ func (handler *Handler) deleteExpiredStream(ctx context.Context, cluster elastic
 			err = errors.Join(err, fmt.Errorf("Elasticsearch did not acknowledge restoring stream write setting"))
 		}
 	}()
-	blocked, err := handler.elasticsearchRequest(ctx, cluster, http.MethodPut, "/"+url.PathEscape(stream.Name)+"/_block/write", nil)
-	if isElasticsearchIndexNotFound(err) {
-		deleted = true
-		return true, "stream already absent", nil
-	}
-	if err != nil || blocked["acknowledged"] != true || blocked["shards_acknowledged"] != true {
+	blocked, err := handler.elasticsearchRequest(ctx, cluster, http.MethodPut, backingPath+"/_settings",
+		map[string]any{"index.blocks.write": true})
+	if err != nil || blocked["acknowledged"] != true {
 		return false, "", errors.Join(err, fmt.Errorf("Elasticsearch did not confirm historical stream write block"))
+	}
+	if err := handler.waitForHistoricalStreamWrites(ctx, cluster); err != nil {
+		return false, "", err
 	}
 	refreshed, err := handler.elasticsearchRequestRaw(ctx, cluster, http.MethodPost, "/"+url.PathEscape(stream.Name)+"/_refresh", nil)
 	if err != nil {
@@ -641,15 +721,31 @@ func (handler *Handler) deleteExpiredStream(ctx context.Context, cluster elastic
 			return false, "", err
 		}
 	}
-	result, err := handler.elasticsearchRequest(ctx, cluster, http.MethodDelete, "/_data_stream/"+url.PathEscape(stream.Name), nil)
+	current, err := handler.readHistoricalDataStream(ctx, cluster, stream.Name)
 	if err != nil {
-		if isElasticsearchNotFound(err) {
-			return true, reason, nil
-		}
 		return false, "", err
 	}
-	if result["acknowledged"] != true {
+	if current == nil {
+		return true, "stream already absent", nil
+	}
+	// 阻断期间发生 rollover 时，新索引不在本轮写入屏障内，必须暂缓删除而不是漏掉保护。
+	if !reflect.DeepEqual(*current, stream) {
+		return false, "", fmt.Errorf("historical backing indices changed during recycling")
+	}
+	result, err := handler.elasticsearchRequest(ctx, cluster, http.MethodDelete, "/_data_stream/"+url.PathEscape(stream.Name), nil)
+	if err != nil && !isElasticsearchNotFound(err) {
+		return false, "", err
+	}
+	if err == nil && result["acknowledged"] != true {
 		return false, "", fmt.Errorf("Elasticsearch did not acknowledge historical stream deletion")
+	}
+	// 索引端点的 404 或删除 ack 都不能替代流级事实；只有具体流查询确认不存在才报告删除成功。
+	current, err = handler.readHistoricalDataStream(ctx, cluster, stream.Name)
+	if err != nil {
+		return false, "", err
+	}
+	if current != nil {
+		return false, "", fmt.Errorf("data stream still exists after deletion")
 	}
 	return true, reason, nil
 }

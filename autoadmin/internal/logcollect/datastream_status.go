@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -31,18 +32,22 @@ type dataStreamBackingIndex struct {
 }
 
 type dataStreamEntry struct {
-	Name           string  `json:"name"`
-	Project        string  `json:"project"`
-	Environment    string  `json:"environment"`
-	BusinessSystem string  `json:"business_system"`
-	Service        string  `json:"service"`
-	Tier           string  `json:"tier"`
-	Health         string  `json:"health"`
-	Docs           float64 `json:"docs"`
-	Bytes          float64 `json:"bytes"`
-	ILMState       string  `json:"ilm_state"`
-	Recognized     bool    `json:"recognized"`
-	SharedSourceID int64   `json:"shared_source_id,omitempty"`
+	Name               string   `json:"name"`
+	Project            string   `json:"project"`
+	Environment        string   `json:"environment"`
+	BusinessSystem     string   `json:"business_system"`
+	Service            string   `json:"service"`
+	Tier               string   `json:"tier"`
+	Health             string   `json:"health"`
+	Docs               float64  `json:"docs"`
+	Bytes              float64  `json:"bytes"`
+	PrimaryBytes       *float64 `json:"primary_bytes"`
+	TierCapacityBytes  *float64 `json:"tier_capacity_bytes"`
+	TierUsagePercent   *float64 `json:"tier_usage_percent"`
+	TierCapacityStatus string   `json:"tier_capacity_status"`
+	ILMState           string   `json:"ilm_state"`
+	Recognized         bool     `json:"recognized"`
+	SharedSourceID     int64    `json:"shared_source_id,omitempty"`
 	// Historical 改档位后留下的历史流：属于某个服务，但它的档位已不在该服务的生效集合里
 	// （已停止写入，数据按原档位保留到期）。由后端判定，前端不再自己推。
 	Historical bool `json:"historical"`
@@ -252,6 +257,85 @@ func catString(row map[string]any, key string) string {
 	return strings.TrimSpace(value)
 }
 
+func catPrimaryBytes(row map[string]any) *float64 {
+	var value float64
+	switch raw := row["pri.store.size"].(type) {
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+		if err != nil {
+			return nil
+		}
+		value = parsed
+	case float64:
+		value = raw
+	default:
+		return nil
+	}
+	if value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+		return nil
+	}
+	return &value
+}
+
+func applyStreamTierCapacity(entry *dataStreamEntry, tiers map[string]db.MonitorLogRetentionTier) {
+	entry.TierCapacityBytes, entry.TierUsagePercent = nil, nil
+	entry.TierCapacityStatus = "unrecognized"
+	if !entry.Recognized {
+		return
+	}
+	tier, found := tiers[entry.Tier]
+	entry.TierCapacityStatus = "tier_missing"
+	if !found {
+		return
+	}
+	unit := strings.ToLower(strings.TrimSpace(tier.RetentionUnit))
+	// ES 的 gb 使用 1024³ 字节；预算与主分片存储统一口径，不把副本扩容算作业务超预算。
+	capacity := tierTotalGB(tier.DailySizeGb, int64(tier.RetentionValue), unit) * (1 << 30)
+	entry.TierCapacityStatus = "invalid_budget"
+	if (unit != "d" && unit != "h") || tier.RetentionValue <= 0 || tier.DailySizeGb <= 0 ||
+		capacity <= 0 || math.IsNaN(capacity) || math.IsInf(capacity, 0) {
+		return
+	}
+	entry.TierCapacityBytes = &capacity
+	entry.TierCapacityStatus = "primary_size_unavailable"
+	if entry.PrimaryBytes == nil {
+		return
+	}
+	percent := *entry.PrimaryBytes / capacity * 100
+	if *entry.PrimaryBytes < 0 || math.IsNaN(percent) || math.IsInf(percent, 0) {
+		return
+	}
+	entry.TierUsagePercent = &percent
+	entry.TierCapacityStatus = "available"
+}
+
+func (handler *Handler) enrichStreamTierCapacity(context *gin.Context, entries []dataStreamEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	tiers := map[string]db.MonitorLogRetentionTier{}
+	// 包含停用档位并读取完整分页，历史流不能因下拉选项过滤或分页截断而丢失参考预算。
+	const pageSize = 200
+	for offset := int32(0); ; offset += pageSize {
+		rows, err := db.New(handler.db).ListLogRetentionTiers(context, db.ListLogRetentionTiersParams{
+			Limit: pageSize, Offset: offset,
+		})
+		if err != nil {
+			return fmt.Errorf("查询档位参考容量失败: %w", err)
+		}
+		for _, row := range rows {
+			tiers[row.Code] = row
+		}
+		if len(rows) < pageSize {
+			break
+		}
+	}
+	for i := range entries {
+		applyStreamTierCapacity(&entries[i], tiers)
+	}
+	return nil
+}
+
 // fetchDataStreamEntries 基于 _cat/indices + _ilm/explain 组装流级运行态。
 //
 // indexPattern 是索引通配模式（含前缀与 `*`），由调用方给：全量视图传 `<prefix>-*`，
@@ -259,7 +343,7 @@ func catString(row map[string]any, key string) string {
 // 而不是查完再过滤，因为 `_cat/indices` 是这一页最大的成本（全集群索引 + ILM explain）。
 func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster elasticsearchCluster, matcher streamNameMatcher, indexPattern string) ([]dataStreamEntry, map[string]string, error) {
 	indices, err := handler.elasticsearchRequestArray(context, cluster, "GET",
-		"/_cat/indices/"+indexPattern+"?format=json&h=index,health,status,docs.count,store.size,creation.date.string&bytes=b")
+		"/_cat/indices/"+indexPattern+"?format=json&h=index,health,status,docs.count,store.size,pri.store.size,creation.date.string&bytes=b")
 	if err != nil {
 		return nil, nil, fmt.Errorf("查询索引列表失败: %w", err)
 	}
@@ -314,7 +398,8 @@ func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster ela
 			entry = &dataStreamEntry{
 				Name: parsed.Stream, Project: parsed.Project, Environment: parsed.Environment,
 				BusinessSystem: parsed.BusinessSystem, Service: parsed.Service, Tier: parsed.Tier,
-				Recognized: parsed.Recognized,
+				Recognized:   parsed.Recognized,
+				PrimaryBytes: new(float64),
 				// 旧命名流没有服务段，识别不出服务，两个开关都没有意义（保持 false，页面不标注）。
 				ServiceEnabled: parsed.ServiceEnabled, CollectedByService: parsed.ServiceCollectEnabled,
 				// 历史流判定：服务认得出来 + 档位不在该服务的生效集合里（= 改档位留下的旧流）。
@@ -328,6 +413,13 @@ func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster ela
 		}
 		entry.Docs += catFloat(row, "docs.count")
 		entry.Bytes += catFloat(row, "store.size")
+		// 任一后备索引缺失主分片占用时，整条流均不可计算，避免部分求和冒充完整占用。
+		primaryBytes := catPrimaryBytes(row)
+		if primaryBytes == nil {
+			entry.PrimaryBytes = nil
+		} else if entry.PrimaryBytes != nil {
+			*entry.PrimaryBytes += *primaryBytes
+		}
 		if entry.Health == "" || catString(row, "health") == "red" {
 			entry.Health = catString(row, "health")
 		}
@@ -431,6 +523,10 @@ func (handler *Handler) GetLogStorageOverview(context *gin.Context) {
 	entries, _, err := handler.fetchDataStreamEntries(context, cluster, matcher, indexPattern)
 	if err != nil {
 		response.BusinessError(context, 502, err.Error(), nil)
+		return
+	}
+	if err := handler.enrichStreamTierCapacity(context, entries); err != nil {
+		response.Error(context, err)
 		return
 	}
 	// 节点磁盘水位：失败不阻塞总览（旧版本/云托管可能拒绝该端点）。

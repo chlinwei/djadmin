@@ -64,17 +64,34 @@ func TestOrphanStreamRetentionAndFinalRecheck(t *testing.T) {
 					body = `{"original":{"policy":{"phases":{"delete":{"min_age":"30d","actions":{"delete":{}}}}}}}`
 				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/_settings"):
 					body = `{".ds-logs-p-b-prod-svc-old-000001":{"settings":{"index":{"blocks":{"write":"false"}}}}}`
-				case strings.HasSuffix(r.URL.Path, "/_block/write"):
-					body = `{"acknowledged":true,"shards_acknowledged":true}`
+				case r.URL.Path == "/_tasks":
+					body = `{"tasks":[]}`
 				case strings.HasSuffix(r.URL.Path, "/_refresh"):
 					body = `{"_shards":{"failed":0,"total":1,"successful":1}}`
 				case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/_settings"):
-					restored++
+					if r.URL.Path != "/.ds-logs-p-b-prod-svc-old-000001/_settings" {
+						t.Errorf("must block backing index, not data stream: %s", r.URL.Path)
+					}
+					var settings map[string]bool
+					if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+						t.Error(err)
+					}
+					if !settings["index.blocks.write"] {
+						restored++
+					}
 				case r.Method == http.MethodDelete:
 					if r.URL.Path != "/_data_stream/logs-p-b-prod-svc-old" {
 						t.Errorf("unsafe delete %s", r.URL)
 					}
 					deletes++
+				case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_data_stream/"):
+					if deletes > 0 {
+						w.WriteHeader(http.StatusNotFound)
+						body = `{"error":{"type":"resource_not_found_exception"},"status":404}`
+					} else {
+						_ = json.NewEncoder(w).Encode(map[string]any{"data_streams": []historicalDataStream{historicalTestStream(t)}})
+						return
+					}
 				default:
 					t.Errorf("unexpected request %s %s", r.Method, r.URL)
 				}

@@ -4,7 +4,7 @@
       <!-- 左：组列表 -->
       <a-card title="用户组" size="small" class="group-panel">
         <template #extra>
-          <a-button size="small" type="primary" @click="openCreateModal">
+          <a-button v-if="canCreate" size="small" type="primary" @click="openCreateModal">
             <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
             <span>&nbsp;新增</span>
           </a-button>
@@ -27,16 +27,16 @@
         <template #title>
           <a-space wrap>
             <span>{{ currentGroup ? currentGroup.name : '成员' }}</span>
-            <a-button v-if="currentGroup" size="small" @click="openEditModal(currentGroup)">编辑组信息</a-button>
+            <a-button v-if="currentGroup && canUpdate" size="small" @click="openEditModal(currentGroup)">编辑组信息</a-button>
           </a-space>
         </template>
         <template #extra>
-          <a-button v-if="currentGroup" size="small" danger @click="handleDelete(currentGroup)">删除组</a-button>
+          <a-button v-if="currentGroup && canDelete" size="small" danger @click="handleDelete(currentGroup)">删除组</a-button>
         </template>
 
         <a-empty v-if="!currentGroup" description="在左侧选择一个用户组" />
         <template v-else>
-          <div class="member-add-row">
+          <div v-if="canAddMembers" class="member-add-row">
             <a-select
               v-model:value="memberToAdd"
               show-search
@@ -96,7 +96,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { tableLocale } from '@/util/tableStyle'
 import { message } from 'ant-design-vue'
 import {
@@ -109,6 +109,7 @@ import { getUserList } from '@/api/user/index.js'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { fetchAllPages } from '@/util/fetchAllPages'
+import { checkPermission } from '@/directives/permission/permission'
 
 defineOptions({
   name: 'UserGroupsPage',
@@ -116,11 +117,14 @@ defineOptions({
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 
-const memberColumns = [
+const canCreate = computed(() => checkPermission('system:usergroups:create'))
+const canUpdate = computed(() => checkPermission('system:usergroups:update'))
+const canDelete = computed(() => checkPermission('system:usergroups:delete'))
+const canAddMembers = computed(() => canUpdate.value && checkPermission('system:users:view'))
+const memberColumns = computed(() => [
   { title: '用户', dataIndex: 'username', key: 'username' },
-  { title: 'ID', dataIndex: 'user_id', key: 'user_id', width: 90 },
-  { title: '操作', key: 'operation', width: 100, fixed: 'right' },
-]
+  ...(canUpdate.value ? [{ title: '操作', key: 'operation', width: 100, fixed: 'right' }] : []),
+])
 
 const groupList = ref([])
 const userList = ref([])
@@ -157,13 +161,22 @@ function handleSelectGroup({ key }) {
   memberToAdd.value = null
 }
 
+// 确认框打开后权限可能变化，隐藏入口不能替代提交前的动作校验。
+function requireAction(permission) {
+  if (checkPermission(permission)) return true
+  message.warning('无权执行此操作，请检查用户组操作权限')
+  return false
+}
+
 function openCreateModal() {
+  if (!requireAction('system:usergroups:create')) return
   editingId.value = null
   groupForm.value = { name: '', remark: '' }
   modalVisible.value = true
 }
 
 function openEditModal(record) {
+  if (!requireAction('system:usergroups:update')) return
   editingId.value = record.id
   groupForm.value = { name: record.name, remark: record.remark || '' }
   modalVisible.value = true
@@ -174,6 +187,7 @@ function closeModal() {
 }
 
 async function saveGroup() {
+  if (!requireAction(editingId.value ? 'system:usergroups:update' : 'system:usergroups:create')) return
   const name = groupForm.value.name.trim()
   if (!name) {
     message.warning('请填写用户组名称')
@@ -204,6 +218,7 @@ async function saveGroup() {
 
 // 成员变更 = 以当前成员列表 + 变更调整 update 接口（整表替换）。
 async function saveMembers(group, userIDs) {
+  if (!requireAction('system:usergroups:update')) return false
   memberSaving.value = true
   try {
     await updateUserGroup({
@@ -213,22 +228,25 @@ async function saveMembers(group, userIDs) {
       user_ids: userIDs,
     })
     await loadGroups()
+    return true
   } finally {
     memberSaving.value = false
   }
 }
 
 async function addMember() {
+  if (!requireAction('system:usergroups:update') || !requireAction('system:users:view')) return
   if (!memberToAdd.value || !currentGroup.value) return
   const userIDs = currentGroup.value.members.map((member) => member.user_id)
   userIDs.push(memberToAdd.value)
   const added = userList.value.find((user) => user.id === memberToAdd.value)
-  await saveMembers(currentGroup.value, userIDs)
+  if (!await saveMembers(currentGroup.value, userIDs)) return
   memberToAdd.value = null
   message.success(`已添加成员 ${added?.username || ''}`)
 }
 
 async function removeMember(record) {
+  if (!requireAction('system:usergroups:update')) return
   // 确认期间可能切换用户组，更新目标必须固定为点击时的组。
   const group = currentGroup.value
   if (!group) {
@@ -241,7 +259,9 @@ async function removeMember(record) {
     summary: '仅移除该用户与本组的成员关系，不会删除平台用户；会影响通过该组选择的通知收件范围。',
     items: [`用户组：${group.name}（#${group.id}）`, `成员：${record.username}（#${record.user_id}）`],
     onConfirm: async () => {
-      await saveMembers(group, group.members.map((member) => member.user_id).filter((id) => id !== record.user_id))
+      if (!await saveMembers(group, group.members.map((member) => member.user_id).filter((id) => id !== record.user_id))) {
+        throw new Error('用户组更新权限已失效')
+      }
       message.success(`已将 ${record.username} 移出用户组 ${group.name}`)
     },
   })
@@ -263,16 +283,14 @@ async function loadGroups() {
   }
 }
 
-async function loadUsers() {
-  userList.value = await fetchAllPages(getUserList)
-}
-
 async function handleDelete(record) {
+  if (!requireAction('system:usergroups:delete')) return
   await openDeleteConfirm({
     title: '确认删除用户组',
     summary: '删除后引用该用户组的功能（如告警接收组）将不再包含这些成员。',
     items: [record.name],
     onConfirm: async () => {
+      if (!requireAction('system:usergroups:delete')) throw new Error('用户组删除权限已失效')
       await batchDeleteUserGroups([record.id])
       message.success('用户组已删除')
       await loadGroups()
@@ -280,9 +298,28 @@ async function handleDelete(record) {
   })
 }
 
+watch([canCreate, canUpdate], () => {
+  if (modalVisible.value && !(editingId.value ? canUpdate.value : canCreate.value)) closeModal()
+})
+
+// 候选用户只用于添加成员；撤权后丢弃迟到结果，不能因查看用户组而额外查询平台用户。
+watch(canAddMembers, async (allowed, _previous, onCleanup) => {
+  let active = true
+  onCleanup(() => { active = false })
+  userList.value = []
+  memberToAdd.value = null
+  if (!allowed) return
+  try {
+    const users = await fetchAllPages(getUserList)
+    if (active) userList.value = users
+  } catch (error) {
+    if (active) message.error(error?.response?.data?.msg || '加载候选用户失败')
+  }
+}, { immediate: true })
+
 onMounted(async () => {
   try {
-    await Promise.all([loadGroups(), loadUsers()])
+    await loadGroups()
   } catch (error) {
     message.error(error?.response?.data?.msg || '用户组数据加载失败')
   }

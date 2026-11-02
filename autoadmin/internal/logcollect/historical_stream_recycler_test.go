@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,110 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
+
+func TestHistoricalStreamRecyclerStartupRecheck(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ticks, retry := make(chan time.Time), make(chan time.Time, 2)
+	calls := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runHistoricalStreamRecycler(ctx, func(sweep context.Context) error {
+			if _, ok := sweep.Deadline(); !ok {
+				t.Error("sweep must have a bounded deadline")
+			}
+			calls <- struct{}{}
+			return nil
+		}, ticks, retry)
+	}()
+	await := func() {
+		t.Helper()
+		select {
+		case <-calls:
+		case <-time.After(time.Second):
+			t.Fatal("collector was not invoked")
+		}
+	}
+	await()
+	retry <- time.Now()
+	await()
+	// 一次性的启动补查不能变成高频扫描；之后仍只响应正常周期。
+	retry <- time.Now()
+	ticks <- time.Now()
+	await()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("collector did not stop after cancellation")
+	}
+}
+
+func TestHistoricalStreamRecyclerCanceledBeforeStart(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	runHistoricalStreamRecycler(ctx, func(context.Context) error {
+		t.Fatal("must not collect after shutdown")
+		return nil
+	}, nil, nil)
+}
+
+func TestHistoricalStreamWaitsForInFlightWrites(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		list       string
+		listStatus int
+		state      string
+		stateCode  int
+		wantWait   bool
+		wantError  bool
+	}{
+		{name: "no writes", list: `{"tasks":[]}`},
+		{name: "wait for existing bulk", list: `{"tasks":[{"node":"node","id":7}]}`, state: `{"completed":true}`, wantWait: true},
+		{name: "completed task removed", list: `{"tasks":[{"node":"node","id":7}]}`, stateCode: 404, wantWait: true},
+		{name: "write still running", list: `{"tasks":[{"node":"node","id":7}]}`, state: `{"completed":false}`, wantWait: true, wantError: true},
+		{name: "failed task lookup", list: `{"tasks":[{"node":"node","id":7}]}`, stateCode: 503, wantWait: true, wantError: true},
+		{name: "missing task list", list: `{}`, wantError: true},
+		{name: "partial node evidence", list: `{"tasks":[],"node_failures":[{}]}`, wantError: true},
+		{name: "partial task evidence", list: `{"tasks":[],"task_failures":[{}]}`, wantError: true},
+		{name: "unknown task node", list: `{"tasks":[{"id":7}]}`, wantError: true},
+		{name: "negative task id", list: `{"tasks":[{"node":"node","id":-1}]}`, wantError: true},
+		{name: "task monitoring forbidden", listStatus: 403, list: `{}`, wantError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			waited := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("task observation must be GET: %s", r.Method)
+				}
+				if r.URL.Path == "/_tasks" {
+					if r.URL.Query().Get("group_by") != "none" || r.URL.Query().Get("actions") != "indices:data/write/*" {
+						t.Error("must capture the complete flat write task list")
+					}
+					if tt.listStatus != 0 {
+						w.WriteHeader(tt.listStatus)
+					}
+					fmt.Fprint(w, tt.list)
+					return
+				}
+				if r.URL.Path != "/_tasks/node:7" || r.URL.Query().Get("wait_for_completion") != "true" || r.URL.Query().Get("timeout") != "5s" {
+					t.Errorf("must wait for the captured write task: %s", r.URL)
+				}
+				waited = true
+				if tt.stateCode != 0 {
+					w.WriteHeader(tt.stateCode)
+				}
+				fmt.Fprint(w, tt.state)
+			}))
+			defer server.Close()
+			err := (&Handler{}).waitForHistoricalStreamWrites(context.Background(), elasticsearchCluster{Hosts: server.URL, Timeout: 5})
+			if (err != nil) != tt.wantError || waited != tt.wantWait {
+				t.Fatalf("error=%v waited=%t; want error=%t waited=%t", err, waited, tt.wantError, tt.wantWait)
+			}
+		})
+	}
+}
 
 func TestHistoricalStreamOwner(t *testing.T) {
 	owner := db.AssetsServiceDeletion{ServiceID: 7, ProjectCode: "p", BusinessSystemCode: "b", EnvironmentCode: "prod", ServiceCode: "svc"}
@@ -159,12 +264,17 @@ func TestHistoricalStreamDeletionSafety(t *testing.T) {
 		deleteBody   string
 		deleteStatus int
 		restoreBody  string
+		stillExists  bool
+		rollover     bool
+		badConfirm   bool
+		multiBacking bool
 		wantDelete   bool
 		wantError    bool
 		wantBlocked  bool
 		wantRestore  bool
 	}{
 		{name: "empty old stream", wantDelete: true, wantBlocked: true},
+		{name: "all backing indices blocked explicitly", multiBacking: true, wantDelete: true, wantBlocked: true},
 		{name: "nonempty expired exactly at deadline", count: 3, latest: now.Add(-7 * 24 * time.Hour), wantDelete: true, wantBlocked: true},
 		{name: "not yet expired by one millisecond", count: 3, latest: now.Add(-7*24*time.Hour + time.Millisecond)},
 		{name: "latest log protects recently written old index", count: 3, latest: now.Add(-time.Hour)},
@@ -183,18 +293,29 @@ func TestHistoricalStreamDeletionSafety(t *testing.T) {
 		{name: "approximate count rejected", search: `{"timed_out":false,"_shards":{"failed":0,"total":1,"successful":1},"hits":{"total":{"value":10000,"relation":"gte"}},"aggregations":{"latest":{"value":1},"missing":{"doc_count":0}}}`, wantError: true},
 		{name: "preexisting write block preserved", settings: `{".ds-index":{"settings":{"index":{"blocks":{"write":"true"}}}}}`, wantError: true},
 		{name: "block must be acknowledged", block: `{"acknowledged":false}`, wantError: true, wantBlocked: true, wantRestore: true},
-		{name: "shard block must be acknowledged", block: `{"acknowledged":true,"shards_acknowledged":false}`, wantError: true, wantBlocked: true, wantRestore: true},
 		{name: "refresh failure", refresh: `{"_shards":{"failed":1}}`, wantError: true, wantBlocked: true, wantRestore: true},
 		{name: "unrefreshed writes prevent deletion", finalSearch: historicalTestSearch(1, now), wantError: true, wantBlocked: true, wantRestore: true},
 		{name: "delete acknowledgement required", deleteBody: `{}`, wantError: true, wantBlocked: true, wantRestore: true},
 		{name: "delete failure restores writes", deleteStatus: 403, wantError: true, wantBlocked: true, wantRestore: true},
 		{name: "restore failure is explicit", deleteStatus: 403, restoreBody: `{"acknowledged":false}`, wantError: true, wantBlocked: true, wantRestore: true},
 		{name: "concurrently deleted stream", deleteStatus: 404, wantDelete: true, wantBlocked: true},
-		{name: "stream disappeared before write block", blockStatus: 404, wantDelete: true, wantBlocked: true},
+		{name: "index 404 must not masquerade as deleted stream", blockStatus: 404, wantError: true, wantBlocked: true, wantRestore: true},
+		{name: "delete acknowledgement cannot hide surviving stream", stillExists: true, wantError: true, wantBlocked: true, wantRestore: true},
+		{name: "rollover after blocking prevents deletion", rollover: true, wantError: true, wantBlocked: true, wantRestore: true},
+		{name: "missing deletion evidence is not success", badConfirm: true, wantError: true, wantBlocked: true, wantRestore: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var calls []string
 			searchCalls := 0
+			deleteCalls := 0
+			stream := historicalTestStream(t)
+			backingPath := "/" + stream.Indices[0].Name
+			if tt.multiBacking {
+				extra := stream.Indices[0]
+				extra.Name = ".ds-logs-p-b-prod-svc-old-000002"
+				stream.Indices = append(stream.Indices, extra)
+				backingPath += "," + extra.Name
+			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls = append(calls, r.Method+" "+r.URL.Path)
 				w.Header().Set("Content-Type", "application/json")
@@ -228,8 +349,22 @@ func TestHistoricalStreamDeletionSafety(t *testing.T) {
 					if tt.settings != "" {
 						body = tt.settings
 					}
-				case strings.HasSuffix(r.URL.Path, "/_block/write"):
-					body = `{"acknowledged":true,"shards_acknowledged":true}`
+				case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/_settings"):
+					if r.URL.Path != backingPath+"/_settings" {
+						t.Errorf("write settings must target concrete backing index: %s", r.URL.Path)
+					}
+					var settings map[string]bool
+					if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+						t.Error(err)
+					}
+					block := settings["index.blocks.write"]
+					calls[len(calls)-1] += fmt.Sprintf(" write=%t", block)
+					if !block {
+						if tt.restoreBody != "" {
+							body = tt.restoreBody
+						}
+						break
+					}
 					if tt.block != "" {
 						body = tt.block
 					}
@@ -237,22 +372,41 @@ func TestHistoricalStreamDeletionSafety(t *testing.T) {
 						w.WriteHeader(tt.blockStatus)
 						body = `{"error":{"type":"index_not_found_exception","reason":"no such index [logs-p-b-prod-svc-old]"},"status":404}`
 					}
+				case r.URL.Path == "/_tasks":
+					if r.Method != http.MethodGet || r.URL.Query().Get("actions") != "indices:data/write/*" {
+						t.Error("must observe pending writes after the settings barrier")
+					}
+					body = `{"tasks":[]}`
 				case strings.HasSuffix(r.URL.Path, "/_refresh"):
 					body = `{"_shards":{"failed":0,"total":1,"successful":1}}`
 					if tt.refresh != "" {
 						body = tt.refresh
 					}
-				case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/_settings"):
-					if tt.restoreBody != "" {
-						body = tt.restoreBody
-					}
 				case r.Method == http.MethodDelete && r.URL.Path == "/_data_stream/logs-p-b-prod-svc-old":
+					deleteCalls++
 					if tt.deleteBody != "" {
 						body = tt.deleteBody
 					}
 					if tt.deleteStatus != 0 {
 						w.WriteHeader(tt.deleteStatus)
 					}
+				case r.Method == http.MethodGet && r.URL.Path == "/_data_stream/logs-p-b-prod-svc-old":
+					if deleteCalls > 0 && !tt.stillExists {
+						if tt.badConfirm {
+							body = `{}`
+						} else {
+							w.WriteHeader(http.StatusNotFound)
+							body = `{"error":{"type":"resource_not_found_exception"},"status":404}`
+						}
+						break
+					}
+					current := stream
+					current.Indices = slices.Clone(stream.Indices)
+					if tt.rollover {
+						current.Indices[0].Name += "-changed"
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"data_streams": []historicalDataStream{current}})
+					return
 				default:
 					t.Errorf("unexpected ES request %s %s", r.Method, r.URL)
 				}
@@ -262,14 +416,14 @@ func TestHistoricalStreamDeletionSafety(t *testing.T) {
 			handler := &Handler{}
 			deleted, _, err := handler.deleteExpiredHistoricalStream(context.Background(), elasticsearchCluster{
 				Hosts: server.URL, IndexPrefix: "logs", Timeout: 5,
-			}, historicalTestStream(t), now)
+			}, stream, now)
 			if deleted != tt.wantDelete || (err != nil) != tt.wantError {
 				t.Fatalf("deleted=%v err=%v; want deleted=%v error=%v", deleted, err, tt.wantDelete, tt.wantError)
 			}
 			blocked, restored := false, false
 			for _, call := range calls {
-				blocked = blocked || strings.HasSuffix(call, "/_block/write")
-				restored = restored || call == "PUT /logs-p-b-prod-svc-old/_settings"
+				blocked = blocked || strings.HasSuffix(call, " write=true")
+				restored = restored || strings.HasSuffix(call, " write=false")
 				if strings.Contains(call, "_delete_by_query") || strings.Contains(call, "DELETE") && strings.ContainsAny(call, "*,") {
 					t.Fatalf("unsafe deletion %q", call)
 				}
@@ -279,33 +433,17 @@ func TestHistoricalStreamDeletionSafety(t *testing.T) {
 			}
 			if tt.wantDelete && tt.deleteStatus != 404 && tt.blockStatus != 404 {
 				tail := []string{
-					"PUT /logs-p-b-prod-svc-old/_block/write",
+					"PUT " + backingPath + "/_settings write=true",
+					"GET /_tasks",
 					"POST /logs-p-b-prod-svc-old/_refresh",
 					"POST /logs-p-b-prod-svc-old/_search",
+					"GET /_data_stream/logs-p-b-prod-svc-old",
 					"DELETE /_data_stream/logs-p-b-prod-svc-old",
+					"GET /_data_stream/logs-p-b-prod-svc-old",
 				}
-				if !reflect.DeepEqual(calls[len(calls)-4:], tail) {
+				if !reflect.DeepEqual(calls[len(calls)-len(tail):], tail) {
 					t.Fatalf("unsafe delete order: %v", calls)
 				}
-			}
-		})
-	}
-}
-
-func TestIsElasticsearchIndexNotFound(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{name: "missing index", err: fmt.Errorf(`elasticsearch 404 Not Found: {"error":{"type":"index_not_found_exception"}}`), want: true},
-		{name: "missing policy", err: fmt.Errorf(`elasticsearch 404 Not Found: {"error":{"type":"resource_not_found_exception"}}`)},
-		{name: "other status", err: fmt.Errorf(`elasticsearch 403 Forbidden: {"error":{"type":"index_not_found_exception"}}`)},
-		{name: "nil"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if got := isElasticsearchIndexNotFound(test.err); got != test.want {
-				t.Fatalf("isElasticsearchIndexNotFound(%v)=%v, want %v", test.err, got, test.want)
 			}
 		})
 	}

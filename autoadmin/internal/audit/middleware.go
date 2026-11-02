@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	auditTextLimit            = 4000
+	auditTextLimit            = 16 * 1024
 	auditResponseCaptureLimit = 1 << 20
 	auditTruncationNotice     = "\n[truncated]"
 )

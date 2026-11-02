@@ -100,11 +100,17 @@
       <a-row :gutter="16" style="margin-top: 16px">
         <a-col :span="12">
           <a-card size="small" title="请求参数" :bordered="false">
+            <template #extra>
+              <a-button size="small" @click="copyDetailText(activeLog?.request_data)">复制</a-button>
+            </template>
             <pre class="detail-content">{{ formatJsonText(activeLog?.request_data) }}</pre>
           </a-card>
         </a-col>
         <a-col :span="12">
           <a-card size="small" title="返回结果" :bordered="false">
+            <template #extra>
+              <a-button size="small" @click="copyDetailText(activeLog?.response_data)">复制</a-button>
+            </template>
             <pre class="detail-content">{{ formatJsonText(activeLog?.response_data) }}</pre>
           </a-card>
         </a-col>
@@ -126,6 +132,7 @@ import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISO
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import store from '@/store'
 import { createPagination, tableLocale } from '@/util/tableStyle'
+import { copyTextWithFallback } from '@/util/clipboard'
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 const userTimezone = computed(() => store.state.user?.timezone || 'Asia/Shanghai')
@@ -214,6 +221,16 @@ function formatJsonText(value) {
   } catch (error) {
     return String(value)
   }
+}
+
+async function copyDetailText(value) {
+  if (!value) {
+    message.warning('没有可复制的内容')
+    return
+  }
+  const copied = await copyTextWithFallback(formatJsonText(value))
+  if (copied) message.success('已复制')
+  else message.error('复制失败，请检查浏览器权限')
 }
 
 function openDetail(record) {

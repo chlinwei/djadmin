@@ -100,9 +100,10 @@ func TestCaptureLargeJSONResponse(t *testing.T) {
 		text string
 	}{
 		{name: "short", text: "visible"},
-		{name: "long", text: strings.Repeat("visible", 1500)},
-		{name: "unicode", text: strings.Repeat("\u754c", 3000)},
-		{name: "xml", text: strings.Repeat("<adb:message>A&B</adb:message>", 300)},
+		{name: "within_16k", text: strings.Repeat("visible", 1500)},
+		{name: "long", text: strings.Repeat("visible", auditTextLimit/7+100)},
+		{name: "unicode", text: strings.Repeat("\u754c", auditTextLimit/3+100)},
+		{name: "xml", text: strings.Repeat("<adb:message>A&B</adb:message>", auditTextLimit/28+100)},
 		{name: "over_budget", text: strings.Repeat("x", auditResponseCaptureLimit)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -156,18 +157,41 @@ func TestCaptureLargeJSONResponse(t *testing.T) {
 			if entry.ResponseData == "" || entry.Message != "success" {
 				t.Fatalf("response capture was lost: %+v", entry)
 			}
-			if len(entry.ResponseData) > auditTextLimit || !utf8.ValidString(entry.ResponseData) {
-				t.Fatal("audit response exceeds the text limit or contains invalid UTF-8")
-			}
-			if !strings.Contains(entry.ResponseData, "******") ||
-				strings.Contains(entry.ResponseData, "response-secret") ||
-				strings.Contains(entry.ResponseData, "nested-secret") {
-				t.Fatal("audit response was not safely redacted")
-			}
-			if test.name != "short" && !strings.HasSuffix(entry.ResponseData, auditTruncationNotice) {
-				t.Fatal("long audit response lacks a truncation notice")
+			for _, captured := range []string{entry.RequestData, entry.ResponseData} {
+				if len(captured) > auditTextLimit || !utf8.ValidString(captured) {
+					t.Fatal("audit text exceeds the text limit or contains invalid UTF-8")
+				}
+				if !strings.Contains(captured, "******") ||
+					strings.Contains(captured, "response-secret") ||
+					strings.Contains(captured, "nested-secret") {
+					t.Fatal("audit text was not safely redacted")
+				}
+				if len(test.text) > auditTextLimit {
+					if !strings.HasSuffix(captured, auditTruncationNotice) {
+						t.Fatal("long audit text lacks a truncation notice")
+					}
+				} else if !json.Valid([]byte(captured)) || !strings.Contains(captured, test.text) {
+					t.Fatal("audit text within the limit was not preserved completely")
+				}
 			}
 		})
+	}
+}
+
+func TestAuditTextLimitBoundary(t *testing.T) {
+	if auditTextLimit != 16*1024 {
+		t.Fatalf("audit text limit=%d, want 16384 bytes", auditTextLimit)
+	}
+	for _, size := range []int{16383, 16384, 16385} {
+		body := strings.Repeat("x", size-len(`{"text":""}`))
+		captured := encodeLimited(map[string]any{"text": body})
+		if size <= 16384 {
+			if len(captured) != size || !json.Valid([]byte(captured)) || !strings.Contains(captured, body) {
+				t.Fatalf("payload of %d bytes was unnecessarily truncated", size)
+			}
+		} else if len(captured) != 16384 || !strings.HasSuffix(captured, auditTruncationNotice) {
+			t.Fatalf("payload above 16 KiB was not correctly truncated: %d bytes", len(captured))
+		}
 	}
 }
 

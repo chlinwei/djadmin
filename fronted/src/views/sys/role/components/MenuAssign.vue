@@ -2,8 +2,9 @@
     <div>
        
         <a-modal  cancelText="取消" okText="保存" destroyOnClose :open="props.open" :title="props.title"
+             :width="720" :style="{ top: '24px', maxWidth: 'calc(100vw - 32px)' }"
              @ok="handleOk" @cancel="handleCancel" v-model:role_id="props.role_id">
-             <div>
+             <div class="permission-tree-scroll" style="max-height: calc(100dvh - 200px); overflow-y: auto;">
                 <a-spin :spinning="loading">
              </a-spin>
             <a-tree v-if="!loading"

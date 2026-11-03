@@ -386,6 +386,16 @@ function validateControlConfig() {
   return ''
 }
 async function saveTemplate() {
+  if (saving.value) return
+  // 校验也是异步的，必须在校验前加锁，避免快速点击重复提交和提示。
+  saving.value = true
+  try {
+    await submitTemplate()
+  } finally {
+    saving.value = false
+  }
+}
+async function submitTemplate() {
   // 查看复用编辑表单，但不能通过弹窗事件或直接调用进入保存路径。
   if (props.readOnly) {
     message.warning('只读模式不能保存部署模板')
@@ -431,7 +441,6 @@ async function saveTemplate() {
       : []
   payload.docker_config = form.control_type === 'docker' ? form.docker_config : null
   payload.compose_config = form.control_type === 'docker_compose' ? form.compose_config : null
-  saving.value = true
   try {
     const response = await saveApplicationDeploymentTemplate(payload)
     message.success(props.templateId ? '部署模板保存成功' : props.copyFromId ? '部署模板复制成功' : '部署模板新增成功')
@@ -439,8 +448,6 @@ async function saveTemplate() {
     emit('update:open', false)
   } catch (error) {
     message.error(error?.response?.data?.msg || error?.message || '保存部署模板失败')
-  } finally {
-    saving.value = false
   }
 }
 const addPort = () => form.ports.push({ name: '', protocol: 'tcp', port: '', bind_address: '0.0.0.0', required: true, external_access: false, check_enabled: true })

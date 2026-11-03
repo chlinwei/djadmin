@@ -145,6 +145,40 @@ describe('部署模板只读详情', () => {
 })
 
 describe('模板端口表达式', () => {
+  it('校验和请求期间重复保存只发送一次请求、提示一次', async () => {
+    const success = vi.spyOn(message, 'success').mockImplementation(() => {})
+    const wrapper = await openDialog({ templateId: 2 })
+    let finishRequest
+    saveApplicationDeploymentTemplate.mockImplementationOnce(() => new Promise((resolve) => {
+      finishRequest = resolve
+    }))
+    const firstSave = wrapper.vm.saveTemplate()
+    await Promise.all([wrapper.vm.saveTemplate(), wrapper.vm.saveTemplate()])
+    await flushPromises()
+    expect(saveApplicationDeploymentTemplate).toHaveBeenCalledTimes(1)
+    await wrapper.vm.saveTemplate()
+    expect(saveApplicationDeploymentTemplate).toHaveBeenCalledTimes(1)
+    finishRequest({ data: { data: { id: 2 } } })
+    await firstSave
+    expect(success).toHaveBeenCalledTimes(1)
+    expect(wrapper.emitted('saved')).toHaveLength(1)
+  })
+
+  it('校验失败和请求失败后均可重新保存', async () => {
+    vi.spyOn(message, 'error').mockImplementation(() => {})
+    vi.spyOn(message, 'success').mockImplementation(() => {})
+    const wrapper = await openDialog({ templateId: 2 })
+    wrapper.vm.form.ports = [{ port: '0' }]
+    await wrapper.vm.saveTemplate()
+    expect(saveApplicationDeploymentTemplate).not.toHaveBeenCalled()
+    wrapper.vm.form.ports = []
+    saveApplicationDeploymentTemplate.mockRejectedValueOnce(new Error('保存失败'))
+    await wrapper.vm.saveTemplate()
+    await wrapper.vm.saveTemplate()
+    expect(saveApplicationDeploymentTemplate).toHaveBeenCalledTimes(2)
+    expect(wrapper.emitted('saved')).toHaveLength(1)
+  })
+
   it.each([
     ['创建', {}, '${HTTP_PORT}'],
     ['编辑', { templateId: 2 }, '${HTTP_PORT}'],

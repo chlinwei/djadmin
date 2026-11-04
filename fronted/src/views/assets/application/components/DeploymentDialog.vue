@@ -23,7 +23,7 @@
                   />
                 </a-form-item>
               </a-col>
-              <a-col :span="12"><a-form-item name="instance_name" label="实例名称" extra="同一主机的不同程序应登记为不同实例；关联已有实例请在逻辑服务成员中选择。"><a-input v-model:value="form.instance_name" placeholder="例如 tomcat-order-prod" /></a-form-item></a-col>
+              <a-col :span="12"><a-form-item name="instance_name" label="实例名称" extra="同一主机的不同程序应登记为不同实例。"><a-input v-model:value="form.instance_name" placeholder="例如 tomcat-order-prod" /></a-form-item></a-col>
               <a-col :span="12"><a-form-item label="启用"><EnabledSwitch v-model:checked="form.enabled" /></a-form-item></a-col>
               <a-col :span="24"><a-form-item label="备注"><a-textarea v-model:value="form.remark" :rows="3" /></a-form-item></a-col>
         </a-row>
@@ -38,7 +38,7 @@ import { nextTick, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { fetchAllPages } from '@/util/fetchAllPages'
-import { getHostList } from '@/api/assets/host'
+import { getHostById, getHostList } from '@/api/assets/host'
 import {
   getApplicationDeployment,
   getApplicationService,
@@ -116,6 +116,17 @@ async function initialize() {
       const response = await getApplicationDeployment(props.deploymentId)
       const data = response?.data?.data || {}
       Object.assign(form, createInitialForm(), data)
+      if (data.host && !hostOptions.value.some((item) => String(item.value) === String(data.host))) {
+        // 已绑定主机可能已移出当前环境：保留准确回显，但不把它作为新增候选。
+        const hostResponse = await getHostById(data.host)
+        const host = hostResponse?.data?.data
+        if (host?.id) hostOptions.value.push({
+          value: host.id,
+          label: `${host.instance_name || '-'} (${host.ip || '-'})`,
+          instanceName: host.instance_name || '',
+          disabled: true,
+        })
+      }
       if (!form.instance_name) {
         form.instance_name = data.host_name || getHostInstanceName(form.host)
       }

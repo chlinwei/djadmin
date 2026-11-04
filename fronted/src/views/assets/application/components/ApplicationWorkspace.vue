@@ -7,7 +7,7 @@
 
     <a-row :gutter="12" class="tools">
       <a-col flex="360px">
-        <a-input-search v-model:value="keyword" :placeholder="searchPlaceholder" allow-clear enter-button @search="reload(true)" />
+        <a-input-search v-model:value="keyword" :placeholder="searchPlaceholder" allow-clear enter-button @search="searchImmediately" />
       </a-col>
       <a-col flex="auto" class="right-tools">
         <a-space>
@@ -359,6 +359,18 @@ const searchPlaceholder = computed(() => ({ projects: '搜索项目、编码或�
 let runtimePollTimer = null
 let runtimePollInFlight = false
 let reloadSequence = 0
+let searchTimer
+function searchImmediately() {
+  clearTimeout(searchTimer)
+  return reload(true)
+}
+// 两个 Tab 共用搜索入口，输入暂停后查询；主动搜索取消待执行请求，避免重复发送。
+watch(keyword, () => {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => reload(true), 300)
+})
+watch(activeTab, () => clearTimeout(searchTimer))
+onBeforeUnmount(() => clearTimeout(searchTimer))
 const runtimePollIntervalMs = 10000
 const pagination = computed(() => createPagination(paginationState.total, paginationState.pageSize, { current: paginationState.current }))
 

@@ -381,6 +381,7 @@ function buildTree(systems, services, deployments) {
       scopeByKey.set(serviceKey, {
         nodeType: 'service', applicationServiceId: service.id, nodeTitle: service.name,
         businessSystemId: system.id, businessSystemName: system.name,
+        projectId: system.project ?? null, projectName: system.project_name || '',
         environment: service.environment || null, environmentName: service.environment_name || '',
       })
       const serviceDeployments = (deploymentsByService.get(service.id) || [])
@@ -391,6 +392,7 @@ function buildTree(systems, services, deployments) {
         scopeByKey.set(deploymentKey, {
           nodeType: 'deployment', deploymentId: deployment.id, nodeTitle: deployment.instance_name,
           businessSystemId: system.id, businessSystemName: system.name,
+          projectId: system.project ?? null, projectName: system.project_name || '',
           environment: service.environment || null, environmentName: service.environment_name || '',
           applicationServiceId: service.id, serviceName: service.name,
         })
@@ -439,6 +441,7 @@ function buildTree(systems, services, deployments) {
       const environmentKey = `environment:${system.id}:${envId}`
       scopeByKey.set(environmentKey, {
         nodeType: 'environment', businessSystemId: system.id, businessSystemName: system.name,
+        projectId: system.project ?? null, projectName: system.project_name || '',
         environment: envId === 'unassigned' ? null : envId, environmentName: group.name, nodeTitle: group.name,
       })
       return {
@@ -472,7 +475,7 @@ function buildTree(systems, services, deployments) {
       // projectId 必须随 scope 走：业务系统 code 只在项目内唯一，下游（日志中心水位）
       // 按 code 过滤流时要用项目维度收窄，否则别的项目里同 code 业务系统的流会混进来。
       scopeByKey.set(systemKey, {
-        nodeType: 'businessSystem', businessSystemId: system.id, projectId: system.project ?? null, nodeTitle: system.name,
+        nodeType: 'businessSystem', businessSystemId: system.id, projectId: system.project ?? null, projectName: system.project_name || '', nodeTitle: system.name,
       })
     }
     if (system.id === 'unassigned') {

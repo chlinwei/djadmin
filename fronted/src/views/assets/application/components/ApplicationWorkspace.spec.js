@@ -60,7 +60,7 @@ vi.mock('@/util/deleteConfirm', () => ({
 import * as applicationApi from '@/api/assets/application'
 import ApplicationWorkspace from './ApplicationWorkspace.vue'
 
-function mountWorkspace(props = {}) {
+function mountWorkspace(props = {}, stubs = {}) {
   return mount(ApplicationWorkspace, {
     props,
     attachTo: document.body,
@@ -74,6 +74,7 @@ function mountWorkspace(props = {}) {
         ApplicationServiceDialog: true,
         ClusterProfileDialog: true,
         FontAwesomeIcon: true,
+        ...stubs,
       },
       directives: {
         permission: () => {},
@@ -90,6 +91,31 @@ async function clickTab(wrapper, label) {
 }
 
 describe('ApplicationWorkspace tab switching', () => {
+  it.each([
+    ['集群模型', 'getClusterProfileList'],
+    ['应用定义', 'getApplicationList'],
+  ])('%s 输入暂停后自动搜索，清空后恢复列表', async (label, apiName) => {
+    const wrapper = mountWorkspace()
+    await flushPromises()
+    await clickTab(wrapper, label)
+    vi.useFakeTimers()
+    try {
+      const request = applicationApi[apiName]
+      request.mockClear()
+      await wrapper.find('input.ant-input').setValue('redis')
+      expect(request).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(300)
+      expect(request).toHaveBeenCalledTimes(1)
+      expect(request).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'redis', page: 1 }))
+      await wrapper.find('input.ant-input').setValue('')
+      await vi.advanceTimersByTimeAsync(300)
+      expect(request).toHaveBeenLastCalledWith(expect.objectContaining({ search: '', page: 1 }))
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
     applicationApi.getApplicationDeploymentList.mockResolvedValue({
@@ -131,6 +157,30 @@ describe('ApplicationWorkspace tab switching', () => {
     expect(dialog.props('application')).toEqual(expect.objectContaining({ id: 1, name: 'Tomcat' }))
 
     wrapper.unmount()
+  })
+
+  it('updates real template portals while closing, reloading and reopening', async () => {
+    const wrapper = mountWorkspace({}, { TemplateManagerDialog: false, TemplateDialog: true })
+    await flushPromises()
+    try {
+      for (let cycle = 0; cycle < 3; cycle += 1) {
+        await wrapper.find('[data-manage-application-templates]').trigger('click')
+        await flushPromises()
+        const dialog = wrapper.findComponent({ name: 'TemplateManagerDialog' })
+        expect(document.body.textContent).toContain('tomcat-systemd')
+        let resolveRefresh
+        applicationApi.getApplicationList.mockImplementationOnce(() => new Promise((resolve) => {
+          resolveRefresh = resolve
+        }))
+        dialog.vm.$emit('changed')
+        dialog.vm.$emit('update:open', false)
+        await flushPromises()
+        resolveRefresh({ data: { data: { results: [{ id: 1, name: 'Tomcat', versions: [], enabled: true }], count: 1 } } })
+        await flushPromises()
+      }
+    } finally {
+      wrapper.unmount()
+    }
   })
 
   it('displays cache and message queue category labels', async () => {

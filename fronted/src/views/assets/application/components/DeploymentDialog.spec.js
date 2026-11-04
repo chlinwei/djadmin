@@ -3,6 +3,7 @@ import Antd from 'ant-design-vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/assets/host', () => ({
+  getHostById: vi.fn(async (id) => ({ data: { data: { id, instance_name: 'existing-host', ip: '192.168.201.207' } } })),
   getHostList: vi.fn(() => Promise.resolve({
     data: { data: { results: [{ id: 136, instance_name: 'mysql136', ip: '10.25.66.136' }], totalPages: 1 } },
   })),
@@ -30,6 +31,32 @@ import { getApplicationDeploymentList, getApplicationService, saveApplicationDep
 import { getHostList } from '@/api/assets/host'
 
 describe('DeploymentDialog', () => {
+  it('loads every host page within the selected environment', async () => {
+    getHostList.mockResolvedValueOnce({ data: { data: { results: [{ id: 136, instance_name: 'first', ip: '10.0.0.1' }], totalPages: 2 } } })
+    getHostList.mockResolvedValueOnce({ data: { data: { results: [{ id: 230, instance_name: 'second', ip: '10.0.0.2' }], totalPages: 2 } } })
+    const wrapper = mount(DeploymentDialog, {
+      props: { open: false, environmentId: 32 },
+      global: { plugins: [Antd], stubs: { AModal: { template: '<div><slot /></div>' } } },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+    expect(getHostList).toHaveBeenCalledWith({ environment: 32, page: 2, page_size: 30 })
+    expect(wrapper.vm.hostOptions.map((item) => item.value)).toEqual([136, 230])
+    wrapper.unmount()
+  })
+
+  it('shows the existing host label when it is outside the current environment candidates', async () => {
+    getHostList.mockResolvedValueOnce({ data: { data: { results: [], totalPages: 1 } } })
+    const wrapper = mount(DeploymentDialog, {
+      props: { open: false, deploymentId: 1, environmentId: 32 },
+      global: { plugins: [Antd], stubs: { AModal: { template: '<div><slot /></div>' } } },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+    expect(wrapper.vm.hostOptions).toEqual([expect.objectContaining({ value: 136, label: 'existing-host (192.168.201.207)', disabled: true })])
+    wrapper.unmount()
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
     saveApplicationDeployment.mockResolvedValue({ data: { data: { id: 30 } } })

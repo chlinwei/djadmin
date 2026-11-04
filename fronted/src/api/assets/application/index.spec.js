@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import requestUtil from '@/util/request'
-import { getApplicationServiceLogStatusSummary } from './index'
+import { getApplicationServiceLogStatusSummary, saveApplicationService } from './index'
 
 vi.mock('@/util/request', () => ({
-    default: { get: vi.fn(), post: vi.fn() },
+    default: { get: vi.fn(), post: vi.fn(), patch: vi.fn() },
 }))
 
 describe('服务日志状态汇总查询', () => {
@@ -18,5 +18,22 @@ describe('服务日志状态汇总查询', () => {
             { service_ids: '15,16' },
         )
         expect(requestUtil.post).not.toHaveBeenCalled()
+    })
+})
+
+describe('逻辑服务保存错误提示归属', () => {
+    beforeEach(() => vi.clearAllMocks())
+
+    it.each([null, 20])('保存 ID %s 的服务由调用方提示业务错误且保留失败拒绝', async (id) => {
+        const payload = { id, name: 'db' }
+        const failure = new Error('同一业务系统与环境下的服务名称已存在')
+        const request = id ? requestUtil.patch : requestUtil.post
+        request.mockRejectedValueOnce(failure)
+        await expect(saveApplicationService(payload)).rejects.toBe(failure)
+        if (id) {
+            expect(request).toHaveBeenCalledWith('assets/application-services/20/', payload, { suppressBusinessErrorMessage: true })
+        } else {
+            expect(request).toHaveBeenCalledWith('assets/application-services/', payload, null, { suppressBusinessErrorMessage: true })
+        }
     })
 })

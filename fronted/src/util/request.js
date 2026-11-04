@@ -263,12 +263,14 @@ export function getTransferServerUrl() {
 }
 
 
-export function patch(url, params = {}) {
+export function patch(url, params = {}, options = {}) {
     return new Promise((resolve, reject) => {
         httpService({
             url: url,
             method: 'patch',
-            data: params
+            data: params,
+            // 编辑请求与新增请求同样允许调用方统一展示业务错误，避免两层重复提示。
+            suppressBusinessErrorMessage: Boolean(options.suppressBusinessErrorMessage),
         }).then(response => {
             resolve(response);
         }).catch(error => {

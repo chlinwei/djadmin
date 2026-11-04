@@ -4,6 +4,7 @@
     :title="serviceId ? `编辑逻辑服务：${form.name || '加载中'}` : copyServiceId ? '复制逻辑服务' : clusterProfileId ? '创建集群' : '新增逻辑服务'"
     :width="760"
     :confirm-loading="saving"
+    :mask-closable="false"
     ok-text="保存"
     cancel-text="取消"
     @ok="submit"
@@ -145,17 +146,6 @@
             <a-form-item :label="isHaCluster ? '成员实例（至少 2 个）' : form.topology_type === 'load_balancer' ? '后端成员实例' : '部署实例'" required>
               <a-space wrap>
                 <a-button class="add-deployment-button" @click="openDeploymentDialog()">新增部署实例</a-button>
-                <a-select
-                  v-model:value="pickedDeploymentId"
-                  show-search
-                  allow-clear
-                  placeholder="从已有实例中选择"
-                  style="width: 260px"
-                  :options="addableDeploymentOptions"
-                  :filter-option="filterOption"
-                  :getPopupContainer="getPopupContainer"
-                  @change="addPickedDeployment"
-                />
               </a-space>
             </a-form-item>
           </a-col>
@@ -316,7 +306,6 @@ const deploymentRecords = ref([])
 const versionRecords = ref([])
 const templateRecords = ref([])
 const selectedDeploymentIds = ref([])
-const pickedDeploymentId = ref(null)
 const memberEnabled = reactive({})
 const environmentRecords = ref([])
 const retentionTierRecords = ref([])
@@ -415,50 +404,6 @@ function resetMacroValue(name) {
   delete form.macro_values[name]
 }
 const deploymentOptionLabel = (item) => `${item.instance_name} (${item.host_name || item.host_ip || '-'})`
-// 可选的实例候选 = 当前应用的实例 + **当前已绑定的实例**。
-//
-// 必须并上已绑定的那些：后端返回的 `application_id` 是"该实例**最早**绑定的那个服务所属的应用"
-// （不是实例自己的属性），而一个实例可以同时属于多个应用下的服务——例如 yilake-nginx-105 既在
-// redis(应用 8) 也在 nginx(应用 15) 下，它的 application_id 就是 8。旧版只用
-// `application_id === form.application` 过滤，而下面两个 watcher 又拿这份列表去**删**
-// selectedDeploymentIds，于是已绑定的实例一进编辑弹窗就被静默剔除（2026-09-18 yilake nginx 现场：
-// 库里关联还在，弹窗里却是空的）。
-//
-// 因此这份候选只用来收敛"新添加"的范围，绝不作为"删除已有成员"的依据：要移除成员请走成员行的
-// 删除按钮（confirmDeleteDeployment）。
-// "从已有实例中选择"的候选 = 全部实例刨掉已绑定的（关联表上有 (service_id, deployment_id)
-// 唯一键，重复提交会直接失败）。同应用的排在前面，但**不**把别的应用排除在外。
-//
-// 为什么不用 `application_id` 过滤：后端返回的它是"该实例**最早**绑定的那个服务所属的应用"，
-// 不是实例自己的属性——一个实例可以同时挂在多个应用下的服务上（yilake-nginx-105 既在
-// redis(应用 8) 也在 nginx(应用 15) 下，它是 8；106 只在 mgmt(应用 28) 下，它是 28）。
-// 拿它当"能不能绑到本服务"的判据，正好会把该绑的实例挡在外面（2026-09-18 yilake nginx 现场：
-// 库里关联还在、弹窗里成员却是空的、重新绑定也无路可走）。这里只用来排序。
-//
-// 已绑定成员**不进候选**，也不在任何 watcher 里被自动剔除：成员列表以服务端返回的
-// member_instances 为准，要移除只走成员行的删除按钮（confirmDeleteDeployment）。
-const addableDeploymentOptions = computed(() => {
-  const memberIds = new Set(selectedDeploymentIds.value)
-  return deploymentRecords.value
-    .filter((item) => !memberIds.has(item.id))
-    .map((item) => ({
-      label: deploymentOptionLabel(item),
-      value: item.id,
-      sameApplication: item.application_id === form.application,
-    }))
-    .sort((left, right) => Number(right.sameApplication) - Number(left.sameApplication))
-})
-
-// 绑定一台已存在的实例：这一步同时解决了"实例已在别的服务下、无法再绑到本服务"的场景
-// （此前只能走「新增部署实例」→ 前端按主机+实例名去重转成编辑，路径绕且容易误解）。
-function addPickedDeployment(deploymentId) {
-  if (!deploymentId) return
-  if (!selectedDeploymentIds.value.includes(deploymentId)) {
-    selectedDeploymentIds.value = [...selectedDeploymentIds.value, deploymentId]
-    memberEnabled[deploymentId] = true
-  }
-  pickedDeploymentId.value = null
-}
 const filterOption = (input, option) => String(option?.label || '').toLowerCase().includes(String(input || '').toLowerCase())
 
 // 已关联实例要按全量记录取名，按当前应用过滤会让跨应用实例回退成「实例 ID」。
@@ -536,18 +481,36 @@ function handleTemplateCreated(template) {
 }
 
 async function openDeploymentDialog(deploymentId = null) {
+  // 已有实例独立保存；编辑不能被父服务未完成的字段或尚未保存的关联阻塞。
+  if (deploymentId != null) {
+    selectedDeploymentId.value = deploymentId
+    deploymentDialogOpen.value = true
+    return
+  }
   // 部署实例强依赖服务上的版本与模板，缺失时先在本表单补齐，避免子弹窗提交必然失败。
-  await formRef.value.validate(['application_version', 'deployment_template'])
+  try {
+    await formRef.value.validate(['application_version', 'deployment_template'])
+    if (!form.id) {
+      await formRef.value.validate([
+        'name', 'code', 'business_system', 'application', 'environment',
+        'topology_type', 'application_version', 'deployment_template', 'log_retention_tier',
+      ])
+    }
+  } catch {
+    // 校验失败由表单显示字段提示，不让正常的校验拒绝冒到按钮事件层。
+    return
+  }
   if (!form.id) {
-    await formRef.value.validate([
-      'name', 'code', 'business_system', 'application', 'environment',
-      'topology_type', 'application_version', 'deployment_template', 'log_retention_tier',
-    ])
     const payload = { ...form, draft: true }
     payload.cluster_profile = payload.topology_type === 'cluster' ? payload.cluster_profile : null
-    const response = await saveApplicationService(payload)
-    Object.assign(form, response?.data?.data || {})
-    emit('saved')
+    try {
+      const response = await saveApplicationService(payload)
+      Object.assign(form, response?.data?.data || {})
+      emit('saved')
+    } catch (error) {
+      message.error(error?.response?.data?.msg || error?.message || '保存服务草稿失败')
+      return
+    }
   }
   await nextTick()
   formRef.value?.clearValidate()

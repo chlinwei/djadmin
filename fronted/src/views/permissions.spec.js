@@ -4,6 +4,7 @@ import { computed, nextTick, ref } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import store from '@/store'
 import permission from '@/directives/permission/index.js'
+import { checkPermission } from '@/directives/permission/permission.js'
 import request, { getMediaUrl } from '@/util/request'
 import Scheduler from './sys/scheduler/index.vue'
 import SysConfig from './sys/sysconfig/index.vue'
@@ -80,6 +81,23 @@ function buttons(text) {
 }
 
 describe('分离读取、修改与执行权限', () => {
+  it.each([null, undefined, 'admin'])('初始化权限为 %s 时保持空数组而不是授予权限', (missing) => {
+    store.commit('add_perms', missing)
+    store.commit('add_role_codes', missing)
+    expect(store.state.perms).toEqual([])
+    expect(store.state.role_codes).toEqual([])
+    expect(checkPermission('system:config:update')).toBe(false)
+  })
+
+  it.each([null, undefined])('权限状态为 %s 时拒绝操作且页脚正常挂载', async (missing) => {
+    store.state.role_codes = missing
+    store.state.perms = missing
+    expect(checkPermission('system:config:update')).toBe(false)
+    expect(checkPermission(['system:config:update'])).toBe(false)
+    await render(Footer, missing)
+    expect(request.post).not.toHaveBeenCalled()
+  })
+
   it('scheduler view-only 可看任务历史，但不能编辑、切换或运行，也不会请求系统配置', async () => {
     await render(Scheduler, ['system:scheduler:view'])
     expect(wrapper.text()).toContain(task.name)

@@ -163,8 +163,10 @@ export function previewApplicationServiceLogGlob(id, logDefinitionId, timeout = 
 }
 
 export function saveApplicationService(obj) {
-    if (obj.id) return requestUtil.patch(`${applicationServicePrefix}${obj.id}/`, obj)
-    return requestUtil.post(applicationServicePrefix, obj)
+    // 服务表单负责展示保存失败；公共层仍拒绝失败响应，但不重复弹提示。
+    const options = { suppressBusinessErrorMessage: true }
+    if (obj.id) return requestUtil.patch(`${applicationServicePrefix}${obj.id}/`, obj, options)
+    return requestUtil.post(applicationServicePrefix, obj, null, options)
 }
 
 export function batchDeleteApplicationServices(ids) {

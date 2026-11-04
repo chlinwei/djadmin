@@ -108,7 +108,7 @@ import ApplicationServiceDialog from './ApplicationServiceDialog.vue'
 import DeploymentDialog from './DeploymentDialog.vue'
 
 // 这两个 mock 的实现在 afterEach 里要还原（见 restoreTemplateMocks），所以要拿到模块引用。
-import { getApplicationDeploymentTemplate, getApplicationDeploymentTemplateList, getApplicationService, saveApplicationService } from '@/api/assets/application'
+import { getApplicationDeploymentList, getApplicationDeploymentTemplate, getApplicationDeploymentTemplateList, getApplicationService, saveApplicationService } from '@/api/assets/application'
 
 // 两个模板的基础 fixtures（默认 mock 用它们）。62 是 external_ha：HA 拓扑的用例要它出现在
 // 模板候选里（templateOptions 按拓扑过滤 control_type）。
@@ -155,6 +155,75 @@ function plainTemplateDetailPayload(id) {
 }
 
 describe('ApplicationServiceDialog', () => {
+  it('只提供新增部署实例，切换环境不查询候选且保留已关联成员', async () => {
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: false, serviceId: 20 },
+      global: { plugins: [Antd], stubs: { AModal: { template: '<div><slot /></div>' } } },
+    })
+    try {
+      await wrapper.setProps({ open: true })
+      await flushPromises()
+      expect(wrapper.findAllComponents({ name: 'ASelect' }).some((select) => select.props('placeholder') === '从已有实例中选择')).toBe(false)
+      expect(wrapper.find('.add-deployment-button').text()).toBe('新增部署实例')
+      expect(wrapper.vm.selectedDeploymentIds).toEqual([13, 14])
+      const calls = getApplicationDeploymentList.mock.calls.length
+      wrapper.vm.form.environment = 32
+      await flushPromises()
+      expect(getApplicationDeploymentList).toHaveBeenCalledTimes(calls)
+      expect(wrapper.vm.selectedDeploymentIds).toEqual([13, 14])
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it.each([null, 20])('服务 %s 成员实例可编辑，不校验或保存父服务', async (serviceId) => {
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: false, serviceId },
+      global: {
+        plugins: [Antd],
+        stubs: { AModal: { template: '<div><slot /></div>' }, DeploymentDialog: true },
+      },
+    })
+    try {
+      await wrapper.setProps({ open: true })
+      await flushPromises()
+      wrapper.vm.form.application_version = null
+      wrapper.vm.form.deployment_template = null
+      await flushPromises()
+      wrapper.vm.handleDeploymentSaved({ id: 11, instance_name: 'new-instance', enabled: true })
+      const validate = vi.spyOn(wrapper.vm.formRef, 'validate').mockRejectedValue({ errorFields: [] })
+      await wrapper.vm.openDeploymentDialog(11)
+      expect(validate).not.toHaveBeenCalled()
+      expect(saveApplicationService).not.toHaveBeenCalled()
+      expect(wrapper.findComponent(DeploymentDialog).props()).toMatchObject({ open: true, deploymentId: 11 })
+      expect(wrapper.vm.selectedDeploymentIds).toContain(11)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it.each([1, 2])('新增部署实例第 %s 次校验失败时保留表单反馈且不抛出拒绝', async (failedValidation) => {
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: false },
+      global: {
+        plugins: [Antd],
+        stubs: { AModal: { template: '<div><slot /></div>' } },
+      },
+    })
+    try {
+      await wrapper.setProps({ open: true })
+      await flushPromises()
+      const validate = vi.spyOn(wrapper.vm.formRef, 'validate')
+      if (failedValidation === 2) validate.mockResolvedValueOnce({})
+      validate.mockRejectedValueOnce({ errorFields: [{ name: ['name'], errors: ['必填'] }], outOfDate: false })
+      await expect(wrapper.vm.openDeploymentDialog()).resolves.toBeUndefined()
+      expect(saveApplicationService).not.toHaveBeenCalled()
+      expect(wrapper.vm.deploymentDialogOpen).toBe(false)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('copies configuration into a new service without identity, members or collection state', async () => {
     const source = (await getApplicationService()).data.data
     source.macro_values = { QMGR_NAME: 'QM1' }
@@ -311,9 +380,7 @@ describe('ApplicationServiceDialog', () => {
     wrapper.unmount()
   })
 
-  // 从已有实例中添加成员：实例已在别的服务下（派生 application_id 与当前服务不同）也要能绑上。
-  // 此前只能走「新增部署实例」→ 按主机+实例名去重转成编辑的绕路，且那条路会撞上后端的回读缺陷。
-  it('binds an existing instance picked from the candidate list', async () => {
+  it('adds a newly saved instance to members without duplicating it on edit', async () => {
     const wrapper = mount(ApplicationServiceDialog, {
       props: { open: false, serviceId: 20 },
       attachTo: document.body,
@@ -325,17 +392,11 @@ describe('ApplicationServiceDialog', () => {
     await wrapper.setProps({ open: true })
     await flushPromises()
 
-    // 候选里能看到"另一个应用"下的实例（id=12，派生 application_id=1），
-    // 但已经绑定的 13/14 不出现在候选里。
-    const candidateIds = wrapper.vm.addableDeploymentOptions.map((item) => item.value)
-    expect(candidateIds).toContain(12)
-    expect(candidateIds).not.toContain(13)
-    expect(candidateIds).not.toContain(14)
-
-    wrapper.vm.addPickedDeployment(12)
+    wrapper.vm.handleDeploymentSaved({ id: 25, instance_name: 'new-instance', host_name: 'node-2', enabled: true })
+    wrapper.vm.handleDeploymentSaved({ id: 25, instance_name: 'updated-instance', host_name: 'node-2', enabled: true })
     await flushPromises()
-    expect(wrapper.vm.selectedDeploymentIds).toEqual([13, 14, 12])
-    expect(document.body.textContent).toContain('mysql-1 (node-2)')
+    expect(wrapper.vm.selectedDeploymentIds).toEqual([13, 14, 25])
+    expect(document.body.textContent).toContain('updated-instance (node-2)')
     wrapper.unmount()
   })
 

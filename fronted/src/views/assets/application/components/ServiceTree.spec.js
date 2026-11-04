@@ -16,6 +16,7 @@ vi.mock('@/api/assets/host', () => ({
 
 import * as applicationApi from '@/api/assets/application'
 import ServiceTree from './ServiceTree.vue'
+import { buildServiceTreeBreadcrumbs } from '../../service-tree/navigation'
 
 const listResponse = (results) => ({
   data: { data: { results, count: results.length, totalPages: 1 } },
@@ -115,6 +116,7 @@ describe('ServiceTree', () => {
 
     expect(wrapper.emitted('select').at(-1)).toEqual([{
       nodeType: 'service',
+      projectId: null, projectName: '',
       applicationServiceId: 22,
       businessSystemId: 7,
       businessSystemName: '订单系统',
@@ -336,9 +338,13 @@ describe('ServiceTree', () => {
     await environmentNode.trigger('click')
     const environmentScope = {
       nodeType: 'environment', businessSystemId: 7, businessSystemName: '订单系统',
+      projectId: 301, projectName: '订单项目',
       environment: 71, environmentName: '生产环境', nodeTitle: '生产环境',
     }
     expect(wrapper.emitted('select').at(-1)).toEqual([environmentScope])
+    expect(buildServiceTreeBreadcrumbs(environmentScope).map((item) => item.title)).toEqual([
+      '全部业务', '订单项目', '订单系统', '生产环境',
+    ])
     expect(wrapper.find('.ant-tree-node-selected').text()).toContain('生产环境')
 
     await wrapper.setProps({ selectedScope: environmentScope })

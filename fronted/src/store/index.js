@@ -98,13 +98,14 @@ export default createStore({
             state.user = {}
         },
         add_perms:(state,perms) => {
-            state.perms = perms
+            // 本地会话不存在时读取结果可能为 null，权限状态始终保持数组。
+            state.perms = Array.isArray(perms) ? perms : []
         },
         clear_perms:()=>{
             state.perms = []
         },
         add_role_codes:(state,role_codes) => {
-            state.role_codes = role_codes
+            state.role_codes = Array.isArray(role_codes) ? role_codes : []
         },
         clear_role_codes:()=>{
             state.role_codes = []

@@ -2,8 +2,9 @@ import store from "@/store";
 
 // 权限检查函数
 export function checkPermission(permissionCode) {
-    var  perms  = store.state.perms
-    var role_codes = store.state.role_codes
+    // 会话状态缺失时按无授权处理，不能让权限检查异常中断组件挂载。
+    const perms = Array.isArray(store.state.perms) ? store.state.perms : []
+    const role_codes = Array.isArray(store.state.role_codes) ? store.state.role_codes : []
     if(role_codes.includes("admin")){
         // 是admin
         return true

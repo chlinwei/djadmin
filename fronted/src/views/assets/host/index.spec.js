@@ -470,6 +470,13 @@ describe('Host Agent 凭证安装与主机编辑保存', () => {
     const payload = hostApi.saveOrCreateHost.mock.calls[0][0]
     expect(payload.id).toBe(101)
     expect(payload.instance_name).toBe('pvg-esb4-201-renamed')
+    expect(payload).not.toHaveProperty('monitors')
+    expect(wrapper.find('[label="监控设置"]').exists()).toBe(false)
+    await setupState.handleCloneHost({ id: 101 })
+    await flushPromises()
+    expect(setupState.form.instance_name).toBe('pvg-esb4-201-copy')
+    expect(setupState.form).not.toHaveProperty('monitors')
+    wrapper.unmount()
   })
 
   it('Agent 安装弹窗选择 SSH 凭证后提交应携带 credential_id', async () => {

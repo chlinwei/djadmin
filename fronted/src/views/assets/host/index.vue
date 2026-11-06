@@ -481,57 +481,6 @@
                         <a-button type="primary" @click="addFormWebSshUserTag">添加</a-button>
                     </a-space>
                 </a-form-item>
-                <a-form-item label="监控设置">
-                    <div class="monitor-row" v-for="(item, index) in form.monitors" :key="index">
-                        <a-select
-                            v-model:value="item.name"
-                            :getPopupContainer="getPopupContainer"
-                            placeholder="请选择监控组件"
-                            :options="monitorNameOptions"
-                            :virtual="false"
-                            show-search
-                            optionFilterProp="label"
-                            style="width: 160px"
-                            @change="() => onMonitorNameChanged(item)"
-                        />
-                        <a-input-number
-                            v-model:value="item.port"
-                            :min="1"
-                            :max="65535"
-                            :precision="0"
-                            placeholder="端口"
-                            style="width: 120px"
-                        />
-                        <a-tooltip title="开启：保存后自动下发安装任务；关闭：保存后自动下发卸载任务（不再需要单独勾选）">
-                            <a-switch
-                                v-model:checked="item.enabled"
-                                checked-children="开启"
-                                un-checked-children="关闭"
-                            />
-                        </a-tooltip>
-                        <a-tooltip
-                            v-if="canDeleteMonitorRow(item)"
-                            :title="item._persisted ? '删除该监控项（不可恢复）' : '仅移除本次编辑中还未保存的行'"
-                        >
-                            <a-button
-                                class="delBtn"
-                                type="link"
-                                danger
-                                :loading="item._persisted && monitorRowDeleteLoading[item.id]"
-                                @click="removeMonitorRow(index)"
-                            >删除</a-button>
-                        </a-tooltip>
-                        <a-tooltip
-                            v-else
-                            title="仍处于开启状态或卸载任务尚未结束，请先关闭（会自动卸载）并等待卸载完成后再删除"
-                        >
-                            <a-button type="link" danger disabled>删除</a-button>
-                        </a-tooltip>
-                    </div>
-                    <a-button type="dashed" block @click="addMonitorRow">
-                        + 添加监控项
-                    </a-button>
-                </a-form-item>
                 <a-form-item name="remark" label="备注">
                     <a-textarea v-model:value="form.remark" :rows="3" placeholder="可填写业务用途、负责人等信息" />
                 </a-form-item>
@@ -601,7 +550,6 @@ import { getHostGroupTree, getHostGroupById, batchDeleteHostGroups } from '@/api
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig.js'
 import { checkPermission } from '@/directives/permission/permission'
 import { getBusinessEnvironmentList } from '@/api/assets/application'
-import { batchDeleteMonitorTargets, getSoftwarePackages } from '@/api/monitor.js'
 import { assertBatchDeleteSucceeded, openDeleteConfirm } from '@/util/deleteConfirm'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
@@ -716,7 +664,6 @@ const form = reactive({
     ip: '',
     environment: null,
     group_id: undefined,
-    monitors: [],
     remark: '',
     instance_name: '',
     webssh_default_username: 'root',
@@ -757,88 +704,6 @@ const normalizeFormWebSshUserSettings = () => {
     const defaultUser = String(form.webssh_default_username || '').trim()
     form.webssh_login_users = users.join(' ')
     form.webssh_default_username = users.includes(defaultUser) ? defaultUser : (users[0] || 'root')
-}
-
-// 监控名称下拉选项：仅来自监控软件仓库中 enabled=true 的包（按名称去重）
-const monitorNameOptions = ref([])
-const monitorDefaultPortMap = ref({})
-
-const normalizeMonitorPort = (rawValue) => {
-    const value = Number(rawValue)
-    if (!Number.isInteger(value)) return null
-    if (value < 1 || value > 65535) return null
-    return value
-}
-
-const resolveMonitorDefaultPort = (monitorName) => {
-    const name = String(monitorName || '').trim()
-    if (!name) return 9100
-    return normalizeMonitorPort(monitorDefaultPortMap.value[name]) || 9100
-}
-
-const onMonitorNameChanged = (item) => {
-    if (!item) return
-    const currentPort = normalizeMonitorPort(item.port)
-    if (currentPort !== null) return
-    item.port = resolveMonitorDefaultPort(item.name)
-}
-
-const loadMonitorNameOptions = async () => {
-    try {
-        const res = await getSoftwarePackages({ enabled: true, page_size: 200, ordering: '-id' })
-        const results = Array.isArray(res?.data?.data?.results) ? res.data.data.results : []
-        const names = [...new Set(results.map((item) => item.name).filter(Boolean))]
-        monitorNameOptions.value = names.map((name) => ({ label: name, value: name }))
-        const nextPortMap = {}
-        results.forEach((item) => {
-            const monitorName = String(item?.name || '').trim()
-            if (!monitorName || nextPortMap[monitorName] !== undefined) return
-            nextPortMap[monitorName] = normalizeMonitorPort(item?.default_port) || 9100
-        })
-        monitorDefaultPortMap.value = nextPortMap
-    } catch (error) {
-        monitorNameOptions.value = []
-        monitorDefaultPortMap.value = {}
-    }
-}
-
-const addMonitorRow = () => {
-    // _persisted 仅作为前端本地标记，不提交给后端（提交 payload 时只取 name/enabled/port）：
-    // 新增的行在后端没有对应 MonitorTarget，所以可以真正本地移除（无需删除按钮限制）。
-    form.monitors.push({ name: undefined, port: 9100, enabled: true, _persisted: false })
-}
-
-// 已保存的行是否满足真删除条件：必须已经是关闭状态，且没有卸载任务还在进行中——
-// 与 monitor/views.py MonitorViewSet.destroy() 的后端前置校验保持一致，避免点了按钮却 400。
-const canDeleteMonitorRow = (item) => !item._persisted || (!item.enabled && item.install_status !== 'pending')
-
-const monitorRowDeleteLoading = reactive({})
-
-const removeMonitorRow = (index) => {
-    const item = form.monitors[index]
-    if (!item?._persisted) {
-        // 本次编辑中新增、还没保存过的行，后端没有对应记录，本地移除即可。
-        form.monitors.splice(index, 1)
-        return
-    }
-    // 已保存的行走真删除：必须复用统一的删除确认弹窗（openDeleteConfirm），不能用 a-popconfirm 自行拼。
-    openDeleteConfirm({
-        title: '确认删除监控项',
-        summary: '删除后将无法再追踪该监控项的安装/卸载历史记录，如需重新纳管请重新添加。',
-        items: [`${item.name}`],
-        onConfirm: async () => {
-            monitorRowDeleteLoading[item.id] = true
-            try {
-                await batchDeleteMonitorTargets([item.id])
-                message.success('删除成功')
-                form.monitors.splice(index, 1)
-            } catch (error) {
-                message.error(error?.response?.data?.msg || error?.message || '删除失败')
-            } finally {
-                monitorRowDeleteLoading[item.id] = false
-            }
-        },
-    })
 }
 
 const rules = {
@@ -1448,7 +1313,6 @@ const resetForm = () => {
     form.ip = ''
     form.environment = null
     form.group_id = selectedGroupId.value && selectedGroupId.value !== 0 ? selectedGroupId.value : undefined
-    form.monitors = []
     form.remark = ''
     form.webssh_default_username = 'root'
     form.webssh_login_users = 'root'
@@ -1456,16 +1320,14 @@ const resetForm = () => {
 }
 
 const handleAdd = async () => {
-    await loadMonitorNameOptions()
     resetForm()
     dialogTitle.value = '新增主机'
     dialogVisible.value = true
 }
 
-// 克隆主机：以已有主机为模板填表（分组/环境/监控项/WebSSH 用户等照搬）。
+// 克隆主机：以已有主机为模板填表（分组/环境/WebSSH 用户等照搬）。
 // 实例名加 -copy 后缀，IP 清空由用户填写（服务端按 IP 唯一校验并标识），提交走新增逻辑。
 const handleCloneHost = async (record) => {
-    await loadMonitorNameOptions()
     resetForm()
     dialogTitle.value = '克隆主机'
     dialogLoading.value = true
@@ -1479,12 +1341,6 @@ const handleCloneHost = async (record) => {
                 form.ip = ''
                 form.environment = data.environment ?? null
                 form.group_id = data.group ?? data.group_id ?? undefined
-                const monitorRows = Array.isArray(data.monitors) ? data.monitors : []
-                form.monitors = monitorRows.map((item) => ({
-                    name: item.name,
-                    port: normalizeMonitorPort(item.port) || resolveMonitorDefaultPort(item.name),
-                    enabled: Boolean(item.enabled),
-                }))
                 form.remark = data.remark || ''
                 form.webssh_default_username = String(data.webssh_default_username || 'root').trim() || 'root'
                 form.webssh_login_users = String(data.webssh_login_users || 'root').trim() || 'root'
@@ -1522,7 +1378,6 @@ const handleApiError = (err) => {
 }
 
 const onSaveOrCreate = async (id) => {
-    await loadMonitorNameOptions()
     dialogTitle.value = '编辑主机'
     dialogVisible.value = true
     dialogLoading.value = true
@@ -1535,17 +1390,6 @@ const onSaveOrCreate = async (id) => {
                 form.ip = data.ip || ''
                 form.environment = data.environment ?? null
                 form.group_id = data.group ?? data.group_id ?? undefined
-                const monitorRows = Array.isArray(data.monitors) ? data.monitors : []
-                // 标记为已持久化行：携带 id/install_status，用于判断是否满足后端真删除的前置条件
-                // （managed_enabled=false 且 install_status!=='pending'）——不满足时只能先用开关关闭。
-                form.monitors = monitorRows.map((item) => ({
-                    id: item.id,
-                    name: item.name,
-                    port: normalizeMonitorPort(item.port) || resolveMonitorDefaultPort(item.name),
-                    enabled: Boolean(item.enabled),
-                    install_status: item.install_status,
-                    _persisted: true,
-                }))
                 form.remark = data.remark || ''
                 form.webssh_default_username = String(data.webssh_default_username || 'root').trim() || 'root'
                 form.webssh_login_users = String(data.webssh_login_users || 'root').trim() || 'root'
@@ -1562,28 +1406,12 @@ const onSaveOrCreate = async (id) => {
 
 const handleOk = () => {
     formRef.value?.validate().then(() => {
-        // 提交前校验：监控行必须选择名称，避免提交空名称导致后端静默跳过该行
-        const invalidRow = form.monitors.find((item) => !item.name)
-        if (invalidRow) {
-            message.warning('请为每个监控项选择监控组件名称，或删除该行')
-            return
-        }
-        const invalidPortRow = form.monitors.find((item) => normalizeMonitorPort(item.port) === null)
-        if (invalidPortRow) {
-            message.warning('请为每个监控项填写有效端口（1-65535）')
-            return
-        }
         dialogLoading.value = true
         const payload = { ...form }
         normalizeFormWebSshUserSettings()
         payload.webssh_default_username = form.webssh_default_username
         payload.webssh_login_users = form.webssh_login_users
         delete payload.name
-        payload.monitors = form.monitors.map((item) => ({
-            name: item.name,
-            enabled: Boolean(item.enabled),
-            port: normalizeMonitorPort(item.port),
-        }))
         saveOrCreateHost(payload)
             .then((res) => {
                 if (res.data.code === 200) {
@@ -1855,13 +1683,6 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.monitor-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 8px;
-}
-
 :deep(.row-collect-failed) > td {
     background-color: #fff1f0;
 }

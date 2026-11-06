@@ -63,7 +63,7 @@ export function resolvePathMacros(pattern, { templateMacros = [], serviceMacros 
   const expand = (value) => {
     let valid = true
     const resolved = value.replace(/\$\{([^{}]+)\}/g, (reference, name) => {
-      if (!Object.hasOwn(macros, name) || visiting.has(name)) {
+      if (!Object.hasOwn(macros, name) || !macros[name].trim() || visiting.has(name)) {
         valid = false
         return reference
       }

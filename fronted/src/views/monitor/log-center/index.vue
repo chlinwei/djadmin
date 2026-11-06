@@ -55,6 +55,7 @@
             <a-progress :percent="applyJobPercent" :status="applyJob.is_running ? 'active' : (applyJob.failed_count ? 'exception' : 'success')" />
             <span>下发作业 #{{ applyJob.id }}：共 {{ applyJob.total_count }} 台，成功 {{ applyJob.success_count }}，失败 {{ applyJob.failed_count }}，待处理 {{ applyJob.pending_count }}。</span>
             <span>{{ applyJob.message }}</span>
+            <a-alert v-if="applyFailureText" type="error" show-icon message="下发失败详情" class="apply-failure-details" :description="applyFailureText" />
           </div>
           <!-- 非服务节点：同样的层级视图，列换成日志配置视角（档位/待下发）。
                服务级区块（采集链路、下发、逐条配置表）只在服务节点出现。 -->
@@ -190,8 +191,9 @@
               <div class="field-hint">
                 下发作业 #{{ applyJob.id }}：共 {{ applyJob.total_count }} 台，成功 {{ applyJob.success_count }}，
                 失败 {{ applyJob.failed_count }}，待处理 {{ applyJob.pending_count }}。
-                <span v-if="!applyJob.is_running">{{ applyJob.message || '作业已结束' }}（逐台明细见「日志采集」页）</span>
+                <span v-if="!applyJob.is_running">{{ applyJob.message || '作业已结束' }}</span>
               </div>
+              <a-alert v-if="applyFailureText" type="error" show-icon message="下发失败详情" class="apply-failure-details" :description="applyFailureText" />
             </div>
             <!-- 批量操作栏：勾选日志后出现。日志定义多了以后"逐行点开关/档位/过滤"是主要的体力活，
                  这里让同一件事一次作用到勾选的多行上；每一行提交的仍是它自己的完整覆盖值
@@ -1366,6 +1368,10 @@ const applyJobPercent = computed(() => {
   if (!job || !job.total_count) return 0
   return Math.round(((job.success_count + job.failed_count) / job.total_count) * 100)
 })
+const applyFailureText = computed(() => (applyJob.value?.items || [])
+  .filter((item) => item.status === 'failed')
+  .map((item) => `${item.host_name || `主机 ${item.host_id}`} ${item.host_ip ? `(${item.host_ip})` : ''}：${item.message || '下发失败，未返回具体原因'}`)
+  .join('\n'))
 
 // 日志在哪台机器上：日志定义的路径是模板级、按实例宏展开，所以"这条日志所在的主机"
 // 就是"承载该服务的主机"。数据来自 service-config-state：hosts 已纳管（可下发）、
@@ -2914,6 +2920,11 @@ getLogRetentionTiers({ page_size: 100 })
 }
 .apply-progress {
   margin-bottom: 8px;
+}
+.apply-failure-details {
+  margin-top: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 /* 批量操作栏：只在勾选后出现，靠近表格（勾选与动作在同一视野里，不用往回滚找按钮）。 */
 .batch-bar {

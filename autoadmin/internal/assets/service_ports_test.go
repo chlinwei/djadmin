@@ -20,7 +20,7 @@ func TestResolveConfiguredPort(t *testing.T) {
 		{"nested", "${PORT}", map[string]string{"PORT": "${BASE}", "BASE": "1415"}, "1415", ""},
 		{"missing", "${PORT}", nil, "${PORT}", "未定义"},
 		{"cycle", "${PORT}", map[string]string{"PORT": "${OTHER}", "OTHER": "${PORT}"}, "${PORT}", "循环引用"},
-		{"empty", "${PORT}", map[string]string{"PORT": ""}, "", "1–65535"},
+		{"empty", "${PORT}", map[string]string{"PORT": ""}, "${PORT}", "值为空"},
 		{"out of range", "${PORT}", map[string]string{"PORT": "65536"}, "65536", "1–65535"},
 		{"noninteger", "${PORT}", map[string]string{"PORT": "abc"}, "abc", "1–65535"},
 	} {

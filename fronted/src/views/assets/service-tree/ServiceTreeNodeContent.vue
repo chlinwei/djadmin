@@ -158,7 +158,8 @@
           <div v-for="log in serviceLogs" :key="log.log_definition" class="service-log-item">
             <a-tag color="blue">{{ log.name }}</a-tag>
             <span class="service-log-path">{{ log.resolved_path || log.path_pattern }}</span>
-            <a-tooltip v-if="log.pending_macros?.length" :title="`实例级宏待展开：${log.pending_macros.join('、')}`">
+            <a-tag v-if="log.resolution_error" color="red">{{ log.resolution_error }}</a-tag>
+            <a-tooltip v-else-if="log.pending_macros?.length" :title="`实例级宏待展开：${log.pending_macros.join('、')}`">
               <a-tag color="orange">{{ log.pending_macros.join('、') }} 待展开</a-tag>
             </a-tooltip>
           </div>

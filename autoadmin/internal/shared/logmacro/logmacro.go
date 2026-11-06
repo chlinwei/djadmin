@@ -111,6 +111,8 @@ func resolveDependencies(path string, allowUndefined bool, sets ...map[string]st
 					continue
 				}
 				problem = fmt.Errorf("宏 %s 未定义", name)
+			} else if strings.TrimSpace(replacement) == "" {
+				problem = fmt.Errorf("宏 %s 值为空", name)
 			} else if visiting[name] {
 				problem = fmt.Errorf("宏 %s 存在循环引用", name)
 			} else if cached, ok := cache[name]; ok {

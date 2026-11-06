@@ -108,6 +108,27 @@ describe('ServiceTreeNodeContent', () => {
     } } })
   })
 
+  it('在日志路径旁直接显示宏缺值错误而不是伪造空目录路径', async () => {
+    applicationApi.getApplicationServiceLogConfig.mockResolvedValue({ data: { data: {
+      logs: [{ log_definition: 5, name: 'error_log', path_pattern: '${APP_HOME}/logs/error.log',
+        resolved_path: '${APP_HOME}/logs/error.log', pending_macros: ['APP_HOME'], resolution_error: '宏 IMF_USER 值为空' }],
+    } } })
+    const wrapper = mount(ServiceTreeNodeContent, {
+      props: { scope: { nodeType: 'service', applicationServiceId: 21, nodeTitle: '订单 API' } },
+      global: { plugins: [Antd], stubs: { FontAwesomeIcon: true } },
+    })
+    try {
+      await flushPromises()
+      const log = wrapper.find('.service-log-item')
+      expect(log.text()).toContain('宏 IMF_USER 值为空')
+      expect(log.text()).toContain('${APP_HOME}/logs/error.log')
+      expect(log.text()).not.toContain('待展开')
+      expect(log.find('.ant-tag-red').exists()).toBe(true)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('shows resolved service ports and per-instance overrides without hiding resolution errors', async () => {
     applicationApi.getApplicationService.mockResolvedValue({ data: { data: {
       id: 21, name: '订单 API', ports: [{

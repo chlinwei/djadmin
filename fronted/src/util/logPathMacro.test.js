@@ -10,6 +10,13 @@ const templateMacros = [
 ]
 
 describe('resolvePathMacros', () => {
+  it('空宏和纯空白宏保留外层引用，不生成双斜杠路径', () => {
+    for (const value of ['', '   ']) {
+      expect(resolvePathMacros('${APP_HOME}/logs/error.log', {
+        appHome: '/home/${IMF_USER}/apps/adapter1', serviceMacros: { IMF_USER: value },
+      })).toBe('${APP_HOME}/logs/error.log')
+    }
+  })
   it('先解析依赖再代入路径和文件名，不依赖宏定义顺序', () => {
     expect(resolvePathMacros('${APP_HOME}/${CONFIG_DIR}/${CONFIG_FILE}', {
       appHome: '/home/${IMF_USER}/apps/adapter1',

@@ -1266,6 +1266,32 @@ describe('日志中心（服务树 + 三个 tab）', () => {
   })
 
   // 服务级下发：调服务级接口（而不是自己拼目标 id），随后按作业 id 轮询进度。
+  it('在当前页展示下发失败主机和完整原因，成功后清除错误区', async () => {
+    const { getLogBatchJob } = await import('@/api/monitor')
+    getLogBatchJob.mockResolvedValueOnce({ data: { data: {
+      id: 77, is_running: false, total_count: 2, success_count: 1, failed_count: 1, pending_count: 0,
+      items: [
+        { host_id: 933, host_name: 'hak_imf1', host_ip: '10.25.66.233', status: 'failed', message: '路径不规范：/home//apps/adapter1/logs/errorLog.log' },
+        { host_id: 782, host_name: 'healthy-host', status: 'success', message: '完成' },
+      ],
+    } } })
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    wrapper.vm.activeTab = 'config'
+    await wrapper.vm.applyService()
+    await flushPromises()
+    expect(wrapper.vm.applyFailureText).toContain('hak_imf1 (10.25.66.233)')
+    expect(wrapper.vm.applyFailureText).toContain('/home//apps/adapter1/logs/errorLog.log')
+    expect(wrapper.vm.applyFailureText).not.toContain('healthy-host')
+    expect(document.body.textContent).toContain('下发失败详情')
+    await wrapper.vm.applyService()
+    await flushPromises()
+    expect(wrapper.vm.applyFailureText).toBe('')
+    expect(document.body.textContent).not.toContain('下发失败详情')
+    wrapper.unmount()
+  })
+
   it('applies for the whole service and polls the created batch job', async () => {
     const { applyLogTargetsForService, getLogBatchJob } = await import('@/api/monitor')
     const wrapper = await mountPage()

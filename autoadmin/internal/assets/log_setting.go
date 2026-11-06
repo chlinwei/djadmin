@@ -34,6 +34,7 @@ type ServiceTemplateLog struct {
 	// 所以剩下的宏由 PendingMacros 显式列出来，界面标成"实例上展开"，不猜值。
 	ResolvedPath           string   `json:"resolved_path"`
 	PendingMacros          []string `json:"pending_macros"`
+	ResolutionError        string   `json:"resolution_error,omitempty"`
 	DataStream             string   `json:"data_stream"`
 	RetentionTier          *int64   `json:"retention_tier"`
 	CollectionEnabled      *bool    `json:"collection_enabled"`
@@ -117,12 +118,16 @@ func (r *Repository) ListServiceTemplateLogs(ctx context.Context, serviceID int6
 		}
 		// 与渲染同序：模板默认值（含 app_home 作 APP_HOME）→ 服务覆盖。未展开的留给实例变量，
 		// 由 PendingMacros 如实报出来（界面标注），而不是显示一个猜出来的路径。
-		item.ResolvedPath = logmacro.Resolve(
+		resolvedPath, resolutionError := logmacro.ResolveChecked(
 			item.PathPattern,
 			logmacro.TemplateDefaults(string(row.MacroDefinitions)),
 			logmacro.InstanceValues("", row.AppHome),
 			logmacro.ParseValues(string(row.MacroValues)),
 		)
+		item.ResolvedPath = resolvedPath
+		if resolutionError != nil {
+			item.ResolutionError = resolutionError.Error()
+		}
 		item.PendingMacros = logmacro.Pending(item.ResolvedPath)
 		// 读取必须保留待修正的日志行；缺档位时不伪造流名，严格校验留在下发入口。
 		if strings.TrimSpace(row.TierCode) != "" {

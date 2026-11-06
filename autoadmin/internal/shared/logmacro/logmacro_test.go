@@ -38,6 +38,17 @@ func TestResolveNestedMacros(t *testing.T) {
 	}
 }
 
+func TestResolveRejectsEmptyDependency(t *testing.T) {
+	for _, value := range []string{"", "   "} {
+		got, err := ResolveChecked("${APP_HOME}/logs/error.log", map[string]string{
+			"APP_HOME": "/home/${IMF_USER}/apps/adapter1", "IMF_USER": value,
+		})
+		if got != "${APP_HOME}/logs/error.log" || err == nil || err.Error() != "宏 IMF_USER 值为空" {
+			t.Fatalf("empty dependency must remain unresolved: got %q err=%v", got, err)
+		}
+	}
+}
+
 func TestResolveKeepsUndefinedAndCyclicMacrosBounded(t *testing.T) {
 	for _, test := range []struct {
 		name   string

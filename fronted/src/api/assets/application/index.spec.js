@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import requestUtil from '@/util/request'
-import { getApplicationServiceLogStatusSummary, saveApplicationService } from './index'
+import { getApplicationServiceLogStatusSummary, saveApplicationService, saveApplicationDeploymentTemplate } from './index'
 
 vi.mock('@/util/request', () => ({
     default: { get: vi.fn(), post: vi.fn(), patch: vi.fn() },
@@ -18,6 +18,23 @@ describe('服务日志状态汇总查询', () => {
             { service_ids: '15,16' },
         )
         expect(requestUtil.post).not.toHaveBeenCalled()
+    })
+})
+
+describe('部署模板保存错误提示归属', () => {
+    beforeEach(() => vi.clearAllMocks())
+
+    it.each([null, 20])('保存 ID %s 的模板由调用方提示业务错误且保留失败拒绝', async (id) => {
+        const payload = { id, name: 'template' }
+        const failure = new Error('日志采集配置不自洽，已拒绝保存')
+        const request = id ? requestUtil.patch : requestUtil.post
+        request.mockRejectedValueOnce(failure)
+        await expect(saveApplicationDeploymentTemplate(payload)).rejects.toBe(failure)
+        if (id) {
+            expect(request).toHaveBeenCalledWith('assets/application-deployment-templates/20/', payload, { suppressBusinessErrorMessage: true })
+        } else {
+            expect(request).toHaveBeenCalledWith('assets/application-deployment-templates/', payload, null, { suppressBusinessErrorMessage: true })
+        }
     })
 })
 

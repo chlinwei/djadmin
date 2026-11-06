@@ -265,7 +265,7 @@ func nullableInt(value *int64) sql.NullInt64 {
 	return sql.NullInt64{Int64: *value, Valid: true}
 }
 
-func (r *Repository) SaveDeploymentTemplate(ctx context.Context, id int64, input DeploymentTemplateInput, checkers ...func(context.Context, db.DBTX, int64) error) (int64, error) {
+func (r *Repository) SaveDeploymentTemplate(ctx context.Context, id int64, input DeploymentTemplateInput) (int64, error) {
 	if err := validateTemplatePorts(input.Ports); err != nil {
 		return 0, err
 	}
@@ -436,11 +436,7 @@ func (r *Repository) SaveDeploymentTemplate(ctx context.Context, id int64, input
 	if err != nil {
 		return 0, err
 	}
-	if len(checkers) > 0 && checkers[0] != nil {
-		if err = checkers[0](ctx, tx, templateID); err != nil {
-			return 0, err
-		}
-	}
+	// 模板只定义配置；关联服务可能尚未补齐宏值，不能以其日志展开结果阻塞模板保存。
 	if err = tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit template transaction: %w", err)
 	}
@@ -629,7 +625,7 @@ func (s *Service) SaveDeploymentTemplate(ctx context.Context, id int64, input De
 	if input.MacroDefinitions == nil {
 		input.MacroDefinitions = json.RawMessage("[]")
 	}
-	templateID, err := s.repository.SaveDeploymentTemplate(ctx, id, input, s.checkTemplateLogConfigConsistency)
+	templateID, err := s.repository.SaveDeploymentTemplate(ctx, id, input)
 	if err != nil {
 		return DeploymentTemplate{}, translate(err)
 	}

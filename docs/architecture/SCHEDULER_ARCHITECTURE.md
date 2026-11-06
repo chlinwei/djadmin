@@ -118,6 +118,9 @@ npm run build
 | `cleanup_monitor_install_histories` | 监控安装历史清理 | `cleanupMonitorInstallHistories` | `sys.monitor.install_history.retention_days`（180） | `monitor_target_install_history`，**每个纳管目标至少保留最新一条**（清完还要能回答"这台机器最近一次装/卸是什么结果"） |
 | `cleanup_alert_histories` | 历史告警清理 | `cleanupAlertHistories` | `sys.monitor.alert_history.retention_days`（90） | 投递记录 → 通知事件 → 告警行，**先子后父**；只清 `state='resolved'`（仍在 firing 的是"当前状态"）；年龄取 `COALESCE(resolved_at, started_at)` |
 
+工作流日志没有独立的保留期配置或清理任务；废弃键 `sys.workflow.logs.retention_days`
+由迁移 `000063` 删除，回滚不重建。自动化执行记录统一使用 `sys.automation.logs.retention_days`。
+
 保留期一律**读 sys_config 的同名键**；读取失败、缺失或数值非法时明确失败，不以默认保留期
 静默执行删除。删除语句都在
 `db/queries/mysql/scheduler.sql`，有子表的**子表先删**——这些外键都没有级联，顺序反了会直接撞外键

@@ -1,0 +1,1 @@
+DELETE FROM sys_config WHERE `key` = 'sys.workflow.logs.retention_days';

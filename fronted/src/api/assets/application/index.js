@@ -204,8 +204,10 @@ export function getApplicationDeploymentTemplateServices(id) {
 }
 
 export function saveApplicationDeploymentTemplate(obj) {
-    if (obj.id) return requestUtil.patch(`${templatePrefix}${obj.id}/`, obj)
-    return requestUtil.post(templatePrefix, obj)
+    // 保存弹窗负责提示失败，避免拦截器与弹窗重复显示同一业务错误。
+    const options = { suppressBusinessErrorMessage: true }
+    if (obj.id) return requestUtil.patch(`${templatePrefix}${obj.id}/`, obj, options)
+    return requestUtil.post(templatePrefix, obj, null, options)
 }
 
 export function batchDeleteApplicationDeploymentTemplates(ids) {

@@ -2,7 +2,6 @@ package assets
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -17,28 +16,7 @@ type InstancePort struct {
 }
 
 func resolveConfiguredPort(expression string, values map[string]string) (string, string) {
-	visiting := map[string]bool{}
-	var expand func(string) (string, error)
-	expand = func(value string) (string, error) {
-		for _, name := range logmacro.Pending(value) {
-			replacement, exists := values[name]
-			if !exists {
-				return value, fmt.Errorf("宏 %s 未定义", name)
-			}
-			if visiting[name] {
-				return value, fmt.Errorf("宏 %s 存在循环引用", name)
-			}
-			visiting[name] = true
-			resolved, err := expand(replacement)
-			visiting[name] = false
-			if err != nil {
-				return value, err
-			}
-			value = strings.ReplaceAll(value, "${"+name+"}", resolved)
-		}
-		return value, nil
-	}
-	resolved, err := expand(expression)
+	resolved, err := logmacro.ResolveChecked(expression, values)
 	if err != nil {
 		return resolved, err.Error()
 	}

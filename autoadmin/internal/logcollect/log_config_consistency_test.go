@@ -113,7 +113,7 @@ func TestCreateServiceRejectsExistingHostLogPath(t *testing.T) {
 	}
 }
 
-func TestTemplateLogAdditionChecksExistingHostPaths(t *testing.T) {
+func TestTemplateLogAdditionDoesNotCheckExistingHostPaths(t *testing.T) {
 	for _, conflict := range []bool{false, true} {
 		name, path := "distinct-path", "/data/app/logs/other.log"
 		if conflict {
@@ -132,30 +132,14 @@ func TestTemplateLogAdditionChecksExistingHostPaths(t *testing.T) {
 				WithArgs(int64(22)).WillReturnRows(sqlmock.NewRows([]string{"id"}))
 			mock.ExpectExec("INSERT INTO assets_application_log_definition").
 				WillReturnResult(sqlmock.NewResult(30, 1))
-			mock.ExpectQuery("WHERE s.deployment_template_id").WithArgs(int64(22)).
-				WillReturnRows(sqlmock.NewRows([]string{"id", "name", "code", "enabled",
-					"business_system_id", "environment_id", "project_name", "business_system_name", "environment_name"}).
-					AddRow(20, "New service", "new-service", true, 1, 1, "Project", "Business", "Production"))
-			expectServiceConflictTargets(mock, 20)
-			expectServiceConflictInputs(mock, path)
-			if conflict {
-				mock.ExpectRollback()
-			} else {
-				mock.ExpectCommit()
-			}
-			handler := &Handler{db: database}
+			mock.ExpectCommit()
 			id, err := assets.NewRepository(database).SaveDeploymentTemplate(context.Background(), 22,
 				assets.DeploymentTemplateInput{
 					Name: "Template", ControlType: "systemd", AppHome: "/data/app",
 					Logs: &[]assets.TemplateLogInput{{Name: "other-name.log", PathPattern: path}},
-				}, handler.CheckTemplateLogConfigConsistency)
-			if conflict {
-				requireServicePathConflict(t, err)
-				if id != 0 {
-					t.Fatalf("rejected template save returned ID %d", id)
-				}
-			} else if err != nil || id != 22 {
-				t.Fatalf("distinct path must save: id=%d err=%v", id, err)
+				})
+			if err != nil || id != 22 {
+				t.Fatalf("template path must save without host checks: id=%d err=%v", id, err)
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Fatal(err)

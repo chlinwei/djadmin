@@ -103,30 +103,59 @@ func TestSaveApplicationServiceWithoutCheckerSkipsValidation(t *testing.T) {
 	}, service.checkLogConfigConsistency)
 }
 
-func TestSaveDeploymentTemplateRollsBackOnLogConfigConflict(t *testing.T) {
+func TestServiceSaveDoesNotRunHostLogConsistencyCheck(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	service := newTestService(t, NewRepository(database))
+	checker := &stubConsistencyChecker{err: errors.New("unresolved log macro")}
+	service.SetLogConfigConsistencyChecker(checker)
+	mock.ExpectBegin()
+	expectServiceSaveFence(mock, 15)
+	mock.ExpectExec("UPDATE assets_application_service").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT deployment_id FROM assets_application_service_deployment").
+		WithArgs(int64(15)).WillReturnRows(sqlmock.NewRows([]string{"deployment_id"}))
+	mock.ExpectCommit()
+	// 保存后详情读取独立于写入事务；用哨兵错误确认已完成提交并进入读回阶段。
+	readbackError := errors.New("readback sentinel")
+	mock.ExpectQuery("FROM assets_application_service").WillReturnError(readbackError)
+	_, err = service.SaveApplicationService(context.Background(), 15, ApplicationServiceInput{
+		Name: "app", Code: "app", Application: 1, BusinessSystem: 1,
+		ApplicationVersion: 1, DeploymentTemplate: 1, Environment: new(int64(1)),
+		LogRetentionTier: new(int64(3)), MacroValues: []byte(`{"IMF_USER":"nkg_imf"}`),
+	})
+	if !errors.Is(err, readbackError) {
+		t.Fatalf("save must commit before reading back: %v", err)
+	}
+	if checker.calledWithPool {
+		t.Fatal("service save must not check host log consistency")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSaveDeploymentTemplateDoesNotRequireLogConfigConsistency(t *testing.T) {
 	database, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("create sql mock: %v", err)
 	}
 	defer database.Close()
 	repository := NewRepository(database)
-	message := errors.New("template creates duplicate log path")
 	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE assets_application_deployment_template").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
-	_, err = repository.SaveDeploymentTemplate(context.Background(), 22, DeploymentTemplateInput{
+	templateID, err := repository.SaveDeploymentTemplate(context.Background(), 22, DeploymentTemplateInput{
 		Name: "template", ControlType: "systemd",
-	}, func(ctx context.Context, pool dbType, templateID int64) error {
-		if pool == nil || templateID != 22 {
-			t.Fatalf("template checker got pool=%v templateID=%d", pool != nil, templateID)
-		}
-		return message
 	})
-	if !errors.Is(err, message) {
-		t.Fatalf("template conflict must reject the save, got %v", err)
+	if err != nil || templateID != 22 {
+		t.Fatalf("template must save without rendering service log paths: id=%d err=%v", templateID, err)
 	}
 	if err = mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("template conflict must roll back without commit: %v", err)
+		t.Fatalf("template must commit without log consistency queries: %v", err)
 	}
 }
 

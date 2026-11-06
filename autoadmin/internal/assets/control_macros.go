@@ -19,48 +19,17 @@ func deploymentControlParams(row db.ListDeploymentControlContextsRow, actions []
 	if _, exists := values["APP_HOME"]; !exists && row.AppHome != "" {
 		values["APP_HOME"] = row.AppHome
 	}
-	resolved := map[string]string{}
-	visiting := map[string]bool{}
-	var resolve func(string) (string, error)
-	resolve = func(name string) (string, error) {
-		if value, ok := resolved[name]; ok {
-			return value, nil
-		}
-		if visiting[name] {
-			return "", apperror.New(apperror.CodeInvalidArgument, fmt.Sprintf("应用控制宏存在循环引用：%s", name))
-		}
-		visiting[name] = true
-		value := values[name]
-		for _, dependency := range logmacro.Pending(value) {
-			if _, exists := values[dependency]; !exists {
-				continue
-			}
-			replacement, err := resolve(dependency)
-			if err != nil {
-				return "", err
-			}
-			value = strings.ReplaceAll(value, "${"+dependency+"}", replacement)
-		}
-		visiting[name] = false
-		resolved[name] = value
-		return value, nil
-	}
 	render := func(value, field string, shell bool) (string, error) {
-		for _, name := range logmacro.Pending(value) {
-			if _, exists := values[name]; !exists {
-				continue
-			}
-			replacement, err := resolve(name)
-			if err != nil {
-				return "", err
-			}
-			value = strings.ReplaceAll(value, "${"+name+"}", replacement)
-		}
 		// 命令中的未声明变量留给目标用户的 shell；用户名和路径等结构字段必须完整解析。
-		if pending := logmacro.Pending(value); !shell && len(pending) != 0 {
-			return "", apperror.New(apperror.CodeInvalidArgument, fmt.Sprintf("应用控制字段 %s 存在未解析的宏：%s", field, strings.Join(pending, ", ")))
+		resolve := logmacro.ResolveChecked
+		if shell {
+			resolve = logmacro.ResolveShell
 		}
-		return value, nil
+		resolved, err := resolve(value, values)
+		if err != nil {
+			return "", apperror.New(apperror.CodeInvalidArgument, fmt.Sprintf("应用控制字段 %s：%s", field, err))
+		}
+		return resolved, nil
 	}
 	params := map[string]any{
 		"control_type": row.ControlType, "systemd_scope": row.SystemdScope,

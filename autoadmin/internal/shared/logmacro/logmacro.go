@@ -82,12 +82,58 @@ func InstanceValues(runtimeVariablesRaw, appHome string) map[string]string {
 
 // Resolve 按合并后的宏替换路径里的 `${KEY}`；**未定义的宏保持原样**（调用方据此发现"还没展开"）。
 func Resolve(path string, sets ...map[string]string) string {
+	resolved, _ := ResolveChecked(path, sets...)
+	return resolved
+}
+
+// ResolveChecked 先解析宏值的依赖，再代入引用处；错误分支保留占位符供预览和下发检查识别。
+func ResolveChecked(path string, sets ...map[string]string) (string, error) {
+	return resolveDependencies(path, false, sets...)
+}
+
+// ResolveShell 保留未声明变量供目标 shell 解释，但已声明宏的循环引用仍报错。
+func ResolveShell(command string, sets ...map[string]string) (string, error) {
+	return resolveDependencies(command, true, sets...)
+}
+
+func resolveDependencies(path string, allowUndefined bool, sets ...map[string]string) (string, error) {
 	merged := Merge(sets...)
-	result := path
-	for key, value := range merged {
-		result = strings.ReplaceAll(result, "${"+key+"}", value)
+	visiting := map[string]bool{}
+	cache := map[string]string{}
+	var expand func(string) (string, error)
+	expand = func(value string) (string, error) {
+		var firstError error
+		for _, name := range Pending(value) {
+			replacement, exists := merged[name]
+			var problem error
+			if !exists {
+				if allowUndefined {
+					continue
+				}
+				problem = fmt.Errorf("宏 %s 未定义", name)
+			} else if visiting[name] {
+				problem = fmt.Errorf("宏 %s 存在循环引用", name)
+			} else if cached, ok := cache[name]; ok {
+				replacement = cached
+			} else {
+				visiting[name] = true
+				replacement, problem = expand(replacement)
+				delete(visiting, name)
+				if problem == nil {
+					cache[name] = replacement
+				}
+			}
+			if problem != nil {
+				if firstError == nil {
+					firstError = problem
+				}
+				continue
+			}
+			value = strings.ReplaceAll(value, "${"+name+"}", replacement)
+		}
+		return value, firstError
 	}
-	return result
+	return expand(path)
 }
 
 // Pending 返回路径里还没展开的宏名（去重、保持出现顺序）。界面用它标注"这些要到实例上才展开"。

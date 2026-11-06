@@ -290,7 +290,8 @@ func (s *Service) SaveApplicationService(ctx context.Context, id int64, input Ap
 	if input.MemberConfigs != nil && len(*input.MemberConfigs) == 0 && input.TopologyType != "" {
 		return ApplicationService{}, ErrInvalid
 	}
-	saved, err := s.repository.SaveApplicationService(ctx, id, input, s.checkLogConfigConsistency)
+	// 服务配置允许先保存再补齐日志宏；整机日志问题只在日志检查与下发阶段处理。
+	saved, err := s.repository.SaveApplicationService(ctx, id, input, nil)
 	if err != nil {
 		return ApplicationService{}, translate(err)
 	}

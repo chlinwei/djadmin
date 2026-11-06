@@ -57,9 +57,28 @@ export function resolvePathMacros(pattern, { templateMacros = [], serviceMacros 
   for (const [name, value] of Object.entries(serviceMacros || {})) {
     macros[name] = String(value ?? '').trim()
   }
-  let resolved = String(pattern ?? '')
-  for (const [name, value] of Object.entries(macros)) {
-    resolved = resolved.split(`\${${name}}`).join(value)
+  const visiting = new Set()
+  const cache = new Map()
+  // 与后端相同：先展开依赖，失败分支保留原始引用，不把半成品当作有效路径。
+  const expand = (value) => {
+    let valid = true
+    const resolved = value.replace(/\$\{([^{}]+)\}/g, (reference, name) => {
+      if (!Object.hasOwn(macros, name) || visiting.has(name)) {
+        valid = false
+        return reference
+      }
+      if (cache.has(name)) return cache.get(name)
+      visiting.add(name)
+      const nested = expand(macros[name])
+      visiting.delete(name)
+      if (!nested.valid) {
+        valid = false
+        return reference
+      }
+      cache.set(name, nested.resolved)
+      return nested.resolved
+    })
+    return { resolved, valid }
   }
-  return resolved
+  return expand(String(pattern ?? '')).resolved
 }

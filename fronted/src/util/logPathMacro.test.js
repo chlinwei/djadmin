@@ -10,6 +10,22 @@ const templateMacros = [
 ]
 
 describe('resolvePathMacros', () => {
+  it('先解析依赖再代入路径和文件名，不依赖宏定义顺序', () => {
+    expect(resolvePathMacros('${APP_HOME}/${CONFIG_DIR}/${CONFIG_FILE}', {
+      appHome: '/home/${IMF_USER}/apps/adapter1',
+      serviceMacros: { CONFIG_FILE: '${NAME}.xml', CONFIG_DIR: 'conf', NAME: 'server', IMF_USER: 'nkg_imf' },
+    })).toBe('/home/nkg_imf/apps/adapter1/conf/server.xml')
+  })
+
+  it('未定义依赖及循环引用保留外层占位符，其他独立宏照常解析', () => {
+    expect(resolvePathMacros('${APP_HOME}/${FILE}', {
+      appHome: '/home/${MISSING}', serviceMacros: { FILE: 'app.log' },
+    })).toBe('${APP_HOME}/app.log')
+    expect(resolvePathMacros('${APP_HOME}', {
+      appHome: '${BASE}', serviceMacros: { BASE: '${APP_HOME}' },
+    })).toBe('${APP_HOME}')
+  })
+
   it('模板默认值先生效', () => {
     expect(resolvePathMacros('${LOG_DIR}/catalina.out', { templateMacros }))
       .toBe('/opt/default-tomcat/logs/catalina.out')

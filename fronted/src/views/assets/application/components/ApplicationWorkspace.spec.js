@@ -1,4 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { defineComponent, h, KeepAlive, ref } from 'vue'
 import Antd from 'ant-design-vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -60,8 +61,8 @@ vi.mock('@/util/deleteConfirm', () => ({
 import * as applicationApi from '@/api/assets/application'
 import ApplicationWorkspace from './ApplicationWorkspace.vue'
 
-function mountWorkspace(props = {}, stubs = {}) {
-  return mount(ApplicationWorkspace, {
+function mountWorkspace(props = {}, stubs = {}, component = ApplicationWorkspace) {
+  return mount(component, {
     props,
     attachTo: document.body,
     global: {
@@ -91,6 +92,44 @@ async function clickTab(wrapper, label) {
 }
 
 describe('ApplicationWorkspace tab switching', () => {
+  it('updates template portals after an in-flight response arrives on a deactivated page', async () => {
+    const visible = ref(true)
+    const cachedWorkspace = defineComponent({
+      setup: () => () => h(KeepAlive, null, {
+        default: () => visible.value ? h(ApplicationWorkspace) : h('div'),
+      }),
+    })
+    const wrapper = mountWorkspace({}, { TemplateManagerDialog: false, TemplateDialog: true }, cachedWorkspace)
+    await flushPromises()
+    try {
+      for (let cycle = 0; cycle < 3; cycle += 1) {
+        let resolveTemplates
+        applicationApi.getApplicationDeploymentTemplateList.mockImplementationOnce(() => new Promise((resolve) => {
+          resolveTemplates = resolve
+        }))
+        const workspace = wrapper.findComponent(ApplicationWorkspace)
+        await workspace.find('[data-manage-application-templates]').trigger('click')
+        await flushPromises()
+        visible.value = false
+        await flushPromises()
+        resolveTemplates({ data: { data: { results: [{ id: 2, name: `template-${cycle}`, enabled: true }], count: 1 } } })
+        await flushPromises()
+        visible.value = true
+        await flushPromises()
+        const dialog = workspace.findComponent({ name: 'TemplateManagerDialog' })
+        expect(document.body.textContent).toContain(`template-${cycle}`)
+        dialog.vm.$emit('update:open', false)
+        await flushPromises()
+        visible.value = false
+        await flushPromises()
+        visible.value = true
+        await flushPromises()
+      }
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it.each([
     ['集群模型', 'getClusterProfileList'],
     ['应用定义', 'getApplicationList'],
@@ -172,11 +211,20 @@ describe('ApplicationWorkspace tab switching', () => {
         applicationApi.getApplicationList.mockImplementationOnce(() => new Promise((resolve) => {
           resolveRefresh = resolve
         }))
-        dialog.vm.$emit('changed')
-        dialog.vm.$emit('update:open', false)
-        await flushPromises()
-        resolveRefresh({ data: { data: { results: [{ id: 1, name: 'Tomcat', versions: [], enabled: true }], count: 1 } } })
-        await flushPromises()
+        vi.useFakeTimers()
+        try {
+          dialog.vm.$emit('changed')
+          dialog.vm.$emit('update:open', false)
+          await flushPromises()
+          resolveRefresh({ data: { data: { results: [{ id: 1, name: 'Tomcat', versions: [], enabled: true }], count: 1 } } })
+          await flushPromises()
+          await vi.advanceTimersByTimeAsync(500)
+          await flushPromises()
+          expect(wrapper.findComponent({ name: 'TemplateManagerDialog' }).vm.$.uid).toBe(dialog.vm.$.uid)
+          expect(dialog.props('open')).toBe(false)
+        } finally {
+          vi.useRealTimers()
+        }
       }
     } finally {
       wrapper.unmount()

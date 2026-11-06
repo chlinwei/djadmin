@@ -190,7 +190,9 @@ const handleCancel = () => {
 }
 
 const handleAfterClose = () => {
+    if (props.open) return
     form.value = createInitialForm()
-    formRef.value = null
+    // Modal 保留表单实例，引用由 Vue 管理，重新打开仍需用它校验。
+    formRef.value?.clearValidate()
 }
 </script>

@@ -2,6 +2,20 @@
 
 > 适用范围：`fronted/src/layout/`、`fronted/src/router/index.js`、`fronted/src/store/index.js` 的多标签页浏览与页面缓存逻辑。
 
+## Vue 运行时与弹层
+
+前端使用 Vue `^3.5.45`，锁文件固定当前安装版本为 `3.5.45`；`@vue/runtime-core`、
+`@vue/runtime-dom`、编译器和服务端渲染器保持同版本，Ant Design Vue 为 `4.2.6`。
+升级通过 npm 更新依赖及锁文件，不手改 `node_modules`，不禁用页面缓存或全局改写弹层容器。
+
+Vue 3.5.13 存在 [Teleport 热更新缺陷 #12816](https://github.com/vuejs/core/issues/12816)：
+弹层内响应式更新后再热更新插槽，嵌套静态节点引用可能丢失，触发 `__vnode` 空引用。
+该缺陷在 3.5.14 修复；`teleportHmr.spec.js` 覆盖这一更新顺序，验证插槽内容确实更新，
+而不只检查异常是否被捕获。应用弹窗回归同时覆盖真实下拉框打开、缓存页切换、关闭重开和选项选择。
+
+依赖升级后须重启 Vite 并完整刷新浏览器，使预构建依赖和旧 KeepAlive 实例同时失效；
+仅组件热更新不能修复已损坏的浏览器内存状态。
+
 ## 数据流
 
 1. 菜单点击 / 路由变化 → `store.state.tabs` 记录 `{title, key}`，`key` 为路由 `fullPath`（可能带 query）。
@@ -30,7 +44,9 @@
 - `Cannot set properties of null (setting '__vnode')`（`patchElement`）
 - `Cannot read properties of null (reading 'type' / 'emitsOptions')`（`shouldUpdateComponent`）
 
-均伴随 `Unhandled error during execution of component update`。根因是 `include` 名单与实际组件 `name` 不一致（最常见于别名路由未归一），而不是页面本身的数据逻辑。
+均可能伴随 `Unhandled error during execution of component update`。这些堆栈不唯一对应缓存名问题：
+应区分路由缓存名不匹配、弹层锚点生命周期冲突和 Vue 热更新缺陷，不能仅凭 `__vnode` 或
+`insertBefore` 错误归因于 `KeepAlive` 或 `getPopupContainer`。
 
 ## 与虚拟滚动（rc-virtual-list）的冲突（2026-09-21）
 

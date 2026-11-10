@@ -229,8 +229,7 @@
                         </template>
                         <template v-else-if="column.key === 'action'">
                             <div :key="record.id">
-                                <!-- 只读只有详情。隐藏的操作列和 Tooltip 浮层在页面缓存切换时会丢掉 DOM 锚点。 -->
-                                <a-tooltip v-if="onlyHostDetailAction" title="查看详情" placement="top" :get-popup-container="getActionPopupContainer">
+                                <a-tooltip v-if="onlyHostDetailAction" title="查看详情" placement="top">
                                     <a-button type="link" size="small" class="host-detail-action detail-action" @click="openDetail(record.id)">
                                         <FontAwesomeIcon :icon="['fas', 'eye']" />
                                         <span>详情</span>
@@ -238,7 +237,7 @@
                                 </a-tooltip>
                                 <a-row v-else :gutter="6" class="action_row" :wrap="false">
                                     <a-col v-permission="'assets:hosts:view'">
-                                        <a-tooltip title="查看详情" placement="top" :get-popup-container="getActionPopupContainer">
+                                        <a-tooltip title="查看详情" placement="top">
                                             <a-button type="link" size="small" class="host-detail-action detail-action" @click="openDetail(record.id)">
                                                 <FontAwesomeIcon :icon="['fas', 'eye']" />
                                                 <span>详情</span>
@@ -260,7 +259,7 @@
                                         </a-tooltip>
                                     </a-col>
                                     <a-col v-permission="'assets:hosts:execute'">
-                                        <a-tooltip :title="getWebSshActionTooltip(record)" placement="top" :get-popup-container="getActionPopupContainer">
+                                        <a-tooltip :title="getWebSshActionTooltip(record)" placement="top">
                                             <a-button :disabled="!canOpenWebSsh(record)" @click="openWebSsh(record)">
                                                 <FontAwesomeIcon :icon="['fas', 'terminal']" />
                                             </a-button>
@@ -611,8 +610,6 @@ const MAX_HOST_LIST_REFRESH_INTERVAL_SECONDS = 300
 const hostListRefreshIntervalSeconds = ref(DEFAULT_HOST_LIST_REFRESH_INTERVAL_SECONDS)
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
-// 操作提示挂在按钮父节点，避免浮层挂到 body 后在页面缓存切换时锚点已被移走。
-const getActionPopupContainer = (triggerNode) => triggerNode?.parentNode || document.body
 
 const state = reactive({
     selectedRowKeys: [],

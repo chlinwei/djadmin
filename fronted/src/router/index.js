@@ -237,8 +237,7 @@ export const staticRouterMap = [
 ]
 
 // KeepAlive 的 include 按“组件名”匹配，而本项目几乎所有页面都是 index.vue 且未声明 name，
-// Vue 会把它们的名字统统推断成 index。同名会让“关闭一个标签”连带剪掉其他同名页面的缓存，
-// 甚至卸载掉正在挂载的实例，表现为 unmount 阶段读 null 的 type/subTree/parentNode。
+// Vue 会把它们的名字统统推断成 index，无法按名字分别控制各页面的缓存资格。
 // 按路由记录路径盖一个唯一名字，使缓存项与 include 一一对应。
 export function keepAliveNameOf(path) {
     const normalized = String(path || '').replace(/^\/+/, '').replace(/[^A-Za-z0-9]+/g, '_')
@@ -247,7 +246,7 @@ export function keepAliveNameOf(path) {
 
 // 别名路由（alias）会生成独立 record，其 record.path 是别名，但与它共享同一个组件对象；
 // 组件名是按原 route.path 盖的，所以取缓存名必须先归一到 aliasOf.path，否则 include 与
-// 组件名对不上：页面不会被缓存，且在标签增删时会错误地 prune 已缓存实例导致 vnode 崩溃。
+// 组件名对不上，页面不会被缓存，已有缓存也可能被提前释放。
 export function keepAliveNameOfRecord(record) {
     if (!record) return ''
     const base = record.aliasOf && record.aliasOf.path ? record.aliasOf.path : record.path

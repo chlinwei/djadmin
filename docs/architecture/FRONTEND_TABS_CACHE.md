@@ -31,14 +31,16 @@ Vue 3.5.13 存在 [Teleport 热更新缺陷 #12816](https://github.com/vuejs/cor
 ## 关键决策
 
 - **唯一组件名**：项目几乎全是 `index.vue` 且未声明 `name`，Vue 会把它们推断成同名 `index`，导致关闭一个标签连带剪掉其他页面缓存。必须按路由路径盖唯一名（`view_<path 归一化>`），使缓存项与 `include` 一一对应。
-- **别名归一（关键）**：`alias` 路由在 vue-router 中会生成独立 record，`record.path` 是别名，但它与原名路由共享同一个组件对象，组件名是按原 `route.path` 盖的。取缓存名必须用 `keepAliveNameOfRecord(record)`（内部走 `record.aliasOf.path || record.path`）归一，否则别名页面的 `include` 名与组件名对不上：页面不缓存，且标签增删时会错误 prune 缓存实例，触发 `Cannot set properties of null (setting '__vnode')` / `Cannot read properties of null (reading 'type'/'emitsOptions')`。
+- **别名归一（关键）**：`alias` 路由在 vue-router 中会生成独立 record，`record.path` 是别名，但它与原名路由共享同一个组件对象，组件名是按原 `route.path` 盖的。取缓存名必须用 `keepAliveNameOfRecord(record)`（内部走 `record.aliasOf.path || record.path`）归一，否则别名页面的 `include` 名与组件名对不上，页面不缓存或已有缓存被提前释放。
 - **`include` 组成**：`include = 当前路由缓存名 + 所有标签页缓存名`。`tab.key` 存的是 `fullPath`，取缓存名前先 `router.resolve(path).matched` 解析到路由记录再按上一条归一。
-- **稳定引用**：`include` 数组内容未变时必须复用同一引用，否则每次路由跳转都会触发 `KeepAlive.pruneCache` 卸载缓存实例。
-- **关闭当前/全部标签的顺序**：`remove_tab` / `close_all_tabs` 会先于 `router.push` 生效。此时当前路由仍是旧页面，`include` 必须继续包含当前路由缓存名，等路由真正切换后再剔除该缓存；否则会卸载正在挂载中的实例。
+- **缓存名单更新**：`include` 由 computed 直接返回名单，不另存数组引用。Vue 在名单变化后重新筛选缓存，只剔除不再匹配的项；数组引用变化不等于缓存实例被卸载。
+- **关闭当前/全部标签的顺序**：`remove_tab` / `close_all_tabs` 会先于 `router.push` 生效。此时当前路由仍是旧页面，`include` 继续包含当前路由缓存名，等导航完成后再释放其缓存资格。
+
+`layout/index.spec.js` 使用真实 RouterView 和 KeepAlive 验证名单重算、往返切换、关闭非当前标签、关闭全部标签和带 query/hash 的别名标签，检查页面状态保留及实际卸载时机。
 
 ## 失败语义
 
-`include` 与组件名不匹配时会错误触发 `KeepAlive.pruneCache`，卸载正在挂载或仍在复用的实例，Vue 在后续 patch 时拿到 `el` 为 `null` 的旧 vnode，表现为：
+`include` 与组件名不匹配会导致页面不缓存或已有缓存被释放；这是缓存资格问题，不能据此断言 Vue 会产生空节点。以下异常需要结合复现步骤和调用栈定位：
 
 - `Cannot read properties of null (reading 'parentNode')`
 - `Cannot set properties of null (setting '__vnode')`（`patchElement`）

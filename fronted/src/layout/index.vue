@@ -59,12 +59,9 @@ function resolveTabCacheName(tabKey) {
     }
 }
 
-// 关闭当前标签、关闭全部标签时 store 会先于路由跳转更新，若此时 include 立刻剔除当前
-// 正在挂载的组件名，KeepAlive.pruneCache 会去卸载挂载中的实例，Vue 在移除 DOM 时读到
-// null 的 parentNode 而抛错。把当前路由的缓存名始终并入 include，等路由真正切换后再释放。
+// 标签先关闭、路由后切换；在导航完成前保留当前页的缓存资格，切换后再释放。
 const currentRouteCacheName = computed(() => cacheNameOfMatched(route.matched))
 
-let cachedIncludes = []
 const tab_includes = computed(()=>{
     const names = []
     const currentName = currentRouteCacheName.value
@@ -73,12 +70,7 @@ const tab_includes = computed(()=>{
         const name = resolveTabCacheName(tab.key)
         if (name && !names.includes(name)) names.push(name)
     })
-    // include 的引用一变就会触发 KeepAlive 的 pruneCache 并卸载缓存实例；
-    // 内容没变时必须复用同一个数组引用，否则每次路由跳转都会重跑一遍卸载流程。
-    const unchanged = names.length === cachedIncludes.length
-        && names.every((name, index) => name === cachedIncludes[index])
-    if (!unchanged) cachedIncludes = names
-    return cachedIncludes
+    return names
 })
 
 

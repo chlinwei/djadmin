@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { reactive } from 'vue'
+import { defineComponent, h, KeepAlive, reactive, ref } from 'vue'
 import { mount, shallowMount } from '@vue/test-utils'
 
 const routerPush = vi.hoisted(() => vi.fn())
@@ -155,13 +155,18 @@ describe('Host Agent 凭证安装与主机编辑保存', () => {
     vi.clearAllMocks()
   })
 
-  it.each([false, true])('详情入口在管理权限=%s 时保持相同样式、顶部提示和可点击行为', async (canUpdate) => {
+  it.each([false, true])('缓存切换后详情入口在管理权限=%s 时保持默认弹层、顶部提示和可点击行为', async (canUpdate) => {
     const originalPermissions = store.state.perms
-    store.state.perms = ['assets:hosts:view', ...(canUpdate ? ['assets:hosts:update'] : [])]
+    const permissions = ['assets:hosts:view', ...(canUpdate ? ['assets:hosts:update', 'assets:hosts:execute'] : [])]
+    store.state.perms = permissions
     hostApi.getHostList.mockResolvedValueOnce({
       data: { code: 200, data: { results: [{ id: 7, agent_online: false, instance_name: 'host-7' }], count: 1 } },
     })
-    const wrapper = mount(HostPage, {
+    const active = ref(true)
+    const CachedHostPage = defineComponent({
+      setup: () => () => h(KeepAlive, null, { default: () => active.value ? h(HostPage) : h('div') }),
+    })
+    const wrapper = mount(CachedHostPage, {
       attachTo: document.body,
       global: {
         components: { AButton: Button, ACol: Col, ARow: Row, ASpin: Spin, ATable: Table, ATooltip: Tooltip, AEmpty: Empty },
@@ -180,14 +185,31 @@ describe('Host Agent 凭证安装与主机编辑保存', () => {
       expect(entry.get('font-awesome-icon-stub').attributes('icon')).toBe('fas,eye')
       const tooltip = wrapper.findAllComponents(Tooltip).find((item) => item.props('title') === '查看详情')
       expect(tooltip.props('placement')).toBe('top')
-      await entry.trigger('mouseenter')
-      await new Promise((resolve) => setTimeout(resolve, 150))
-      await flushPromises()
-      expect(document.querySelector('.ant-tooltip-inner')?.textContent).toBe('查看详情')
-      await entry.trigger('click')
-      await flushPromises()
-      expect(routerPush).toHaveBeenCalledWith({ path: '/assets/hosts/detail/7' })
-      expect(store.state.perms).toEqual(['assets:hosts:view', ...(canUpdate ? ['assets:hosts:update'] : [])])
+      for (const actionTooltip of wrapper.findAllComponents(Tooltip)) {
+        expect(actionTooltip.props('getPopupContainer')).toBeUndefined()
+      }
+      const instanceId = wrapper.findComponent(HostPage).vm.$.uid
+      for (let cycle = 0; cycle < 3; cycle += 1) {
+        await entry.trigger('mouseenter')
+        await new Promise((resolve) => setTimeout(resolve, 150))
+        await flushPromises()
+        const popup = Array.from(document.querySelectorAll('.ant-tooltip'))
+          .find((element) => element.textContent === '查看详情' && !element.classList.contains('ant-tooltip-hidden'))
+        expect(popup).toBeTruthy()
+        expect(document.body.contains(popup)).toBe(true)
+        expect(wrapper.element.contains(popup)).toBe(false)
+        await entry.trigger('click')
+        await flushPromises()
+        expect(routerPush).toHaveBeenLastCalledWith({ path: '/assets/hosts/detail/7' })
+        active.value = false
+        await flushPromises()
+        active.value = true
+        await flushPromises()
+        expect(wrapper.findComponent(HostPage).vm.$.uid).toBe(instanceId)
+        await entry.trigger('mouseleave')
+        await new Promise((resolve) => setTimeout(resolve, 150))
+      }
+      expect(store.state.perms).toEqual(permissions)
     } finally {
       wrapper.unmount()
       store.state.perms = originalPermissions

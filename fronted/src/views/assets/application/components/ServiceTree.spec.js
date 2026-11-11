@@ -159,6 +159,7 @@ describe('ServiceTree', () => {
     expect(wrapper.find('.service-tree-icon--project').exists()).toBe(true)
     expect(wrapper.find('.service-tree-icon--system').exists()).toBe(true)
     expect(wrapper.find('.service-tree-icon--environment').exists()).toBe(true)
+    expect(wrapper.findAll('.service-tree-disabled-tag')).toHaveLength(0)
 
     const environmentTreenode = wrapper.findAll('.ant-tree-treenode')
       .find((node) => node.text().includes('生产环境'))
@@ -205,21 +206,21 @@ describe('ServiceTree', () => {
       const projectFilter = selects.find((component) => component.classes().includes('service-tree-project-filter'))
       const environmentFilter = selects.find((component) => component.classes().includes('service-tree-environment-filter'))
       const optionIds = () => environmentFilter.props('options').map((option) => option.value)
-      expect(optionIds()).toEqual([71, 72, 73])
+      expect(optionIds()).toEqual([71, 72, 73, 74])
 
       await environmentFilter.vm.$emit('change', [71])
       await flushPromises()
       await projectFilter.vm.$emit('change', [301])
       expect(wrapper.emitted('select').at(-1)[0]).toMatchObject({ projectIds: [301], environmentIds: [] })
       await flushPromises()
-      expect(optionIds()).toEqual([72])
+      expect(optionIds()).toEqual([72, 74])
       expect(environmentFilter.props('value')).toEqual([])
 
       await environmentFilter.vm.$emit('change', [72])
       await flushPromises()
       await projectFilter.vm.$emit('change', [301, 302])
       await flushPromises()
-      expect(optionIds()).toEqual([71, 72])
+      expect(optionIds()).toEqual([71, 72, 74])
       expect(environmentFilter.props('value')).toEqual([72])
 
       await projectFilter.vm.$emit('change', [302])
@@ -233,7 +234,104 @@ describe('ServiceTree', () => {
       expect(optionIds()).toEqual([])
       await projectFilter.vm.$emit('change', [])
       await flushPromises()
-      expect(optionIds()).toEqual([71, 72, 73])
+      expect(optionIds()).toEqual([71, 72, 73, 74])
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('keeps disabled projects and environments queryable and marks only their own nodes', async () => {
+    applicationApi.getProjectList.mockResolvedValue(listResponse([
+      { id: 301, name: '订单项目', business_systems: [7], enabled: false },
+      { id: 302, name: '其他项目', business_systems: [8], enabled: true },
+    ]))
+    applicationApi.getBusinessSystemList.mockResolvedValue(listResponse([
+      { id: 7, name: '订单系统', project: 301, project_name: '订单项目' },
+      { id: 8, name: '其他系统', project: 302, project_name: '其他项目' },
+    ]))
+    applicationApi.getBusinessEnvironmentList.mockResolvedValue(listResponse([
+      { id: 71, name: '生产环境', enabled: false },
+      { id: 72, name: '测试环境', enabled: true },
+    ]))
+    const wrapper = mount(ServiceTree, {
+      props: { groupByProject: true },
+      global: { plugins: [Antd], stubs: { FontAwesomeIcon: true } },
+    })
+    try {
+      await flushPromises()
+      const selects = wrapper.findAllComponents({ name: 'ASelect' })
+      const projectFilter = selects.find((component) => component.classes().includes('service-tree-project-filter'))
+      const environmentFilter = selects.find((component) => component.classes().includes('service-tree-environment-filter'))
+      expect(projectFilter.props('options')).toEqual([
+        { value: 301, label: '订单项目（已停用）' },
+        { value: 302, label: '其他项目' },
+      ])
+      expect(environmentFilter.props('options')).toEqual([
+        { value: 71, label: '生产环境（已停用）' },
+        { value: 72, label: '测试环境' },
+      ])
+      expect(selects.every((select) => select.props('optionFilterProp') === 'label')).toBe(true)
+      const nodes = () => wrapper.findAll('.ant-tree-node-content-wrapper')
+      const findNode = (title) => nodes().find((node) => node.find('.service-tree-node-label').text() === title)
+      expect(wrapper.findAll('.service-tree-disabled-tag')).toHaveLength(2)
+      expect(findNode('订单项目').find('.service-tree-disabled-tag').text()).toBe('已停用')
+      expect(findNode('生产环境 (1)').find('.service-tree-disabled-tag').text()).toBe('已停用')
+      for (const title of ['其他项目', '测试环境 (1)', '订单系统', '订单 API', 'order-prod-1 [主机: 主机-11]']) {
+        expect(findNode(title).find('.service-tree-disabled-tag').exists()).toBe(false)
+      }
+      await findNode('订单项目').find('.service-tree-disabled-tag').trigger('click')
+      expect(wrapper.emitted('select').at(-1)[0]).toEqual({
+        nodeType: 'project', projectId: 301, nodeTitle: '订单项目',
+      })
+      await findNode('生产环境 (1)').find('.service-tree-disabled-tag').trigger('click')
+      expect(wrapper.emitted('select').at(-1)[0]).toMatchObject({
+        nodeType: 'environment', projectId: 301, environment: 71, nodeTitle: '生产环境',
+      })
+      await projectFilter.vm.$emit('change', [301])
+      await flushPromises()
+      await environmentFilter.vm.$emit('change', [71])
+      await flushPromises()
+      expect(wrapper.emitted('select').at(-1)[0]).toMatchObject({ projectIds: [301], environmentIds: [71] })
+      expect(wrapper.text()).toContain('order-prod-1')
+      expect(wrapper.text()).not.toContain('order-test-1')
+      expect(wrapper.text()).not.toContain('其他系统')
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('preserves selected query scopes when project and environment enabled states change on refresh', async () => {
+    applicationApi.getBusinessSystemList.mockResolvedValue(listResponse([
+      { id: 7, name: '订单系统', project: 301, project_name: '订单项目' },
+    ]))
+    const wrapper = mount(ServiceTree, {
+      props: { groupByProject: true },
+      global: { plugins: [Antd], stubs: { FontAwesomeIcon: true } },
+    })
+    try {
+      await flushPromises()
+      const selects = wrapper.findAllComponents({ name: 'ASelect' })
+      const projectFilter = selects.find((component) => component.classes().includes('service-tree-project-filter'))
+      const environmentFilter = selects.find((component) => component.classes().includes('service-tree-environment-filter'))
+      await projectFilter.vm.$emit('change', [301])
+      await flushPromises()
+      await environmentFilter.vm.$emit('change', [71])
+      await flushPromises()
+      for (const enabled of [false, true]) {
+        applicationApi.getProjectList.mockResolvedValue(listResponse([
+          { id: 301, name: '订单项目', business_systems: [7], enabled },
+        ]))
+        applicationApi.getBusinessEnvironmentList.mockResolvedValue(listResponse([
+          { id: 71, name: '生产环境', enabled },
+          { id: 72, name: '测试环境', enabled: true },
+        ]))
+        await wrapper.vm.refresh()
+        await flushPromises()
+        expect(projectFilter.props('value')).toEqual([301])
+        expect(environmentFilter.props('value')).toEqual([71])
+        expect(wrapper.findAll('.service-tree-disabled-tag')).toHaveLength(enabled ? 0 : 2)
+        expect(wrapper.emitted('select').at(-1)[0]).toMatchObject({ projectIds: [301], environmentIds: [71] })
+      }
     } finally {
       wrapper.unmount()
     }

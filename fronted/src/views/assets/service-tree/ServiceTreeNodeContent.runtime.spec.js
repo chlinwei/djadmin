@@ -162,6 +162,8 @@ describe('service-tree non-blocking runtime checks', () => {
     expect(refreshApplicationServiceRuntimeStatus).toHaveBeenCalledTimes(1)
     expect(getApplicationDeploymentList).toHaveBeenCalledTimes(1)
     expect(wrapper.vm.summaryStatus).toEqual({ label: '1 个异常实例', color: 'error' })
+    expect(wrapper.vm.abnormalRows.map((item) => item.id)).toEqual([10])
+    wrapper.vm.abnormalDetailsOpen = true
     getApplicationDeploymentList.mockResolvedValue(list([{ ...deployment(10, 'running'), instance_name: 'changed-metadata' }]))
     check.resolve(response({ summary: { running: 1 } }))
     await flushPromises()
@@ -171,6 +173,8 @@ describe('service-tree non-blocking runtime checks', () => {
     expect(wrapper.vm.descendants[0].runtime_status).toBe('running')
     expect(wrapper.vm.runningCount).toBe(1)
     expect(wrapper.vm.summaryStatus).toEqual({ label: '运行正常', color: 'success' })
+    expect(wrapper.vm.abnormalRows).toEqual([])
+    expect(wrapper.vm.abnormalCount).toBe(0)
     expect(wrapper.vm.loading).toBe(false)
     expect(wrapper.vm.runtimeRefreshing).toBe(false)
     expect(getApplicationService).toHaveBeenCalledTimes(1)

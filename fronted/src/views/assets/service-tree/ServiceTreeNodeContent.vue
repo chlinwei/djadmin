@@ -48,7 +48,10 @@
             </a-button>
           </a-tooltip>
         </template>
-        <a-tag :color="summaryStatus.color">{{ summaryStatus.label }}</a-tag>
+        <a-tag :color="summaryStatus.color">
+          <a v-if="abnormalCount > 0" class="abnormal-summary-link" href="#" @click.prevent="abnormalDetailsOpen = true">{{ summaryStatus.label }}</a>
+          <template v-else>{{ summaryStatus.label }}</template>
+        </a-tag>
       </a-space>
     </header>
 
@@ -56,7 +59,10 @@
       <div v-if="metrics.length" class="metric-band" :class="{ 'metric-band--instance': scope.nodeType === 'deployment' }">
         <div v-for="metric in metrics" :key="metric.label" class="metric-item">
           <span class="metric-label">{{ metric.label }}</span>
-          <strong :class="{ 'metric-danger': metric.danger }">{{ metric.value }}</strong>
+          <strong :class="{ 'metric-danger': metric.danger }">
+            <a v-if="metric.label === '异常实例' && metric.value > 0" class="abnormal-count-link" href="#" aria-label="查看异常实例明细" @click.prevent="abnormalDetailsOpen = true">{{ metric.value }}</a>
+            <template v-else>{{ metric.value }}</template>
+          </strong>
         </div>
       </div>
 
@@ -246,6 +252,38 @@
 
       <a-empty v-if="!loading && scope.nodeType === 'deployment' && !detail" :image="simpleImage" description="实例不存在或已删除" />
     </a-spin>
+
+    <a-modal v-model:open="abnormalDetailsOpen" :title="`异常实例明细（${abnormalCount}）`" :width="1180" :footer="null" centered destroy-on-close>
+      <a-alert class="abnormal-details-tip" type="info" show-icon message="异常统计包含“已停止”和“检查失败”，不等同于业务故障。以下为最近一次保存的检查结果，打开明细不会执行状态检查。" />
+      <a-table class="abnormal-details-table" row-key="id" :columns="abnormalColumns" :data-source="abnormalRows" :pagination="{ pageSize: 10, showSizeChanger: false }" :scroll="{ x: 1600 }" size="small" :locale="{ ...tableLocale, emptyText: '当前范围暂无异常实例' }">
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'instance_name'">
+            <a class="abnormal-instance-link" href="#" @click.prevent="navigateToAbnormalDeployment(record, record.relatedServices[0])">{{ record.instance_name }}</a>
+          </template>
+          <template v-else-if="column.key === 'related_services'">
+            <div v-for="service in record.relatedServices" :key="service.id">
+              <a class="abnormal-service-link" href="#" @click.prevent="navigateToAbnormalDeployment(record, service)">
+                {{ service.project_name }} / {{ service.business_system_name || scope.businessSystemName || '-' }} / {{ service.environment_name || '未配置环境' }} / {{ service.name }}
+              </a>
+            </div>
+            <span v-if="!record.relatedServices.length">未找到关联服务</span>
+          </template>
+          <template v-else-if="column.key === 'host'">
+            <div>{{ deploymentHostName(record) }}</div>
+            <div>{{ record.host_ip || '-' }}</div>
+          </template>
+          <template v-else-if="column.key === 'runtime_status'">
+            <a-badge :status="runtimeStatus[record.runtime_status].status" :text="runtimeStatus[record.runtime_status].label" />
+          </template>
+          <template v-else-if="column.key === 'last_status_check_time'">
+            {{ formatStatusCheckTime(record.last_status_check_time) }}
+          </template>
+          <template v-else-if="column.key === 'runtime_status_output'">
+            <pre class="abnormal-output">{{ record.runtime_status_output || '未保存诊断输出' }}</pre>
+          </template>
+        </template>
+      </a-table>
+    </a-modal>
   </section>
 </template>
 
@@ -256,6 +294,8 @@ import { useRouter } from 'vue-router'
 import { Empty, message } from 'ant-design-vue'
 import { RightOutlined } from '@ant-design/icons-vue'
 import { tableLocale } from '@/util/tableStyle'
+import { formatTimeWithTimezone } from '@/util/timezone'
+import store from '@/store'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import {
   getApplicationService,
@@ -302,8 +342,10 @@ const hostDiskColumns = [
   { title: '使用率', key: 'usage', width: 90, align: 'right' },
 ]
 const detail = ref(null)
+const abnormalDetailsOpen = ref(false)
 const descendants = ref([])
 const services = ref([])
+const businessSystems = ref([])
 let loadSequence = 0
 let runtimeRefreshTimer = null
 const runtimeRefreshing = ref(false)
@@ -371,6 +413,14 @@ const deploymentColumns = [
   { title: '运行状态', key: 'runtime_status', width: 120 },
   { title: '操作', key: 'deployment_action', width: 90, fixed: 'right' },
 ]
+const abnormalColumns = [
+  { title: '部署实例', key: 'instance_name', width: 180 },
+  { title: '项目 / 业务系统 / 环境 / 逻辑服务', key: 'related_services', width: 380 },
+  { title: '主机 / 地址', key: 'host', width: 180 },
+  { title: '运行状态', key: 'runtime_status', width: 110 },
+  { title: '上次检查时间', key: 'last_status_check_time', width: 190 },
+  { title: '诊断输出', key: 'runtime_status_output', width: 560 },
+]
 const columns = computed(() => {
   const baseColumns = ({
     all: [
@@ -400,9 +450,32 @@ const levelLabel = computed(() => ({
 }[props.scope.nodeType] || '服务树'))
 const tableWidth = computed(() => ({ all: 990, project: 810, businessSystem: 460, environment: 1350, service: 1460 }[props.scope.nodeType] || 800))
 const breadcrumbs = computed(() => buildServiceTreeBreadcrumbs(props.scope))
-const abnormalCount = computed(() => descendants.value.filter((item) => (
+const abnormalDeployments = computed(() => descendants.value.filter((item) => (
   ['stopped', 'error'].includes(item.runtime_status)
-)).length)
+)))
+const abnormalCount = computed(() => abnormalDeployments.value.length)
+// 明细与数字使用同一范围和异常口径；共享实例只计一行，保留其在当前范围内的全部服务关联。
+const abnormalRows = computed(() => {
+  const systemById = new Map(businessSystems.value.map((system) => [String(system.id), system]))
+  const scopedServices = (props.scope.nodeType === 'service' ? [entity.value].filter(Boolean) : services.value)
+    .map((service) => {
+      const system = systemById.get(String(service.business_system))
+      return {
+        ...service,
+        project: system?.project,
+        project_name: system?.project_name || (system?.project ? `项目 #${system.project}` : system ? '未分配项目' : '项目归属未知'),
+      }
+    })
+  const serviceById = new Map(scopedServices.map((service) => [String(service.id), service]))
+  return abnormalDeployments.value.map((deployment) => ({
+    ...deployment,
+    relatedServices: props.scope.nodeType === 'service' ? scopedServices
+      : (deployment.application_service_ids || []).map((id) => serviceById.get(String(id))).filter(Boolean),
+  }))
+})
+const formatStatusCheckTime = (value) => value
+  ? formatTimeWithTimezone(value, store.state.user?.timezone || 'Asia/Shanghai')
+  : '无检查时间记录'
 const runningCount = computed(() => descendants.value.filter((item) => item.runtime_status === 'running').length)
 const metrics = computed(() => {
   if (props.scope.nodeType === 'all' || props.scope.nodeType === 'project') return [
@@ -507,6 +580,21 @@ function navigateToChild(record) {
       ...childScope,
     })
   }
+}
+
+function navigateToAbnormalDeployment(deployment, service) {
+  abnormalDetailsOpen.value = false
+  emit('navigate', {
+    nodeType: 'deployment', deploymentId: deployment.id, nodeTitle: deployment.instance_name,
+    projectId: service ? service.project : props.scope.projectId,
+    projectName: service ? service.project_name : props.scope.projectName,
+    businessSystemId: service?.business_system ?? props.scope.businessSystemId,
+    businessSystemName: service?.business_system_name || props.scope.businessSystemName,
+    environment: service?.environment ?? props.scope.environment,
+    environmentName: service?.environment_name || props.scope.environmentName,
+    applicationServiceId: service?.id ?? props.scope.applicationServiceId,
+    serviceName: service?.name || props.scope.serviceName,
+  })
 }
 
 function getChildRowProps(record) {
@@ -630,6 +718,7 @@ function startRuntimeRefresh() {
 
 function stopRuntimeRefresh() {
   viewActive = false
+  abnormalDetailsOpen.value = false
   ++loadSequence
   loading.value = false
   runtimeRefreshing.value = false
@@ -695,6 +784,7 @@ function openWebSSH(deployment) {
 
 async function loadNode() {
   const sequence = ++loadSequence
+  abnormalDetailsOpen.value = false
   loading.value = true
   rows.value = []
   entity.value = null
@@ -704,12 +794,14 @@ async function loadNode() {
   detail.value = null
   descendants.value = []
   services.value = []
+  businessSystems.value = []
   try {
     let nextRows = []
     let nextEntity = null
     let nextDetail = null
     let nextDescendants = []
     let nextServices = []
+    let nextBusinessSystems = []
     let nextServiceLogs = []
     if (props.scope.nodeType === 'all') {
       const [systemsResult, projectsResult, servicesResult, deploymentsResult] = await Promise.all([
@@ -735,6 +827,7 @@ async function loadNode() {
         (deployment.application_service_ids || []).some((serviceId) => serviceIds.has(serviceId))
       ))
       const visibleSystemIds = new Set(nextServices.map((service) => service.business_system))
+      nextBusinessSystems = systemsResult
       nextRows = systemsResult
         .filter((system) => !projectSystemIds && !environmentIds.size ? true : visibleSystemIds.has(system.id))
         .map((item) => ({ ...item, key: item.id }))
@@ -753,6 +846,7 @@ async function loadNode() {
         (deployment.application_service_ids || []).some((serviceId) => serviceIds.has(serviceId))
       ))
       nextRows = systemsResult.map((item) => ({ ...item, key: item.id }))
+      nextBusinessSystems = systemsResult
     } else if (props.scope.nodeType === 'businessSystem') {
       const [entityResponse, servicesResult, deploymentsResult] = await Promise.all([
         getBusinessSystem(props.scope.businessSystemId),
@@ -760,6 +854,7 @@ async function loadNode() {
         fetchAll(getApplicationDeploymentList, { application_service__business_system: props.scope.businessSystemId }),
       ])
       nextEntity = entityResponse?.data?.data || null
+      nextBusinessSystems = nextEntity ? [nextEntity] : []
       nextServices = servicesResult
       nextDescendants = deploymentsResult
       // 业务系统下先按环境分组展示，跟左侧树的层级保持一致；具体服务留到选中某个环境后再展开。
@@ -793,13 +888,18 @@ async function loadNode() {
       })
     } else if (props.scope.nodeType === 'environment') {
       // 未配置环境的分组 scope.environment 是 null，后端过滤参数不方便传 null，改成整业务系统拉回来再按值比对。
-      const [servicesResult, deploymentsResult] = await Promise.all([
+      const [servicesResult, deploymentsResult, systemResponse] = await Promise.all([
         fetchAll(getApplicationServiceList, { business_system: props.scope.businessSystemId }),
         fetchAll(getApplicationDeploymentList, { application_service__business_system: props.scope.businessSystemId }),
+        getBusinessSystem(props.scope.businessSystemId),
       ])
+      nextBusinessSystems = systemResponse?.data?.data ? [systemResponse.data.data] : []
       const matchesEnvironment = (value) => (value ?? null) === (props.scope.environment ?? null)
       nextServices = servicesResult.filter((service) => matchesEnvironment(service.environment))
-      nextDescendants = deploymentsResult.filter((deployment) => matchesEnvironment(deployment.environment))
+      const serviceIds = new Set(nextServices.map((service) => service.id))
+      nextDescendants = deploymentsResult.filter((deployment) => (
+        (deployment.application_service_ids || []).some((id) => serviceIds.has(id))
+      ))
       nextRows = nextServices.map((item) => ({ ...item, key: item.id }))
     } else if (props.scope.nodeType === 'service') {
       const [entityResponse, deploymentsResult, logConfigResponse] = await Promise.all([
@@ -808,6 +908,10 @@ async function loadNode() {
         getApplicationServiceLogConfig(props.scope.applicationServiceId).catch(() => null),
       ])
       nextEntity = entityResponse?.data?.data || null
+      if (nextEntity?.business_system) {
+        const systemResponse = await getBusinessSystem(nextEntity.business_system)
+        nextBusinessSystems = systemResponse?.data?.data ? [systemResponse.data.data] : []
+      }
       // 模板日志定义用于「日志文件」一节；接口失败时留空，不阻塞节点其他信息。
       nextServiceLogs = logConfigResponse?.data?.data?.logs || []
       const rolesByDeployment = new Map(
@@ -831,6 +935,7 @@ async function loadNode() {
     detail.value = nextDetail
     descendants.value = nextDescendants
     services.value = nextServices
+    businessSystems.value = nextBusinessSystems
     return true
   } catch (error) {
     if (sequence === loadSequence) message.error(error?.message || '节点信息加载失败')
@@ -893,6 +998,16 @@ defineExpose({ refresh })
 .metric-label { color: #687386; font-size: 12px; }
 .metric-item strong { color: #172033; font-size: 22px; font-weight: 600; }
 .metric-item strong.metric-danger { color: #cf1322; }
+.abnormal-count-link,
+.abnormal-summary-link { color: inherit; text-decoration: underline; }
+.abnormal-details-tip { margin-bottom: 12px; }
+.abnormal-output {
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .node-summary { margin-bottom: 20px; }
 .child-section-title {
   display: flex;

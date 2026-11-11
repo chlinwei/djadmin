@@ -22,6 +22,7 @@
         mode="multiple"
         allow-clear
         show-search
+        option-filter-prop="label"
         max-tag-count="responsive"
         :max-tag-placeholder="selectedProjectPlaceholder"
         :options="projectOptions"
@@ -39,6 +40,7 @@
         mode="multiple"
         allow-clear
         show-search
+        option-filter-prop="label"
         max-tag-count="responsive"
         :max-tag-placeholder="selectedEnvironmentPlaceholder"
         :options="environmentOptions"
@@ -88,6 +90,7 @@
               :class="['service-tree-icon', `service-tree-icon--${nodeIconType(node.key)}`]"
             />
             <span class="service-tree-node-label">{{ node.title }}</span>
+            <a-tag v-if="node.configurationDisabled" class="service-tree-disabled-tag">已停用</a-tag>
           </div>
         </template>
       </a-tree>
@@ -338,14 +341,19 @@ const projectServiceRecords = computed(() => {
   return serviceRecords.value.filter((service) => systemIds.has(String(service.business_system)))
 })
 const projectEnvironmentIds = computed(() => new Set(projectServiceRecords.value.map((service) => service.environment)))
+// 查询仍需定位停用资产；只标注配置状态，不隐藏节点或限制节点选择。
 const environmentOptions = computed(() => environmentRecords.value
-  .filter((environment) => environment.enabled
-    && (!selectedProjects.value.length || projectEnvironmentIds.value.has(environment.id)))
-  .map((environment) => ({ label: environment.name, value: environment.id })))
+  .filter((environment) => !selectedProjects.value.length || projectEnvironmentIds.value.has(environment.id))
+  .map((environment) => ({
+    label: `${environment.name}${environment.enabled === false ? '（已停用）' : ''}`,
+    value: environment.id,
+  })))
 const selectedEnvironmentPlaceholder = () => `已选 ${selectedEnvironments.value.length} 个环境`
 const projectOptions = computed(() => projectRecords.value
-  .filter((project) => project.enabled)
-  .map((project) => ({ label: project.name, value: project.id })))
+  .map((project) => ({
+    label: `${project.name}${project.enabled === false ? '（已停用）' : ''}`,
+    value: project.id,
+  })))
 const selectedProjectPlaceholder = () => `已选 ${selectedProjects.value.length} 个项目`
 const currentFilterScope = () => ({
   nodeType: 'all',
@@ -357,6 +365,7 @@ const currentFilterScope = () => ({
 function buildTree(systems, services, deployments) {
   scopeByKey.clear()
   scopeByKey.set('all', currentFilterScope())
+  const environmentById = new Map(environmentRecords.value.map((environment) => [environment.id, environment]))
   const servicesBySystem = new Map()
   const orphanServices = []
   for (const service of services) {
@@ -447,6 +456,7 @@ function buildTree(systems, services, deployments) {
       return {
         key: environmentKey,
         title: `${group.name} (${group.services.length})`,
+        configurationDisabled: environmentById.get(envId)?.enabled === false,
         searchText: group.name.toLowerCase(),
         count: group.services.length,
         selectable: true,
@@ -527,12 +537,16 @@ function buildTree(systems, services, deployments) {
 function groupSystemNodesByProject(systemNodes) {
   const groups = new Map()
   const order = []
+  const projectById = new Map(projectRecords.value.map((project) => [project.id, project]))
   for (const node of systemNodes) {
     const projectId = node._projectId ?? 'unassigned'
     const projectName = node._projectName || '未分配项目'
     if (!groups.has(projectId)) {
       const projectKey = `project:${projectId}`
-      groups.set(projectId, { key: projectKey, title: projectName, searchText: projectName.toLowerCase(), children: [] })
+      groups.set(projectId, {
+        key: projectKey, title: projectName, searchText: projectName.toLowerCase(), children: [],
+        configurationDisabled: projectById.get(projectId)?.enabled === false,
+      })
       order.push(projectId)
       if (projectId !== 'unassigned') {
         scopeByKey.set(projectKey, { nodeType: 'project', projectId, nodeTitle: projectName })
@@ -849,6 +863,10 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.service-tree-disabled-tag {
+  flex: none;
+  margin-inline-end: 0;
 }
 .service-tree-node-count {
   min-width: 20px;

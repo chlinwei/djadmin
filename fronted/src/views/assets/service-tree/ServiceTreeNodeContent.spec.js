@@ -74,6 +74,7 @@ describe('ServiceTreeNodeContent', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    store.state.user.timezone = 'Asia/Shanghai'
     store.state.perms = ['assets:hosts:execute', 'assets:service-tree:manage']
     store.state.role_codes = ['operator']
     applicationApi.refreshApplicationServiceRuntimeStatus.mockResolvedValue({ data: { data: { summary: {} } } })
@@ -83,6 +84,7 @@ describe('ServiceTreeNodeContent', () => {
     applicationApi.getProjectList.mockResolvedValue(listResponse([]))
     applicationApi.getBusinessSystem.mockResolvedValue({ data: { data: {
       id: 7, name: '订单系统', code: 'order-system', owner: '订单团队', enabled: true,
+      project: 5, project_name: '订单项目',
     } } })
     applicationApi.getApplicationServiceList.mockResolvedValue(listResponse([
       { id: 21, name: '订单 API', business_system: 7, environment: 72, environment_name: '测试环境', deployment_count: 2, topology_type: 'cluster', application_name: 'Order API' },
@@ -346,6 +348,163 @@ describe('ServiceTreeNodeContent', () => {
   })
 
   it.each([
+    { nodeType: 'all' },
+    { nodeType: 'project', projectId: 5, projectName: '订单项目' },
+    { nodeType: 'businessSystem', businessSystemId: 7, projectId: 999, projectName: '过期项目' },
+    { nodeType: 'environment', businessSystemId: 7, environment: 72 },
+    { nodeType: 'service', applicationServiceId: 21 },
+  ])('异常数字与明细一致，可查看诊断并定位实例，且只读用户不触发检查 %j', async (scope) => {
+    store.state.perms = ['assets:applications:view']
+    applicationApi.getBusinessSystemList.mockResolvedValue(listResponse([
+      { id: 7, name: '订单系统', project: 5, project_name: '订单项目' },
+    ]))
+    applicationApi.getApplicationServiceList.mockResolvedValue(listResponse([
+      { id: 21, name: '订单 API', business_system: 7, business_system_name: '订单系统', environment: 72, environment_name: '测试环境' },
+      { id: 22, name: '共享服务', business_system: 7, business_system_name: '订单系统', environment: 72, environment_name: '测试环境' },
+    ]))
+    const checkedAt = '2026-11-11T04:00:00Z'
+    const deployments = Array.from({ length: 10 }, (_, index) => ({
+      id: 31 + index, instance_name: `实例-${index + 1}`, host: 31, host_ip: '10.0.0.1',
+      application_service_ids: index === 0 ? [21, 22] : [21],
+      runtime_status: index < 8 ? (index % 2 ? 'stopped' : 'error') : index === 8 ? 'running' : 'unknown',
+      runtime_status_output: index === 1 ? '' : 'Agent 未连接\n<b>完整诊断输出</b>',
+      last_status_check_time: index === 1 ? null : checkedAt,
+    }))
+    applicationApi.getApplicationDeploymentList.mockResolvedValue(listResponse(deployments))
+    const wrapper = mount(ServiceTreeNodeContent, {
+      props: {
+        scope, hostSnapshots: [{ id: 31, instance_name: 'dbserver', system: { hostname: 'dbserver.example' } }],
+      },
+      global: {
+        plugins: [Antd], directives: { permission },
+        stubs: {
+          FontAwesomeIcon: true,
+          AModal: {
+            name: 'AModal',
+            props: ['open', 'title', 'footer'],
+            template: '<section v-if="open" class="abnormal-dialog"><h3>{{ title }}</h3><slot /></section>',
+          },
+        },
+      },
+    })
+    try {
+      await flushPromises()
+      expect(wrapper.find('.abnormal-count-link').text()).toBe('8')
+      expect(wrapper.find('.abnormal-summary-link').text()).toBe('8 个异常实例')
+      const requestCount = applicationApi.getApplicationDeploymentList.mock.calls.length
+      await wrapper.find('.abnormal-count-link').trigger('click')
+      const modal = wrapper.findComponent({ name: 'AModal' })
+      expect(modal.props('footer')).toBeNull()
+      const table = wrapper.findAllComponents({ name: 'ATable' })
+        .find((component) => component.classes().includes('abnormal-details-table'))
+      expect(table.props('dataSource').map((item) => item.id)).toEqual([31, 32, 33, 34, 35, 36, 37, 38])
+      expect(table.props('dataSource')[0].relatedServices).toHaveLength(scope.nodeType === 'service' ? 1 : 2)
+      expect(table.props('columns').find((column) => column.key === 'related_services').title).toBe('项目 / 业务系统 / 环境 / 逻辑服务')
+      expect(table.find('.abnormal-service-link').text()).toBe('订单项目 / 订单系统 / 测试环境 / 订单 API')
+      expect(table.props('scroll').x).toBeGreaterThan(0)
+      expect(table.text()).toContain('已停止')
+      expect(table.text()).toContain('检查失败')
+      expect(table.text()).toContain('订单 API')
+      expect(table.text()).toContain('dbserver')
+      expect(table.text()).toContain('10.0.0.1')
+      expect(table.text()).toContain('未保存诊断输出')
+      expect(table.text()).toContain('无检查时间记录')
+      expect(table.text()).toContain(`${checkedAt} @ Asia/Shanghai`)
+      expect(table.find('.abnormal-output').text()).toBe('Agent 未连接\n<b>完整诊断输出</b>')
+      expect(table.find('.abnormal-output b').exists()).toBe(false)
+      store.state.user.timezone = 'UTC'
+      await flushPromises()
+      expect(table.text()).toContain(`${checkedAt} @ UTC`)
+      expect(applicationApi.getApplicationDeploymentList).toHaveBeenCalledTimes(requestCount)
+      expect(applicationApi.refreshApplicationServiceRuntimeStatus).not.toHaveBeenCalled()
+      const serviceLinks = table.findAll('.abnormal-service-link')
+      await serviceLinks[scope.nodeType === 'service' ? 0 : 1].trigger('click')
+      expect(wrapper.emitted('navigate').at(-1)[0]).toMatchObject({
+        nodeType: 'deployment', deploymentId: 31, nodeTitle: '实例-1',
+        applicationServiceId: scope.nodeType === 'service' ? 21 : 22,
+        businessSystemId: 7, environment: 72, projectId: 5, projectName: '订单项目',
+      })
+      expect(modal.props('open')).toBe(false)
+      await wrapper.find('.abnormal-summary-link').trigger('click')
+      await wrapper.find('.abnormal-instance-link').trigger('click')
+      expect(wrapper.emitted('navigate').at(-1)[0]).toMatchObject({
+        nodeType: 'deployment', deploymentId: 31, applicationServiceId: 21,
+      })
+      await wrapper.find('.abnormal-summary-link').trigger('click')
+      await wrapper.setProps({ scope: { nodeType: 'all', nodeTitle: '其他范围' } })
+      await flushPromises()
+      expect(modal.props('open')).toBe(false)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it.each([
+    { project: 6, project_name: '另一项目', expectedName: '另一项目' },
+    { project: null, project_name: '', expectedName: '未分配项目' },
+  ])('共享实例的同名业务系统按实际项目区分，跳转保留所选归属 %j', async ({ project, project_name, expectedName }) => {
+    applicationApi.getBusinessSystemList.mockResolvedValue(listResponse([
+      { id: 7, name: '同名业务', project: 5, project_name: '订单项目' },
+      { id: 8, name: '同名业务', project, project_name },
+    ]))
+    applicationApi.getApplicationServiceList.mockResolvedValue(listResponse([
+      { id: 21, name: '服务一', business_system: 7, business_system_name: '同名业务', environment: 72 },
+      { id: 22, name: '服务二', business_system: 8, business_system_name: '同名业务', environment: 72 },
+    ]))
+    applicationApi.getApplicationDeploymentList.mockResolvedValue(listResponse([
+      { id: 31, instance_name: '共享实例', application_service_ids: [21, 22], runtime_status: 'error' },
+    ]))
+    const wrapper = mount(ServiceTreeNodeContent, {
+      props: { scope: { nodeType: 'all', projectId: 999, projectName: '不能复用的项目' } },
+      global: { plugins: [Antd], directives: { permission }, stubs: { FontAwesomeIcon: true } },
+    })
+    try {
+      await flushPromises()
+      expect(wrapper.vm.abnormalRows).toHaveLength(1)
+      const row = wrapper.vm.abnormalRows[0]
+      expect(row.relatedServices.map((service) => [service.project, service.project_name])).toEqual([
+        [5, '订单项目'], [project, expectedName],
+      ])
+      wrapper.vm.navigateToAbnormalDeployment(row, row.relatedServices[1])
+      expect(wrapper.emitted('navigate').at(-1)[0]).toMatchObject({
+        nodeType: 'deployment', deploymentId: 31, applicationServiceId: 22,
+        businessSystemId: 8, projectId: project, projectName: expectedName,
+      })
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('异常明细遵循根节点的项目和环境查询范围，不混入其他范围的实例', async () => {
+    applicationApi.getProjectList.mockResolvedValue(listResponse([
+      { id: 5, name: '订单项目', business_systems: [7] },
+      { id: 6, name: '其他项目', business_systems: [8] },
+    ]))
+    applicationApi.getApplicationServiceList.mockResolvedValue(listResponse([
+      { id: 21, business_system: 7, environment: 72, name: '范围内服务' },
+      { id: 22, business_system: 7, environment: 73, name: '其他环境服务' },
+      { id: 23, business_system: 8, environment: 72, name: '其他项目服务' },
+    ]))
+    applicationApi.getApplicationDeploymentList.mockResolvedValue(listResponse([
+      { id: 31, instance_name: '范围内实例', application_service_ids: [21, 22], runtime_status: 'error' },
+      { id: 32, instance_name: '其他环境实例', application_service_ids: [22], runtime_status: 'error' },
+      { id: 33, instance_name: '其他项目实例', application_service_ids: [23], runtime_status: 'stopped' },
+    ]))
+    const wrapper = mount(ServiceTreeNodeContent, {
+      props: { scope: { nodeType: 'all', projectIds: [5], environmentIds: [72] } },
+      global: { plugins: [Antd], directives: { permission }, stubs: { FontAwesomeIcon: true } },
+    })
+    try {
+      await flushPromises()
+      expect(wrapper.vm.abnormalCount).toBe(1)
+      expect(wrapper.vm.abnormalRows.map((item) => item.id)).toEqual([31])
+      expect(wrapper.vm.abnormalRows[0].relatedServices.map((item) => item.id)).toEqual([21])
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it.each([
     ['只读', ['assets:applications:view', 'assets:hosts:view'], ['readonly'], false, false],
     ['仅管理', ['assets:service-tree:manage'], ['operator'], true, false],
     ['仅终端执行', ['assets:hosts:execute'], ['operator'], false, true],
@@ -427,6 +586,7 @@ describe('ServiceTreeNodeContent', () => {
         expect(tag.text()).toBe(label)
         expect(tag.props('color')).toBe(color)
         expect(wrapper.vm.descendants).toHaveLength(statuses.length)
+        expect(wrapper.find('.abnormal-count-link').exists()).toBe(statuses.some((status) => ['stopped', 'error'].includes(status)))
       }
       expect(applicationApi.refreshApplicationServiceRuntimeStatus).not.toHaveBeenCalled()
     } finally {

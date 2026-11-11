@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -79,11 +80,21 @@ type filebeatCheckedFile struct {
 }
 
 type filebeatPathScanner struct {
-	ctx     context.Context
-	files   []filebeatCheckedFile
-	dirs    int
-	entries int
-	matches int
+	ctx        context.Context
+	files      []filebeatCheckedFile
+	dirs       int
+	entries    int
+	matches    int
+	exclusions []*regexp.Regexp
+}
+
+func (scanner *filebeatPathScanner) excluded(path string, directory bool) bool {
+	for _, exclusion := range scanner.exclusions {
+		if exclusion.MatchString(path) || (directory && exclusion.MatchString(strings.TrimSuffix(path, "/")+"/")) {
+			return true
+		}
+	}
+	return false
 }
 
 // filepath.Glob ignores directory I/O errors; a safety check must instead fail
@@ -91,6 +102,10 @@ type filebeatPathScanner struct {
 func (scanner *filebeatPathScanner) walk(base string, segments []string, visit func(string, os.FileInfo) error) error {
 	if err := scanner.ctx.Err(); err != nil {
 		return err
+	}
+	// Excluded directories must not consume scan budgets or enter overlap checks.
+	if scanner.excluded(base, len(segments) > 0) {
+		return nil
 	}
 	if len(segments) == 0 {
 		info, err := os.Stat(base)
@@ -111,6 +126,9 @@ func (scanner *filebeatPathScanner) walk(base string, segments []string, visit f
 	segment := segments[0]
 	if !strings.ContainsAny(segment, "*?[\\") {
 		path := filepath.Join(base, segment)
+		if scanner.excluded(path, len(segments) > 1) {
+			return nil
+		}
 		if len(segments) > 1 {
 			info, err := os.Stat(path)
 			if errors.Is(err, os.ErrNotExist) {
@@ -160,6 +178,9 @@ func (scanner *filebeatPathScanner) walk(base string, segments []string, visit f
 				continue
 			}
 			path := filepath.Join(base, entry.Name())
+			if scanner.excluded(path, len(segments) > 1) {
+				continue
+			}
 			if len(segments) > 1 {
 				info, err := os.Stat(path)
 				if err != nil {
@@ -185,11 +206,12 @@ func checkFilebeatPaths(ctx context.Context, files []filebeatConfigFile) (filebe
 	ids := map[string]bool{}
 	for _, file := range files {
 		var inputs []struct {
-			Type    string            `yaml:"type"`
-			ID      string            `yaml:"id"`
-			Enabled *bool             `yaml:"enabled"`
-			Paths   []string          `yaml:"paths"`
-			Fields  map[string]string `yaml:"fields"`
+			Type         string            `yaml:"type"`
+			ID           string            `yaml:"id"`
+			Enabled      *bool             `yaml:"enabled"`
+			Paths        []string          `yaml:"paths"`
+			ExcludeFiles []string          `yaml:"prospector.scanner.exclude_files"`
+			Fields       map[string]string `yaml:"fields"`
 		}
 		if err := yaml.Unmarshal([]byte(file.Content), &inputs); err != nil {
 			return receipt, fmt.Errorf("decode managed Filebeat input %s: %w", file.Path, err)
@@ -200,6 +222,14 @@ func checkFilebeatPaths(ctx context.Context, files []filebeatConfigFile) (filebe
 		for _, input := range inputs {
 			if input.Enabled != nil && !*input.Enabled {
 				continue
+			}
+			scanner.exclusions = nil
+			for _, pattern := range input.ExcludeFiles {
+				exclusion, err := regexp.Compile(pattern)
+				if err != nil {
+					return receipt, fmt.Errorf("invalid Filebeat exclude_files pattern: %w", err)
+				}
+				scanner.exclusions = append(scanner.exclusions, exclusion)
 			}
 			if input.Type != "filestream" || input.ID == "" || ids[input.ID] || len(input.Paths) != 1 {
 				return receipt, fmt.Errorf("invalid or duplicate filestream input in %s: %s", file.Path, input.ID)

@@ -29,6 +29,7 @@ type logFormatFingerprintInput struct {
 	LogDefinition        int64
 	LogName              string
 	PathPattern          string
+	ExcludeDirectories   string
 	RuleID               int64
 	RuleParsingSignature string
 	MacroValues          string
@@ -85,6 +86,10 @@ func logFormatFingerprintOf(input logFormatFingerprintInput) string {
 		"macros=" + strings.TrimSpace(input.MacroValues),
 		fmt.Sprintf("application_version=%d", input.ApplicationVersion),
 	}, "\n")
+	// An empty exclusion list leaves the existing certification scope unchanged.
+	if input.ExcludeDirectories != "" && input.ExcludeDirectories != "[]" {
+		payload += "\nexclude_directories=" + input.ExcludeDirectories
+	}
 	digest := sha256.Sum256([]byte(payload))
 	return fmt.Sprintf("%x", digest)[:32]
 }

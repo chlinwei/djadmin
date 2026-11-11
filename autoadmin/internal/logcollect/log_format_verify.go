@@ -13,6 +13,7 @@ import (
 	"autoadmin/internal/assets"
 	db "autoadmin/internal/platform/database/generated"
 	"autoadmin/internal/shared/apperror"
+	"autoadmin/internal/shared/logmacro"
 )
 
 // 日志格式认证的"取样例 + 跑 ES 校验"执行器（架构文档 §4.8）。
@@ -183,7 +184,15 @@ func (handler *Handler) verifyDeployment(ctx context.Context, request assets.Log
 		return target
 	}
 	// Filebeat 会采集 glob 匹配到的**每一个**文件，认证必须逐个验，不能只抽样最新那个。
-	files, globErr := handler.resolveRemoteGlob(ctx, instance.HostInstanceName, path)
+	exclusions, exclusionErr := logmacro.ResolveExcludeJSON(instance.ExcludeDirectories,
+		templateMacroDefaults(string(instance.MacroDefinitions)), parseMacroJSON(string(instance.MacroValues)),
+		instanceMacros(string(instance.RuntimeVariables), instance.AppHome))
+	if exclusionErr != nil {
+		target.Error = "排除目录无效：" + exclusionErr.Error()
+		target.FailureKind = "format"
+		return target
+	}
+	files, globErr := handler.resolveRemoteGlob(ctx, instance.HostInstanceName, path, exclusions...)
 	if globErr != nil {
 		target.Error = globErr.Error()
 		return target

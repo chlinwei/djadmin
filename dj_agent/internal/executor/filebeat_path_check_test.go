@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -103,6 +104,29 @@ func TestFilebeatPathCheckDistinctAndFutureFiles(t *testing.T) {
 	empty, err := checkFilebeatPaths(context.Background(), []filebeatConfigFile{})
 	if err != nil || !empty.Checked || empty.InputsChecked != 0 || empty.MatchedFiles != 0 || empty.UnmatchedPatterns == nil {
 		t.Fatalf("empty configuration must allow cleanup: %+v %v", empty, err)
+	}
+}
+
+func TestFilebeatPathCheckExcludeDirectories(t *testing.T) {
+	dir := t.TempDir()
+	for _, directory := range []string{"active", "backup", "test-one", "backups"} {
+		if err := os.Mkdir(filepath.Join(dir, directory), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, directory, "error.log"), []byte("log"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := pathCheckFragment("/etc/filebeat/inputs.d/a.yml", "a", "svc-a", filepath.Join(dir, "*", "error.log"))
+	first.Content += "  prospector.scanner.exclude_files:\n    - " + yamlQuote("^"+regexp.QuoteMeta(dir)+"/backup/") + "\n    - " + yamlQuote("^"+regexp.QuoteMeta(dir)+"/test-[^/]*/") + "\n"
+	second := pathCheckFragment("/etc/filebeat/inputs.d/b.yml", "b", "svc-b", filepath.Join(dir, "backup", "error.log"))
+	receipt, err := checkFilebeatPaths(context.Background(), []filebeatConfigFile{first, second})
+	if err != nil || !receipt.Checked || receipt.MatchedFiles != 3 {
+		t.Fatalf("excluded files must not overlap and backups must remain: %+v %v", receipt, err)
+	}
+	first.Content += "    - '[invalid'\n"
+	if _, err := checkFilebeatPaths(context.Background(), []filebeatConfigFile{first}); err == nil {
+		t.Fatal("invalid exclusion regex must fail closed")
 	}
 }
 

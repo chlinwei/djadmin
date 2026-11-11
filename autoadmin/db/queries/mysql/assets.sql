@@ -645,10 +645,10 @@ VALUES (sqlc.arg(create_time),sqlc.arg(update_time),sqlc.narg(remark),sqlc.arg(n
 
 -- name: CreateTemplateLogDefinition :exec
 INSERT INTO assets_application_log_definition
-  (create_time,update_time,remark,name,path_pattern,deployment_template_id,extra_fields,processing_rule_id,
+  (create_time,update_time,remark,name,path_pattern,deployment_template_id,extra_fields,exclude_directories,processing_rule_id,
    filter_include_rule_id,filter_exclude_rule_id)
 VALUES (sqlc.arg(create_time),sqlc.arg(update_time),sqlc.narg(remark),sqlc.arg(name),sqlc.arg(path_pattern),
-        sqlc.arg(deployment_template_id),sqlc.arg(extra_fields),
+        sqlc.arg(deployment_template_id),sqlc.arg(extra_fields),sqlc.arg(exclude_directories),
         sqlc.narg(processing_rule_id),
         sqlc.narg(filter_include_rule_id),sqlc.narg(filter_exclude_rule_id));
 
@@ -657,7 +657,7 @@ VALUES (sqlc.arg(create_time),sqlc.arg(update_time),sqlc.narg(remark),sqlc.arg(n
 -- name: UpdateTemplateLogDefinition :execresult
 UPDATE assets_application_log_definition
 SET update_time=sqlc.arg(update_time),remark=sqlc.narg(remark),name=sqlc.arg(name),
-    path_pattern=sqlc.arg(path_pattern),extra_fields=sqlc.arg(extra_fields),
+    path_pattern=sqlc.arg(path_pattern),extra_fields=sqlc.arg(extra_fields),exclude_directories=sqlc.arg(exclude_directories),
     processing_rule_id=sqlc.narg(processing_rule_id),
     -- 采集过滤的模板级默认值（NULL = 该方向不过滤；服务级可覆盖/关闭）
     filter_include_rule_id=sqlc.narg(filter_include_rule_id),
@@ -715,7 +715,7 @@ SELECT id,create_time,update_time,remark,name,path,file_format,required
 FROM assets_application_config_file WHERE deployment_template_id=sqlc.arg(deployment_template_id) ORDER BY id;
 
 -- name: ListTemplateLogDefinitions :many
-SELECT id,create_time,update_time,remark,name,path_pattern,extra_fields,processing_rule_id,
+SELECT id,create_time,update_time,remark,name,path_pattern,extra_fields,exclude_directories,processing_rule_id,
        filter_include_rule_id,filter_exclude_rule_id
 FROM assets_application_log_definition WHERE deployment_template_id=sqlc.arg(deployment_template_id) ORDER BY id;
 
@@ -997,7 +997,7 @@ DELETE FROM assets_application_deployment WHERE id=sqlc.arg(id);
 --     与这里同时带出的"指纹输入"（规则解析配置、服务宏、应用版本）在应用层比对，
 --     得出 format_state（verified / needs_recheck / unverified）。
 -- name: ListServiceTemplateLogs :many
-SELECT ld.id, ld.name, ld.path_pattern,
+SELECT ld.id, ld.name, ld.path_pattern, ld.exclude_directories,
        ld.processing_rule_id, COALESCE(rule.name, '') AS processing_rule_name,
        COALESCE(rule.input_format, '') AS processing_rule_input_format,
        COALESCE(rule.multiline_enabled, FALSE) AS processing_rule_multiline_enabled,
@@ -1051,7 +1051,7 @@ SELECT d.id AS deployment_id, d.host_id, COALESCE(h.instance_name, '') AS host_i
        COALESCE(t.app_home, '') AS app_home,
        COALESCE(t.macro_definitions, '[]') AS macro_definitions,
        COALESCE(s.macro_values, '{}') AS macro_values,
-       ld.path_pattern AS path_pattern
+      ld.path_pattern AS path_pattern, ld.exclude_directories
 FROM assets_application_deployment d
 JOIN assets_host h ON h.id = d.host_id
 JOIN assets_application_service_deployment sd ON sd.deployment_id = d.id

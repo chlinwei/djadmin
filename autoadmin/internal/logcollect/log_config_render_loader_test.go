@@ -31,7 +31,7 @@ func TestLoadHostLogRenderInputsBatchesByHost(t *testing.T) {
 	mock.ExpectQuery("FROM assets_application_service s").WillReturnRows(
 		sqlmock.NewRows([]string{
 			"host_id", "project_code", "environment_code", "business_system_code", "service_code", "service_id",
-			"application_code", "tier_code", "pipeline_name", "log_name", "path_pattern",
+			"application_code", "tier_code", "pipeline_name", "log_name", "path_pattern", "exclude_directories",
 			"macro_values", "macro_definitions", "multiline_enabled", "start_pattern", "flush_timeout",
 			// 采集过滤的四个 id：本例只验证装载，两个方向都不配（NULL）。
 			"filter_include_rule_id", "filter_exclude_rule_id",
@@ -40,11 +40,11 @@ func TestLoadHostLogRenderInputsBatchesByHost(t *testing.T) {
 			"extra_processors",
 		}).
 			AddRow(int64(1), "kul", "test", "tib", "svc-a", int64(10), "app-a", "hot", "rule-a", "catalina.out",
-				"${APP_HOME}/logs/catalina.out", []byte(`{"LOG_DIR":"/svc/logs"}`),
+				"${APP_HOME}/logs/catalina.out", []byte(`[]`), []byte(`{"LOG_DIR":"/svc/logs"}`),
 				[]byte(`[{"name":"TEMPLATE_ONLY","value":"/tpl"}]`), true, `\d{4}`, uint32(3000),
 				nil, nil, nil, nil, []byte(`[]`)).
 			AddRow(int64(2), "kul", "prod", "tib", "svc-b", int64(20), "app-b", "std", "rule-b", "app.log",
-				"/data/app.log", []byte(`{}`), []byte(`[]`), false, "", uint32(2000),
+				"/data/app.log", []byte(`[]`), []byte(`{}`), []byte(`[]`), false, "", uint32(2000),
 				nil, nil, nil, nil, []byte(`[]`)),
 	)
 

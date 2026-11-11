@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 
 	"autoadmin/internal/identity"
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/logmacro"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -241,6 +243,18 @@ func resolveLiveSource(source liveSource, entries []hostLogRenderInput, instance
 				continue
 			}
 			pattern := resolveMacros(entry.ResolvedPath, entry.Macros, instance.Macros)
+			exclusions, exclusionErr := logmacro.ResolveExcludeJSON(entry.ExcludeDirectories, entry.Macros, instance.Macros)
+			if exclusionErr != nil {
+				return fmt.Errorf("排除目录无效：%w", exclusionErr)
+			}
+			excluded := false
+			for _, exclusion := range exclusions {
+				matched, _ := regexp.MatchString(exclusion, source.Path)
+				excluded = excluded || matched
+			}
+			if excluded {
+				continue
+			}
 			if strings.Contains(pattern, "${") || strings.Contains(pattern, "**") || filepath.Clean(pattern) != pattern {
 				continue
 			}

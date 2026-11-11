@@ -2,7 +2,9 @@ package logcollect
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -41,7 +43,18 @@ func hasGlobMeta(path string) bool {
 //
 // 路径不含通配时直接 `StatFile` 返回这一个文件（调用方无需区分）；匹配不到返回
 // `路径未匹配到任何日志文件` 的可读错误，而不是静默空清单。
-func (handler *Handler) resolveRemoteGlob(ctx context.Context, agentID, pattern string) ([]remoteGlobFile, error) {
+func (handler *Handler) resolveRemoteGlob(ctx context.Context, agentID, pattern string, exclusions ...string) ([]remoteGlobFile, error) {
+	filters := make([]*regexp.Regexp, 0, len(exclusions))
+	for _, exclusion := range exclusions {
+		filter, err := regexp.Compile(exclusion)
+		if err != nil {
+			return nil, fmt.Errorf("排除目录正则无效：%w", err)
+		}
+		filters = append(filters, filter)
+	}
+	if excludedRemotePath(pattern, filters) && !hasGlobMeta(pattern) {
+		return nil, apperror.New(apperror.CodeInvalidArgument, "日志文件已被排除目录规则排除："+pattern)
+	}
 	if !hasGlobMeta(pattern) {
 		stat, err := handler.gateway.StatFile(ctx, agentID, pattern)
 		if err != nil {
@@ -78,11 +91,11 @@ func (handler *Handler) resolveRemoteGlob(ctx context.Context, agentID, pattern 
 
 	results := make([]remoteGlobFile, 0, 8)
 	listings := 0
-	if err := handler.walkRemoteGlob(ctx, agentID, baseDir, segments[firstMeta:], &results, &listings); err != nil {
+	if err := handler.walkRemoteGlob(ctx, agentID, baseDir, segments[firstMeta:], &results, &listings, filters); err != nil {
 		return nil, err
 	}
 	if len(results) == 0 {
-		return nil, apperror.New(apperror.CodeInvalidArgument, "路径未匹配到任何日志文件："+pattern)
+		return nil, apperror.New(apperror.CodeInvalidArgument, "路径未匹配到任何未排除的日志文件："+pattern)
 	}
 	sort.Slice(results, func(i, j int) bool { return results[i].Path < results[j].Path })
 	return results, nil
@@ -92,7 +105,19 @@ func (handler *Handler) resolveRemoteGlob(ctx context.Context, agentID, pattern 
 //
 // 目录列不出来（不存在/无权限）时直接跳过这一支——通配的意义就是"能匹配到的都要，匹配不到
 // 的不算错"；只有"整棵树一个都没命中"才由调用方报 no-match。
-func (handler *Handler) walkRemoteGlob(ctx context.Context, agentID, dir string, segments []string, results *[]remoteGlobFile, listings *int) error {
+func excludedRemotePath(path string, filters []*regexp.Regexp) bool {
+	for _, filter := range filters {
+		if filter.MatchString(path) {
+			return true
+		}
+	}
+	return false
+}
+
+func (handler *Handler) walkRemoteGlob(ctx context.Context, agentID, dir string, segments []string, results *[]remoteGlobFile, listings *int, filters []*regexp.Regexp) error {
+	if excludedRemotePath(strings.TrimSuffix(dir, "/")+"/", filters) {
+		return nil
+	}
 	if len(segments) == 0 || len(*results) >= maxGlobMatches || *listings >= maxGlobDirListings {
 		return nil
 	}
@@ -119,11 +144,14 @@ func (handler *Handler) walkRemoteGlob(ctx context.Context, agentID, dir string,
 			continue
 		}
 		fullPath := filepath.Join(current, entry.GetName())
+		if excludedRemotePath(fullPath, filters) || (entry.GetIsDir() && excludedRemotePath(fullPath+"/", filters)) {
+			continue
+		}
 		switch {
 		case last && !entry.GetIsDir():
 			*results = append(*results, remoteGlobFile{Path: fullPath, Size: entry.GetSize(), Mtime: entry.GetMtime()})
 		case !last && entry.GetIsDir():
-			if err = handler.walkRemoteGlob(ctx, agentID, fullPath, segments[1:], results, listings); err != nil {
+			if err = handler.walkRemoteGlob(ctx, agentID, fullPath, segments[1:], results, listings, filters); err != nil {
 				return err
 			}
 		}

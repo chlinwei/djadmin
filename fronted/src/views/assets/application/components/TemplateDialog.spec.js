@@ -144,7 +144,116 @@ describe('部署模板只读详情', () => {
   })
 })
 
+describe('模板命令行控制', () => {
+  it.each([{}, { templateId: 2 }, { copyFromId: 2 }])('启动和停止命令留空时仍可保存 %j', async (props) => {
+    const wrapper = await openDialog(props)
+    wrapper.vm.form.control_type = 'command'
+    Object.assign(wrapper.vm.commandValues, { start: '', stop: '  ', status: './status.sh' })
+    await flushPromises()
+    const labels = wrapper.findAll('.command-grid .ant-form-item-label').map((label) => label.text())
+    expect(labels).toContain('启动命令')
+    expect(labels).toContain('停止命令')
+    expect(labels).toContain('状态命令（必填）')
+    await wrapper.vm.saveTemplate()
+    expect(saveApplicationDeploymentTemplate).toHaveBeenCalledWith(expect.objectContaining({
+      id: props.templateId,
+      control_actions: [{ action: 'status', command: './status.sh', timeout_seconds: 60, success_exit_codes: [0] }],
+    }))
+    expect(wrapper.emitted('saved')).toHaveLength(1)
+  })
+
+  it.each([
+    ['start'],
+    ['stop'],
+    ['start', 'stop'],
+  ])('保留已填写的可选命令 %j', async (...actions) => {
+    const wrapper = await openDialog()
+    wrapper.vm.form.control_type = 'command'
+    wrapper.vm.commandValues.status = './status.sh'
+    for (const action of actions) wrapper.vm.commandValues[action] = `./${action}.sh`
+    await wrapper.vm.saveTemplate()
+    expect(saveApplicationDeploymentTemplate).toHaveBeenCalledWith(expect.objectContaining({
+      control_actions: [...actions, 'status'].map((action) => ({
+        action, command: `./${action}.sh`, timeout_seconds: 60, success_exit_codes: [0],
+      })),
+    }))
+  })
+
+  it.each(['', '  '])('状态命令为空 %j 时仍阻止保存', async (status) => {
+    const error = vi.spyOn(message, 'error').mockImplementation(() => {})
+    const wrapper = await openDialog()
+    wrapper.vm.form.control_type = 'command'
+    Object.assign(wrapper.vm.commandValues, { start: './start.sh', stop: './stop.sh', status })
+    await wrapper.vm.saveTemplate()
+    expect(error).toHaveBeenCalledWith('请填写状态命令')
+    expect(saveApplicationDeploymentTemplate).not.toHaveBeenCalled()
+  })
+})
+
 describe('模板端口表达式', () => {
+  it.each([{}, { templateId: 2 }, { copyFromId: 2 }])('模板保存保留固定和通配排除目录 %j', async (props) => {
+    const wrapper = await openDialog(props)
+    wrapper.vm.form.logs = [{ id: 8, name: 'error', path_pattern: '${LOG_DIR}/*/error.log', exclude_directories: ['${LOG_DIR}/backup'] }]
+    await wrapper.findAll('.ant-tabs-tab').find((tab) => tab.text() === '路径与文件').trigger('click')
+    await flushPromises()
+    const exclusions = wrapper.get('.log-exclude-directories textarea')
+    expect(exclusions.element.value).toBe('${LOG_DIR}/backup')
+    await exclusions.setValue('${LOG_DIR}/backup\n')
+    expect(exclusions.element.value).toBe('${LOG_DIR}/backup\n')
+    await exclusions.setValue('${LOG_DIR}/backup\n  ${LOG_DIR}/test-*  \n\n${LOG_DIR}/node[12]/archive')
+    await wrapper.vm.saveTemplate()
+    expect(saveApplicationDeploymentTemplate).toHaveBeenCalledWith(expect.objectContaining({
+      logs: [expect.objectContaining({
+        exclude_directories: ['${LOG_DIR}/backup', '${LOG_DIR}/test-*', '${LOG_DIR}/node[12]/archive'],
+      })],
+    }))
+    expect(saveApplicationDeploymentTemplate.mock.calls[0][0].logs[0].id).toBe(props.templateId ? 8 : undefined)
+  })
+
+  it('只读模板回显排除目录且禁止修改', async () => {
+    getApplicationDeploymentTemplate.mockResolvedValueOnce({ data: { data: {
+      id: 2, application: 1, name: 'Template', control_type: 'systemd', service_name: 'app',
+      logs: [{ name: 'error', path_pattern: '/logs/*/error.log', exclude_directories: ['/logs/backup', '/logs/test-*'] }],
+    } } })
+    const wrapper = await openDialog({ templateId: 2, readOnly: true })
+    await wrapper.findAll('.ant-tabs-tab').find((tab) => tab.text() === '路径与文件').trigger('click')
+    await flushPromises()
+    const exclusions = wrapper.get('.log-exclude-directories textarea')
+    expect(exclusions.element.value).toBe('/logs/backup\n/logs/test-*')
+    expect(exclusions.attributes('disabled')).toBeDefined()
+  })
+
+  it.each([
+    ['空白行', [{ name: 'ORACLE_PDB', value: 'aodb' }, { name: '', value: '', description: '' }], '第 2 行宏名必须'],
+    ['非法宏名', [{ name: 'ORACLE-PDB', value: 'aodb' }], '第 1 行宏名必须'],
+    ['重复宏名', [{ name: 'ORACLE_PDB', value: 'aodb' }, { name: 'ORACLE_PDB', value: 'other' }], '第 2 行宏名 ORACLE_PDB 重复'],
+    ['值含换行', [{ name: 'ORACLE_PDB', value: 'aodb\nother' }], '第 1 行宏 ORACLE_PDB 的值不能包含换行'],
+  ])('复制模板时%s提示具体原因且不发送请求', async (_label, definitions, expected) => {
+    const error = vi.spyOn(message, 'error').mockImplementation(() => {})
+    const wrapper = await openDialog({ copyFromId: 2 })
+    wrapper.vm.macroDefinitions = definitions
+    await wrapper.vm.saveTemplate()
+    expect(error).toHaveBeenCalledWith(expect.stringContaining(expected))
+    expect(saveApplicationDeploymentTemplate).not.toHaveBeenCalled()
+  })
+
+  it('复制模板删除空白宏行后可以重试保存，允许宏值为空且不提交行标识', async () => {
+    vi.spyOn(message, 'error').mockImplementation(() => {})
+    const wrapper = await openDialog({ copyFromId: 2 })
+    wrapper.vm.macroDefinitions = [
+      { _uid: 1, name: 'ORACLE_PDB', value: '', description: 'PDB name' },
+      { _uid: 2, name: '', value: '', description: '' },
+    ]
+    await wrapper.vm.saveTemplate()
+    expect(saveApplicationDeploymentTemplate).not.toHaveBeenCalled()
+    wrapper.vm.macroDefinitions.splice(1, 1)
+    await wrapper.vm.saveTemplate()
+    expect(saveApplicationDeploymentTemplate).toHaveBeenCalledWith(expect.objectContaining({
+      id: undefined,
+      macro_definitions: [{ name: 'ORACLE_PDB', value: '', description: 'PDB name' }],
+    }))
+  })
+
   it('校验和请求期间重复保存只发送一次请求、提示一次', async () => {
     const success = vi.spyOn(message, 'success').mockImplementation(() => {})
     const wrapper = await openDialog({ templateId: 2 })

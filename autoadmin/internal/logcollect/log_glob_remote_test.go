@@ -3,6 +3,7 @@ package logcollect
 import (
 	"context"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -61,6 +62,7 @@ func TestTailRemoteFilePicksNewestGlobMatch(t *testing.T) {
 			{Name: "error.log", IsDir: false, Size: newestSize, Mtime: 2},
 		},
 	}
+	var newDirectoryReads atomic.Int32
 	go func() {
 		for {
 			frame, receiveErr := stream.Recv()
@@ -68,6 +70,9 @@ func TestTailRemoteFilePicksNewestGlobMatch(t *testing.T) {
 				return
 			}
 			if listRequest := frame.GetListRequest(); listRequest != nil {
+				if listRequest.Path == "/var/log/app-new" {
+					newDirectoryReads.Add(1)
+				}
 				_ = stream.Send(&pb.AgentFrame{Payload: &pb.AgentFrame_ListResponse{ListResponse: &pb.ListResponse{
 					RequestId: listRequest.RequestId, CurrentPath: listRequest.Path, Entries: dirs[listRequest.Path],
 				}}})
@@ -94,6 +99,14 @@ func TestTailRemoteFilePicksNewestGlobMatch(t *testing.T) {
 	}
 	if text != "2026-09-19 10:00:00 ERROR newest\n" {
 		t.Fatalf("内容 = %q, want 最新文件尾部（残行已丢）", text)
+	}
+	before := newDirectoryReads.Load()
+	files, err := handler.resolveRemoteGlob(ctx, "host-01", "/var/log/*/error.log", `^/var/log/app-new/`)
+	if err != nil || len(files) != 1 || files[0].Path != "/var/log/app-old/error.log" || newDirectoryReads.Load() != before {
+		t.Fatalf("excluded directory must not be listed: %+v %v", files, err)
+	}
+	if _, err := handler.resolveRemoteGlob(ctx, "host-01", "/var/log/*/error.log", `^/var/log/app-[^/]*/`); err == nil {
+		t.Fatal("all files excluded must not pass certification")
 	}
 }
 

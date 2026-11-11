@@ -227,7 +227,7 @@ const (
 
 func logFormatDefinitionColumns() []string {
 	return []string{
-		"id", "name", "path_pattern", "processing_rule_id", "processing_rule_name",
+		"id", "name", "path_pattern", "exclude_directories", "processing_rule_id", "processing_rule_name",
 		"processing_rule_input_format", "processing_rule_multiline_enabled", "processing_rule_start_pattern",
 		"processing_rule_continuation_pattern", "processing_rule_flush_timeout", "processing_rule_pipeline_body",
 		"application_version_id", "retention_tier_id",
@@ -244,7 +244,7 @@ func logFormatDefinitionColumns() []string {
 func expectLogFormatDefinition(mock sqlmock.Sqlmock) {
 	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).WillReturnRows(
 		sqlmock.NewRows(logFormatDefinitionColumns()).AddRow(
-			int64(24), "error.log", "${APP_HOME}/nginx/logs/error.log", sql.NullInt64{Int64: 7, Valid: true},
+			int64(24), "error.log", "${APP_HOME}/nginx/logs/error.log", []byte(`[]`), sql.NullInt64{Int64: 7, Valid: true},
 			"nginx 规则", "plain", false, "", "", uint32(2000), []byte(passingPipelineBody), int64(3), sql.NullInt64{},
 			nil, sql.NullInt64{},
 			// 服务级 exclude 覆盖 + 模板级两个方向的默认值：本例都不配。
@@ -522,9 +522,9 @@ func TestVerifyLogFormatAllDeploymentsAllFiles(t *testing.T) {
 		WithArgs(int64(101), int64(15), int64(24)).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"deployment_id", "host_id", "host_instance_name", "deployment_instance_name",
-			"runtime_variables", "app_home", "macro_definitions", "macro_values", "path_pattern",
+			"runtime_variables", "app_home", "macro_definitions", "macro_values", "path_pattern", "exclude_directories",
 		}).AddRow(int64(101), int64(5), "host-01", "inst-1", []byte("{}"), "", []byte("[]"), []byte("{}"),
-			"/var/log/*/error.log"))
+			"/var/log/*/error.log", []byte(`[]`)))
 
 	handler.gateway = gateway
 	report, err := handler.VerifyLogFormat(context.Background(), assets.LogFormatVerifyRequest{

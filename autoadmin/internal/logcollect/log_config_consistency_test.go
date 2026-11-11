@@ -32,14 +32,14 @@ func expectServiceConflictInputs(mock sqlmock.Sqlmock, secondPath string) {
 	mock.ExpectQuery("FROM assets_application_service s").WillReturnRows(
 		sqlmock.NewRows([]string{"host_id", "project_code", "environment_code", "business_system_code",
 			"service_code", "service_id", "application_code", "tier_code", "pipeline_name",
-			"log_name", "path_pattern", "macro_values", "macro_definitions", "multiline_enabled",
+			"log_name", "path_pattern", "exclude_directories", "macro_values", "macro_definitions", "multiline_enabled",
 			"start_pattern", "flush_timeout", "filter_include_rule_id", "filter_exclude_rule_id",
 			"collection_filter_rule_id", "collection_exclude_filter_rule_id", "extra_processors"}).
 			AddRow(42, "p", "prod", "b", "existing-service", 10, "app", "std", "rule",
-				"app.log", "/data/app/logs/app.log", []byte(`{}`), []byte(`[]`), false, "", 2000,
+				"app.log", "/data/app/logs/app.log", []byte(`[]`), []byte(`{}`), []byte(`[]`), false, "", 2000,
 				nil, nil, nil, nil, []byte(`[]`)).
 			AddRow(42, "p", "prod", "b", "new-service", 20, "app", "std", "rule",
-				"other-name.log", secondPath, []byte(`{}`), []byte(`[]`), false, "", 2000,
+				"other-name.log", secondPath, []byte(`[]`), []byte(`{}`), []byte(`[]`), false, "", 2000,
 				nil, nil, nil, nil, []byte(`[]`)))
 }
 

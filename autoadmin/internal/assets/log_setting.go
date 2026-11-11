@@ -25,9 +25,10 @@ import (
 // 另带日志格式认证状态（迁移 000036，模型见 log_format_fingerprint.go 与架构文档 §4.8）：
 // FormatState 是"当前配置指纹 vs 认证时指纹"的比对结果，只读库即可得出，不需要碰主机。
 type ServiceTemplateLog struct {
-	LogDefinition int64  `json:"log_definition"`
-	Name          string `json:"name"`
-	PathPattern   string `json:"path_pattern"`
+	LogDefinition      int64           `json:"log_definition"`
+	Name               string          `json:"name"`
+	PathPattern        string          `json:"path_pattern"`
+	ExcludeDirectories json.RawMessage `json:"exclude_directories"`
 	// ResolvedPath 是**尽力解析后的路径**：模板 macro_definitions 的默认值 → 服务 macro_values，
 	// 外加模板 app_home 作为 APP_HOME 默认值（与下发渲染同一套合并顺序，见 shared/logmacro）。
 	// 仍是"服务这一层能解析的部分"——实例 runtime_variables 只有到主机上才知道，
@@ -104,6 +105,7 @@ func (r *Repository) ListServiceTemplateLogs(ctx context.Context, serviceID int6
 	for _, row := range rows {
 		item := ServiceTemplateLog{
 			LogDefinition: row.ID, Name: row.Name, PathPattern: row.PathPattern,
+			ExcludeDirectories:            row.ExcludeDirectories,
 			RetentionTier:                 intPtr(row.RetentionTierID),
 			CollectionFilterRuleID:        intPtr(row.CollectionFilterRuleID),
 			CollectionExcludeFilterRuleID: intPtr(row.CollectionExcludeFilterRuleID),
@@ -189,7 +191,8 @@ func logFormatStateForRow(row db.ListServiceTemplateLogsRow) (string, string, er
 	}
 	fingerprint := logFormatFingerprintOf(logFormatFingerprintInput{
 		LogDefinition: row.ID, LogName: row.Name, PathPattern: row.PathPattern,
-		RuleID: row.ProcessingRuleID.Int64, RuleParsingSignature: ruleSignature,
+		ExcludeDirectories: string(row.ExcludeDirectories),
+		RuleID:             row.ProcessingRuleID.Int64, RuleParsingSignature: ruleSignature,
 		MacroValues: string(row.MacroValues), ApplicationVersion: row.ApplicationVersionID,
 	})
 	state := formatStateUnverified

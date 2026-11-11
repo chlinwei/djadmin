@@ -5,7 +5,45 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"autoadmin/internal/shared/logmacro"
+
+	"gopkg.in/yaml.v3"
 )
+
+func TestRenderExcludeDirectories(t *testing.T) {
+	entry := hostLogRenderInput{
+		Application: "app", Service: "svc", ServiceID: 1, Tier: "std", Pipeline: "rule",
+		LogName: "error", ResolvedPath: "${LOG_DIR}/*/error.log",
+		ExcludeDirectories: []byte(`["${LOG_DIR}/backup","${LOG_DIR}/test-*"]`),
+	}
+	instances := []hostInstanceInput{{ServiceID: 1, Instance: "app-1", Macros: map[string]string{"LOG_DIR": "/logs"}}}
+	rendered := renderHostLogConfig([]hostLogRenderInput{entry}, instances, testOutputIdentity)
+	if len(rendered.Errors) != 0 || len(rendered.Fragments) != 1 {
+		t.Fatalf("render exclusions: %+v", rendered)
+	}
+	var inputs []struct {
+		Paths      []string `yaml:"paths"`
+		Exclusions []string `yaml:"prospector.scanner.exclude_files"`
+	}
+	if err := yaml.Unmarshal([]byte(rendered.Fragments[0].Content), &inputs); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := logmacro.ResolveExcludeDirectories([]string{"/logs/backup", "/logs/test-*"})
+	if err != nil || len(inputs) != 1 || !reflect.DeepEqual(inputs[0].Exclusions, expected) || inputs[0].Paths[0] != "/logs/*/error.log" {
+		t.Fatalf("Filebeat exclusions differ from discovery: %+v %v", inputs, err)
+	}
+	entry.ExcludeDirectories = []byte(`[]`)
+	without := renderHostLogConfig([]hostLogRenderInput{entry}, instances, testOutputIdentity)
+	if without.Fingerprint == rendered.Fingerprint {
+		t.Fatal("exclusion changes must invalidate deployed config fingerprint")
+	}
+	entry.ExcludeDirectories = []byte(`["${MISSING}/backup"]`)
+	invalid := renderHostLogConfig([]hostLogRenderInput{entry}, instances, testOutputIdentity)
+	if len(invalid.Errors) == 0 || len(invalid.Fragments) != 0 {
+		t.Fatalf("unresolved exclusion must block apply: %+v", invalid)
+	}
+}
 
 // 测试里的输出段标识（地址/账号/TLS）。真实值由 filebeatOutputIdentity 从默认集群算出。
 const testOutputIdentity = "url=http://127.0.0.1:9200\nusername=admin\nverify_tls=false"

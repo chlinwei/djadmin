@@ -1,0 +1,1 @@
+ALTER TABLE assets_application_log_definition DROP COLUMN exclude_directories;

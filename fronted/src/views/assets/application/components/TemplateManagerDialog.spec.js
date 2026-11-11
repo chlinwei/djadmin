@@ -27,8 +27,8 @@ const TemplateDialogStub = {
   template: '<div class="template-dialog-stub" />',
 }
 
-function mountDialog(props = {}) {
-  return mount(TemplateManagerDialog, {
+function mountDialog(props = {}, component = TemplateManagerDialog) {
+  return mount(component, {
     props: { open: false, application: { id: 1, name: 'Tomcat' }, ...props },
     attachTo: document.body,
     global: {
@@ -45,6 +45,27 @@ function mountDialog(props = {}) {
 }
 
 describe('TemplateManagerDialog', () => {
+  it('updates an open portal after list refresh and template HMR', async () => {
+    const hmrId = 'template-manager-portal-regression'
+    const component = { ...TemplateManagerDialog, __hmrId: hmrId }
+    const hmr = globalThis.__VUE_HMR_RUNTIME__
+    hmr.createRecord(hmrId, component)
+    const wrapper = mountDialog({ open: true }, component)
+    try {
+      await flushPromises()
+      await wrapper.vm.handleTemplateSaved()
+      await flushPromises()
+      hmr.rerender(hmrId, function (...args) { return TemplateManagerDialog.render.apply(this, args) })
+      await flushPromises()
+      await wrapper.setProps({ application: { id: 1, name: 'Updated application' } })
+      await flushPromises()
+      expect(document.body.textContent).toContain('Updated application - 部署模板管理')
+      expect(document.body.textContent).toContain('tomcat-systemd')
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   const originalRoles = store.state.role_codes
   const originalPerms = store.state.perms
   beforeEach(() => {

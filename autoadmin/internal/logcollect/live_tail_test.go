@@ -93,6 +93,10 @@ func TestResolveLiveSourceFailsClosed(t *testing.T) {
 	if err := resolveLiveSource(source, []hostLogRenderInput{entry, entry}, []hostInstanceInput{instance}); err == nil {
 		t.Fatal("ambiguous path admitted")
 	}
+	entry.ExcludeDirectories = []byte(`["/logs"]`)
+	if err := resolveLiveSource(source, []hostLogRenderInput{entry}, []hostInstanceInput{instance}); err == nil {
+		t.Fatal("excluded source file admitted")
+	}
 }
 
 func TestLiveTailOrigin(t *testing.T) {

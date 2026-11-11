@@ -89,7 +89,7 @@ func TestPreviewLogGlobReturnsMatches(t *testing.T) {
 
 	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).WillReturnRows(
 		sqlmock.NewRows(logFormatDefinitionColumns()).AddRow(
-			int64(24), "error.log", "/home/esb/data/logs/*/log_error.log", sql.NullInt64{Int64: 7, Valid: true},
+			int64(24), "error.log", "/home/esb/data/logs/*/log_error.log", []byte(`[]`), sql.NullInt64{Int64: 7, Valid: true},
 			"nginx 规则", "plain", false, "", "", uint32(2000), []byte(passingPipelineBody), int64(3), sql.NullInt64{},
 			nil, sql.NullInt64{},
 			sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{},
@@ -104,9 +104,9 @@ func TestPreviewLogGlobReturnsMatches(t *testing.T) {
 		WithArgs(int64(101), int64(15), int64(24)).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"deployment_id", "host_id", "host_instance_name", "deployment_instance_name",
-			"runtime_variables", "app_home", "macro_definitions", "macro_values", "path_pattern",
+			"runtime_variables", "app_home", "macro_definitions", "macro_values", "path_pattern", "exclude_directories",
 		}).AddRow(int64(101), int64(5), "host-01", "inst-1", []byte("{}"), "", []byte("[]"), []byte("{}"),
-			"/home/esb/data/logs/*/log_error.log"))
+			"/home/esb/data/logs/*/log_error.log", []byte(`[]`)))
 
 	handler := &Handler{db: database, gateway: gateway}
 	preview, err := handler.PreviewLogGlob(context.Background(), assets.LogGlobPreviewRequest{

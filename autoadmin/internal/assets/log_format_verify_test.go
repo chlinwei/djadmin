@@ -30,7 +30,7 @@ var testRuleUpdatedAt = time.Date(2026, 9, 19, 1, 2, 3, 456000000, time.UTC)
 
 func serviceTemplateLogColumns() []string {
 	return []string{
-		"id", "name", "path_pattern", "processing_rule_id", "processing_rule_name",
+		"id", "name", "path_pattern", "exclude_directories", "processing_rule_id", "processing_rule_name",
 		"processing_rule_input_format", "processing_rule_multiline_enabled", "processing_rule_start_pattern",
 		"processing_rule_continuation_pattern", "processing_rule_flush_timeout", "processing_rule_pipeline_body",
 		"application_version_id", "retention_tier_id",
@@ -67,7 +67,7 @@ func addServiceTemplateLogRow(rows *sqlmock.Rows, stored sql.NullString) *sqlmoc
 
 func addServiceTemplateLogRowWithRule(rows *sqlmock.Rows, stored sql.NullString, ruleName string, rule logFormatRuleInput) *sqlmock.Rows {
 	return rows.AddRow(
-		int64(24), "error.log", "${APP_HOME}/nginx/logs/error.log", sql.NullInt64{Int64: 7, Valid: true},
+		int64(24), "error.log", "${APP_HOME}/nginx/logs/error.log", []byte(`[]`), sql.NullInt64{Int64: 7, Valid: true},
 		ruleName, rule.InputFormat, rule.MultilineEnabled, rule.StartPattern, rule.ContinuationPattern,
 		rule.FlushTimeout, rule.PipelineBody,
 		int64(3), sql.NullInt64{}, nil, sql.NullInt64{},
@@ -348,9 +348,9 @@ func expectCurrentLogFormatTarget(mock sqlmock.Sqlmock, instance db.GetLogVerify
 func expectLogFormatInstanceContext(mock sqlmock.Sqlmock, instance db.GetLogVerifyInstanceContextRow) {
 	mock.ExpectQuery("FROM assets_application_deployment d").WithArgs(instance.DeploymentID, int64(15), int64(24)).
 		WillReturnRows(sqlmock.NewRows([]string{"deployment_id", "host_id", "host_instance_name", "deployment_instance_name",
-			"runtime_variables", "app_home", "macro_definitions", "macro_values", "path_pattern"}).
+			"runtime_variables", "app_home", "macro_definitions", "macro_values", "path_pattern", "exclude_directories"}).
 			AddRow(instance.DeploymentID, instance.HostID, instance.HostInstanceName, instance.DeploymentInstanceName,
-				instance.RuntimeVariables, instance.AppHome, instance.MacroDefinitions, []byte(`{}`), "${APP_HOME}/error.log"))
+				instance.RuntimeVariables, instance.AppHome, instance.MacroDefinitions, []byte(`{}`), "${APP_HOME}/error.log", []byte(`[]`)))
 }
 
 func TestManualLogFormatRequestsPersistEachInstance(t *testing.T) {

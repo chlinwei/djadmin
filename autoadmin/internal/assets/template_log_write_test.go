@@ -58,6 +58,20 @@ func TestPlanTemplateLogWritesRejectsEmptyName(t *testing.T) {
 	}
 }
 
+func TestPlanTemplateLogWritesExcludeDirectories(t *testing.T) {
+	input := TemplateLogInput{Name: "error", ExcludeDirectories: []string{"${LOG_DIR}/backup", "${LOG_DIR}/test-*"}}
+	plan, err := planTemplateLogWrites(nil, []TemplateLogInput{input}, true)
+	if err != nil || len(plan.Inserts) != 1 || len(plan.Inserts[0].ExcludeDirectories) != 2 {
+		t.Fatalf("valid exclusions not retained: %+v %v", plan, err)
+	}
+	input.ExcludeDirectories = []string{"/logs/**/backup"}
+	if _, err := planTemplateLogWrites(nil, []TemplateLogInput{input}, true); err == nil {
+		t.Fatal("recursive glob must be rejected")
+	} else if _, ok := apperror.As(err); !ok {
+		t.Fatalf("invalid exclusion must be a business error: %v", err)
+	}
+}
+
 func TestPlanTemplateLogWritesEmptySubmissionRemovesAll(t *testing.T) {
 	plan, err := planTemplateLogWrites([]int64{11, 12}, nil, false)
 	if err != nil {

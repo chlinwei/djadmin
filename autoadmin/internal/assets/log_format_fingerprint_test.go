@@ -39,6 +39,7 @@ func TestLogFormatFingerprint(t *testing.T) {
 		{"换模板/换日志定义", func(input *logFormatFingerprintInput) { input.LogDefinition = 12 }},
 		{"改名", func(input *logFormatFingerprintInput) { input.LogName = "catalina-2" }},
 		{"改路径", func(input *logFormatFingerprintInput) { input.PathPattern = "${APP_HOME}/logs/*.log" }},
+		{"改排除目录", func(input *logFormatFingerprintInput) { input.ExcludeDirectories = `["${APP_HOME}/logs/backup"]` }},
 		{"换挂另一条规则", func(input *logFormatFingerprintInput) { input.RuleID = 8 }},
 		{"改规则（pipeline_body/多行/正则）", func(input *logFormatFingerprintInput) {
 			input.RuleParsingSignature += "-changed"

@@ -245,6 +245,7 @@ CREATE TABLE assets_application_log_definition (
   remark text,
   name varchar(128) NOT NULL,
   path_pattern varchar(512) NOT NULL,
+  exclude_directories jsonb NOT NULL DEFAULT '[]'::jsonb,
   deployment_template_id bigint NOT NULL,
   extra_fields jsonb NOT NULL,
   processing_rule_id bigint DEFAULT NULL,

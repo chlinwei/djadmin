@@ -63,7 +63,7 @@ func statusLogRows(entries []statusLogEntry) *sqlmock.Rows {
 			tierCode = *entry.tierCode
 		}
 		rows.AddRow(
-			entry.logDefinition, "error.log", "${APP_HOME}/nginx/logs/error.log", ruleID,
+			entry.logDefinition, "error.log", "${APP_HOME}/nginx/logs/error.log", []byte(`[]`), ruleID,
 			ruleName, "plain", false, "", "", uint32(2000), []byte(`{"processors":[]}`),
 			int64(3), sql.NullInt64{}, entry.collectionEnabled, sql.NullInt64{},
 			sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{},

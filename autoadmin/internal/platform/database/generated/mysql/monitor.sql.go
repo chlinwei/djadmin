@@ -3951,7 +3951,7 @@ SELECT DISTINCT d.host_id, p.code AS project_code, e.code AS environment_code,
     COALESCE(app.code, '') AS application_code,
     CASE WHEN tier.enabled = TRUE THEN COALESCE(tier.code, '') ELSE '' END AS tier_code,
     COALESCE(rule_definition.name, '') AS pipeline_name,
-    ld.name AS log_name, ld.path_pattern,
+    ld.name AS log_name, ld.path_pattern, ld.exclude_directories,
     COALESCE(s.macro_values, '{}') AS macro_values,
     COALESCE(t.macro_definitions, '[]') AS macro_definitions,
     COALESCE(rule_definition.multiline_enabled, FALSE) AS multiline_enabled,
@@ -3994,6 +3994,7 @@ type ListHostLogRenderEntriesRow struct {
 	PipelineName                  string          `json:"pipeline_name"`
 	LogName                       string          `json:"log_name"`
 	PathPattern                   string          `json:"path_pattern"`
+	ExcludeDirectories            json.RawMessage `json:"exclude_directories"`
 	MacroValues                   json.RawMessage `json:"macro_values"`
 	MacroDefinitions              json.RawMessage `json:"macro_definitions"`
 	MultilineEnabled              bool            `json:"multiline_enabled"`
@@ -4050,6 +4051,7 @@ func (q *Queries) ListHostLogRenderEntries(ctx context.Context, hostIds []int64)
 			&i.PipelineName,
 			&i.LogName,
 			&i.PathPattern,
+			&i.ExcludeDirectories,
 			&i.MacroValues,
 			&i.MacroDefinitions,
 			&i.MultilineEnabled,

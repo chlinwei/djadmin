@@ -205,6 +205,7 @@ CREATE TABLE `assets_application_config_file` (
 CREATE TABLE `assets_application_log_definition` (
   `id` bigint NOT NULL AUTO_INCREMENT, `create_time` datetime(6) NOT NULL, `update_time` datetime(6) NOT NULL, `remark` longtext,
   `name` varchar(128) NOT NULL, `path_pattern` varchar(512) NOT NULL,
+  `exclude_directories` json NOT NULL DEFAULT (JSON_ARRAY()),
   `deployment_template_id` bigint NOT NULL, `extra_fields` json NOT NULL, `processing_rule_id` bigint DEFAULT NULL,
   -- 模板级采集过滤默认值（2026-09-19）：两条引用各自独立，NULL = 该方向不用过滤。
   -- 服务级可覆盖/关闭（见 assets_application_service_log_setting 的两列），最终由渲染决定

@@ -54,7 +54,7 @@ func TestUpsertServiceLogOverrideKeepsFormatVerification(t *testing.T) {
 func overrideFixtureRows(stored sql.NullString, collectionEnabled *bool, tier sql.NullInt64) *sqlmock.Rows {
 	rows := sqlmock.NewRows(serviceTemplateLogColumns())
 	rows.AddRow(
-		int64(24), "error.log", "${APP_HOME}/nginx/logs/error.log", sql.NullInt64{Int64: 7, Valid: true},
+		int64(24), "error.log", "${APP_HOME}/nginx/logs/error.log", []byte(`[]`), sql.NullInt64{Int64: 7, Valid: true},
 		"nginx 规则", "plain", false, "", "", uint32(2000), []byte(`{"processors":[]}`),
 		int64(3), tier,
 		collectionEnabled, sql.NullInt64{},

@@ -1292,12 +1292,12 @@ func (q *Queries) CreateTemplateDockerConfig(ctx context.Context, arg CreateTemp
 
 const createTemplateLogDefinition = `-- name: CreateTemplateLogDefinition :exec
 INSERT INTO assets_application_log_definition
-  (create_time,update_time,remark,name,path_pattern,deployment_template_id,extra_fields,processing_rule_id,
+  (create_time,update_time,remark,name,path_pattern,deployment_template_id,extra_fields,exclude_directories,processing_rule_id,
    filter_include_rule_id,filter_exclude_rule_id)
 VALUES ($1,$2,$3,$4,$5,
-        $6,$7,
-        $8,
-        $9,$10)
+        $6,$7,$8,
+        $9,
+        $10,$11)
 `
 
 type CreateTemplateLogDefinitionParams struct {
@@ -1308,6 +1308,7 @@ type CreateTemplateLogDefinitionParams struct {
 	PathPattern          string          `json:"path_pattern"`
 	DeploymentTemplateID int64           `json:"deployment_template_id"`
 	ExtraFields          json.RawMessage `json:"extra_fields"`
+	ExcludeDirectories   json.RawMessage `json:"exclude_directories"`
 	ProcessingRuleID     sql.NullInt64   `json:"processing_rule_id"`
 	FilterIncludeRuleID  sql.NullInt64   `json:"filter_include_rule_id"`
 	FilterExcludeRuleID  sql.NullInt64   `json:"filter_exclude_rule_id"`
@@ -1322,6 +1323,7 @@ func (q *Queries) CreateTemplateLogDefinition(ctx context.Context, arg CreateTem
 		arg.PathPattern,
 		arg.DeploymentTemplateID,
 		arg.ExtraFields,
+		arg.ExcludeDirectories,
 		arg.ProcessingRuleID,
 		arg.FilterIncludeRuleID,
 		arg.FilterExcludeRuleID,
@@ -2593,7 +2595,7 @@ SELECT d.id AS deployment_id, d.host_id, COALESCE(h.instance_name, '') AS host_i
        COALESCE(t.app_home, '') AS app_home,
        COALESCE(t.macro_definitions, '[]') AS macro_definitions,
        COALESCE(s.macro_values, '{}') AS macro_values,
-       ld.path_pattern AS path_pattern
+      ld.path_pattern AS path_pattern, ld.exclude_directories
 FROM assets_application_deployment d
 JOIN assets_host h ON h.id = d.host_id
 JOIN assets_application_service_deployment sd ON sd.deployment_id = d.id
@@ -2620,6 +2622,7 @@ type GetLogVerifyInstanceContextRow struct {
 	MacroDefinitions       json.RawMessage `json:"macro_definitions"`
 	MacroValues            json.RawMessage `json:"macro_values"`
 	PathPattern            string          `json:"path_pattern"`
+	ExcludeDirectories     json.RawMessage `json:"exclude_directories"`
 }
 
 // 日志格式认证的 instance 依据：一条 (逻辑服务 × 部署实例 × 日志定义) 的取样上下文。
@@ -2644,6 +2647,7 @@ func (q *Queries) GetLogVerifyInstanceContext(ctx context.Context, arg GetLogVer
 		&i.MacroDefinitions,
 		&i.MacroValues,
 		&i.PathPattern,
+		&i.ExcludeDirectories,
 	)
 	return i, err
 }
@@ -4255,7 +4259,7 @@ func (q *Queries) ListServicePortMacroContexts(ctx context.Context, serviceID in
 
 const listServiceTemplateLogs = `-- name: ListServiceTemplateLogs :many
 
-SELECT ld.id, ld.name, ld.path_pattern,
+SELECT ld.id, ld.name, ld.path_pattern, ld.exclude_directories,
        ld.processing_rule_id, COALESCE(rule.name, '') AS processing_rule_name,
        COALESCE(rule.input_format, '') AS processing_rule_input_format,
        COALESCE(rule.multiline_enabled, FALSE) AS processing_rule_multiline_enabled,
@@ -4299,6 +4303,7 @@ type ListServiceTemplateLogsRow struct {
 	ID                                int64           `json:"id"`
 	Name                              string          `json:"name"`
 	PathPattern                       string          `json:"path_pattern"`
+	ExcludeDirectories                json.RawMessage `json:"exclude_directories"`
 	ProcessingRuleID                  sql.NullInt64   `json:"processing_rule_id"`
 	ProcessingRuleName                string          `json:"processing_rule_name"`
 	ProcessingRuleInputFormat         string          `json:"processing_rule_input_format"`
@@ -4351,6 +4356,7 @@ func (q *Queries) ListServiceTemplateLogs(ctx context.Context, serviceID int64) 
 			&i.ID,
 			&i.Name,
 			&i.PathPattern,
+			&i.ExcludeDirectories,
 			&i.ProcessingRuleID,
 			&i.ProcessingRuleName,
 			&i.ProcessingRuleInputFormat,
@@ -4490,7 +4496,7 @@ func (q *Queries) ListTemplateControlActions(ctx context.Context, deploymentTemp
 }
 
 const listTemplateLogDefinitions = `-- name: ListTemplateLogDefinitions :many
-SELECT id,create_time,update_time,remark,name,path_pattern,extra_fields,processing_rule_id,
+SELECT id,create_time,update_time,remark,name,path_pattern,extra_fields,exclude_directories,processing_rule_id,
        filter_include_rule_id,filter_exclude_rule_id
 FROM assets_application_log_definition WHERE deployment_template_id=$1 ORDER BY id
 `
@@ -4503,6 +4509,7 @@ type ListTemplateLogDefinitionsRow struct {
 	Name                string          `json:"name"`
 	PathPattern         string          `json:"path_pattern"`
 	ExtraFields         json.RawMessage `json:"extra_fields"`
+	ExcludeDirectories  json.RawMessage `json:"exclude_directories"`
 	ProcessingRuleID    sql.NullInt64   `json:"processing_rule_id"`
 	FilterIncludeRuleID sql.NullInt64   `json:"filter_include_rule_id"`
 	FilterExcludeRuleID sql.NullInt64   `json:"filter_exclude_rule_id"`
@@ -4525,6 +4532,7 @@ func (q *Queries) ListTemplateLogDefinitions(ctx context.Context, deploymentTemp
 			&i.Name,
 			&i.PathPattern,
 			&i.ExtraFields,
+			&i.ExcludeDirectories,
 			&i.ProcessingRuleID,
 			&i.FilterIncludeRuleID,
 			&i.FilterExcludeRuleID,
@@ -5279,12 +5287,12 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) er
 const updateTemplateLogDefinition = `-- name: UpdateTemplateLogDefinition :execresult
 UPDATE assets_application_log_definition
 SET update_time=$1,remark=$2,name=$3,
-    path_pattern=$4,extra_fields=$5,
-    processing_rule_id=$6,
+    path_pattern=$4,extra_fields=$5,exclude_directories=$6,
+    processing_rule_id=$7,
     -- 采集过滤的模板级默认值（NULL = 该方向不过滤；服务级可覆盖/关闭）
-    filter_include_rule_id=$7,
-    filter_exclude_rule_id=$8
-WHERE id=$9 AND deployment_template_id=$10
+    filter_include_rule_id=$8,
+    filter_exclude_rule_id=$9
+WHERE id=$10 AND deployment_template_id=$11
 `
 
 type UpdateTemplateLogDefinitionParams struct {
@@ -5293,6 +5301,7 @@ type UpdateTemplateLogDefinitionParams struct {
 	Name                 string          `json:"name"`
 	PathPattern          string          `json:"path_pattern"`
 	ExtraFields          json.RawMessage `json:"extra_fields"`
+	ExcludeDirectories   json.RawMessage `json:"exclude_directories"`
 	ProcessingRuleID     sql.NullInt64   `json:"processing_rule_id"`
 	FilterIncludeRuleID  sql.NullInt64   `json:"filter_include_rule_id"`
 	FilterExcludeRuleID  sql.NullInt64   `json:"filter_exclude_rule_id"`
@@ -5309,6 +5318,7 @@ func (q *Queries) UpdateTemplateLogDefinition(ctx context.Context, arg UpdateTem
 		arg.Name,
 		arg.PathPattern,
 		arg.ExtraFields,
+		arg.ExcludeDirectories,
 		arg.ProcessingRuleID,
 		arg.FilterIncludeRuleID,
 		arg.FilterExcludeRuleID,

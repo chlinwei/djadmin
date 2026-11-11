@@ -36,13 +36,13 @@ func TestServiceConfigReadKeepsHostsOnInvalidTier(t *testing.T) {
 	)
 	entries := sqlmock.NewRows([]string{
 		"host_id", "project_code", "environment_code", "business_system_code", "service_code", "service_id",
-		"application_code", "tier_code", "pipeline_name", "log_name", "path_pattern",
+		"application_code", "tier_code", "pipeline_name", "log_name", "path_pattern", "exclude_directories",
 		"macro_values", "macro_definitions", "multiline_enabled", "start_pattern", "flush_timeout",
 		"filter_include_rule_id", "filter_exclude_rule_id", "collection_filter_rule_id", "collection_exclude_filter_rule_id", "extra_processors",
 	})
 	for _, tier := range []string{"hot", ""} {
 		entries.AddRow(719, "p", "test", "imf", "aos_122", 32, "app", tier, "rule", tier+".log",
-			"/logs/"+tier+".log", []byte(`{}`), []byte(`[]`), false, "", 1000, nil, nil, nil, nil, []byte(`[]`))
+			"/logs/"+tier+".log", []byte(`[]`), []byte(`{}`), []byte(`[]`), false, "", 1000, nil, nil, nil, nil, []byte(`[]`))
 	}
 	mock.ExpectQuery("FROM assets_application_service s").WillReturnRows(entries)
 	recorder := httptest.NewRecorder()
@@ -102,13 +102,13 @@ func TestConfigStateEvaluatorsRejectDuplicatePaths(t *testing.T) {
 			)
 			entries := sqlmock.NewRows([]string{
 				"host_id", "project_code", "environment_code", "business_system_code", "service_code", "service_id",
-				"application_code", "tier_code", "pipeline_name", "log_name", "path_pattern",
+				"application_code", "tier_code", "pipeline_name", "log_name", "path_pattern", "exclude_directories",
 				"macro_values", "macro_definitions", "multiline_enabled", "start_pattern", "flush_timeout",
 				"filter_include_rule_id", "filter_exclude_rule_id", "collection_filter_rule_id", "collection_exclude_filter_rule_id", "extra_processors",
 			})
 			for _, id := range []int64{33, 32} {
 				entries.AddRow(779, "p", "test", "imf", "mq", id, "mq", "hot", "ibmmq", "error.log",
-					"/var/mqm/errors/AMQERR01.LOG", []byte(`{}`), []byte(`[]`), false, "", 1000,
+					"/var/mqm/errors/AMQERR01.LOG", []byte(`[]`), []byte(`{}`), []byte(`[]`), false, "", 1000,
 					nil, nil, nil, nil, []byte(`[]`))
 			}
 			mock.ExpectQuery("FROM assets_application_service s").WillReturnRows(entries)
@@ -174,7 +174,7 @@ func TestEvaluateLogConfigStates(t *testing.T) {
 		mock.ExpectQuery("FROM assets_application_service s").WillReturnRows(
 			sqlmock.NewRows([]string{
 				"host_id", "project_code", "environment_code", "business_system_code", "service_code", "service_id",
-				"application_code", "tier_code", "pipeline_name", "log_name", "path_pattern",
+				"application_code", "tier_code", "pipeline_name", "log_name", "path_pattern", "exclude_directories",
 				"macro_values", "macro_definitions", "multiline_enabled", "start_pattern", "flush_timeout",
 				// 采集过滤的四个 id（模板两个 + 服务覆盖两个）：本例都不配，按 NULL 走。
 				"filter_include_rule_id", "filter_exclude_rule_id",
@@ -183,10 +183,10 @@ func TestEvaluateLogConfigStates(t *testing.T) {
 				"extra_processors",
 			}).
 				AddRow(int64(1), "kul", "test", "tib", "svc-a", int64(10), "app-a", "hot", "rule-a", "catalina.out",
-					"/data/tpl/logs/catalina.out", []byte(`{}`), []byte(`[]`), false, "", uint32(2000),
+					"/data/tpl/logs/catalina.out", []byte(`[]`), []byte(`{}`), []byte(`[]`), false, "", uint32(2000),
 					nil, nil, nil, nil, []byte(`[]`)).
 				AddRow(int64(2), "kul", "prod", "tib", "svc-b", int64(20), "app-b", "std", "rule-b", "app.log",
-					"/data/tpl/logs/app.log", []byte(`{}`), []byte(`[]`), false, "", uint32(2000),
+					"/data/tpl/logs/app.log", []byte(`[]`), []byte(`{}`), []byte(`[]`), false, "", uint32(2000),
 					nil, nil, nil, nil, []byte(`[]`)),
 		)
 	}

@@ -122,7 +122,7 @@
               <a-col :span="12"><a-form-item label="期望 Tag"><a-input v-model:value="form.compose_config.expected_image_tag" /></a-form-item></a-col>
             </a-row>
             <template v-else-if="form.control_type === 'command'">
-              <a-alert type="warning" show-icon message="start、stop、status 必填；可引用 ${APP_HOME} 和 ${RUN_USER}。" />
+              <a-alert type="warning" show-icon message="status 必填，start、stop 选填；可引用 ${APP_HOME} 和 ${RUN_USER}。" />
               <a-row :gutter="16" class="command-grid">
                 <a-col v-for="action in commandActions" :key="action.value" :span="action.required ? 8 : 12">
                   <a-form-item :label="`${action.label}${action.required ? '（必填）' : ''}`">
@@ -207,6 +207,14 @@
                 placeholder="丢掉匹配的记录（可选）"
               />
               <a-button v-if="!readOnly" danger @click="form.logs.splice(index, 1)">移除</a-button>
+              <a-form-item label="排除目录" class="log-exclude-directories">
+                <a-textarea
+                  :value="(item.exclude_directories || []).join('\n')"
+                  :rows="2"
+                  placeholder="${LOG_DIR}/backup&#10;${LOG_DIR}/test-*"
+                  @update:value="item.exclude_directories = $event.split(/\r?\n/)"
+                />
+              </a-form-item>
             </div>
             <a-button v-if="!readOnly" type="dashed" block @click="addLog">新增日志</a-button>
             <div class="field-hint">
@@ -274,8 +282,8 @@ const pathTypeOptions = [
 ]
 const fileFormatOptions = ['xml', 'yaml', 'json', 'ini', 'properties', 'text'].map((value) => ({ label: value.toUpperCase(), value }))
 const commandActions = [
-  { label: '启动命令', value: 'start', required: true },
-  { label: '停止命令', value: 'stop', required: true },
+  { label: '启动命令', value: 'start', required: false },
+  { label: '停止命令', value: 'stop', required: false },
   { label: '状态命令', value: 'status', required: true },
   { label: '重启命令', value: 'restart', required: false },
   { label: '重载命令', value: 'reload', required: false },
@@ -382,7 +390,7 @@ function validateControlConfig() {
     if (!String(form.ha_resource_name || '').trim()) return '请输入 HA 资源名称'
     if (!String(commandValues.status || '').trim()) return '请填写 HA 状态检查 Shell'
   }
-  if (form.control_type === 'command' && !['start', 'stop', 'status'].every((action) => String(commandValues[action] || '').trim())) return '请填写启动、停止和状态命令'
+  if (form.control_type === 'command' && !String(commandValues.status || '').trim()) return '请填写状态命令'
   return ''
 }
 async function saveTemplate() {
@@ -412,6 +420,22 @@ async function submitTemplate() {
     message.error(validationMessage)
     return
   }
+  const macroNames = new Set()
+  for (const [index, item] of macroDefinitions.value.entries()) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(item.name)) {
+      message.error(`第 ${index + 1} 行宏名必须以字母或下划线开头，且只能包含字母、数字和下划线；空白行请删除`)
+      return
+    }
+    if (macroNames.has(item.name)) {
+      message.error(`第 ${index + 1} 行宏名 ${item.name} 重复`)
+      return
+    }
+    if (/[\r\n]/.test(item.value || '')) {
+      message.error(`第 ${index + 1} 行宏 ${item.name} 的值不能包含换行`)
+      return
+    }
+    macroNames.add(item.name)
+  }
   for (const [index, item] of (form.ports || []).entries()) {
     const port = String(item.port ?? '').trim()
     if (!/^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(port)
@@ -428,7 +452,10 @@ async function submitTemplate() {
   // 日志定义按 id 原地更新（id 不变，服务级覆盖不失效）：只有"编辑既有模板"才提交 id。
   // 新建/复制时不能提交 id——复制场景里这些 id 属于源模板，后端会拒。
   const keepLogIds = Boolean(props.templateId) && !props.copyFromId
-  payload.logs = (form.logs || []).map(({ id, ...rest }) => (keepLogIds ? { id, ...rest } : rest))
+  payload.logs = (form.logs || []).map(({ id, ...rest }) => {
+    const log = { ...rest, exclude_directories: (rest.exclude_directories || []).map((value) => value.trim()).filter(Boolean) }
+    return keepLogIds ? { id, ...log } : log
+  })
   // Keep the numeric API contract for literals without coercing macro expressions to zero.
   payload.ports = (form.ports || []).map((item) => {
     const port = String(item.port ?? '').trim()
@@ -455,7 +482,7 @@ const addMacro = () => macroDefinitions.value.push({ _uid: ++macroKeySeq, name: 
 const addPath = () => form.paths.push({ name: '', path_type: 'other', path: '', required: true, expected_owner: '', expected_group: '', expected_mode: '', check_enabled: true })
 const addConfigFile = () => form.config_files.push({ name: '', path: '', file_format: 'text', required: true })
 const addLog = () => form.logs.push({
-  name: '', path_pattern: '', processing_rule: null, extra_fields: {},
+  name: '', path_pattern: '', exclude_directories: [], processing_rule: null, extra_fields: {},
   filter_include_rule: null, filter_exclude_rule: null,
 })
 
@@ -514,6 +541,7 @@ watch(() => props.open, (visible) => {
 .path-row { grid-template-columns: 1fr 150px 2fr 72px; }
 .config-row { grid-template-columns: 1fr 2fr 130px 72px; }
 .log-row { grid-template-columns: 1fr 2fr 110px 72px; }
+.log-exclude-directories { grid-column: 1 / -1; margin-bottom: 0; min-width: 0; }
 :global(.application-template-modal .ant-modal) {
   width: min(1180px, calc(100vw - 240px)) !important;
   max-width: none;

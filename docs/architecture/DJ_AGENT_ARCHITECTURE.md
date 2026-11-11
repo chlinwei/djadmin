@@ -49,6 +49,11 @@ API 启用条件、授权与浏览器入口见[日志管理](modules/LOGGING.md#
 软链接按保守策略跟随检查；同一 input 的多个别名不视为跨 input 冲突。
 动作不读日志正文、不写配置、不修改日志文件或进程状态。
 
+每个 input 的 `prospector.scanner.exclude_files` 按 RE2 正则数组解析，规则仅在该 input 生效。
+遍历前按逻辑路径跳过匹配目录及其文件，不进入物理身份重叠检查；无效正则明确失败。
+后端把模板日志的固定/单层通配排除目录和宏统一转换为此字段，预检、写盘前复检与 Filebeat
+使用同一规则。全部文件被排除时按零匹配回执处理，不把未采集文件算作重复归属。
+
 返回 `data.path_check`：`version=1`、`checked=true`、`files_digest=SHA256(JSON(files))`、
 `inputs_checked`、`matched_files` 和 `unmatched_patterns`。
 未产生的文件/零匹配明确列在回执中，不视为扫描失败；无权限、损坏链接、非普通文件、

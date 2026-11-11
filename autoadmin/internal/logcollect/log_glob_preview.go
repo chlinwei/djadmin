@@ -8,6 +8,7 @@ import (
 	"autoadmin/internal/assets"
 	db "autoadmin/internal/platform/database/generated"
 	"autoadmin/internal/shared/apperror"
+	"autoadmin/internal/shared/logmacro"
 )
 
 // 日志路径通配展开（按需，架构文档 §4.8 的补充能力）。
@@ -86,20 +87,28 @@ func (handler *Handler) PreviewLogGlob(ctx context.Context, request assets.LogGl
 			result.Instances = append(result.Instances, item)
 			continue
 		}
-		// 不含通配：这条日志就是这一个文件，无需调 agent。
-		if !hasGlobMeta(path) {
+		exclusions, exclusionErr := logmacro.ResolveExcludeJSON(instance.ExcludeDirectories,
+			templateMacroDefaults(string(instance.MacroDefinitions)), parseMacroJSON(string(instance.MacroValues)),
+			instanceMacros(string(instance.RuntimeVariables), instance.AppHome))
+		if exclusionErr != nil {
+			item.Error = "排除目录无效：" + exclusionErr.Error()
+			result.Instances = append(result.Instances, item)
+			continue
+		}
+		// 不含通配且不涉及排除时无需调 agent。
+		if !hasGlobMeta(path) && len(exclusions) == 0 {
 			item.Matches = []string{path}
 			result.Instances = append(result.Instances, item)
 			continue
 		}
-		cacheKey := instance.HostInstanceName + "\x00" + path
+		cacheKey := instance.HostInstanceName + "\x00" + path + "\x00" + strings.Join(exclusions, "\x00")
 		if cached, ok := cache[cacheKey]; ok {
 			item.Matches = cached
 			result.Instances = append(result.Instances, item)
 			continue
 		}
 		// 后端用 ListFiles 逐层展开（不依赖 agent 版本），按实例分组回给界面。
-		files, globErr := handler.resolveRemoteGlob(previewContext, instance.HostInstanceName, path)
+		files, globErr := handler.resolveRemoteGlob(previewContext, instance.HostInstanceName, path, exclusions...)
 		if globErr != nil {
 			item.Error = globErr.Error()
 		} else {
@@ -108,7 +117,9 @@ func (handler *Handler) PreviewLogGlob(ctx context.Context, request assets.LogGl
 				item.Matches = append(item.Matches, file.Path)
 			}
 		}
-		cache[cacheKey] = item.Matches
+		if item.Error == "" {
+			cache[cacheKey] = item.Matches
+		}
 		result.Instances = append(result.Instances, item)
 	}
 	return result, nil

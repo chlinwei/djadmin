@@ -390,7 +390,8 @@ describe('ServiceTreeNodeContent', () => {
     try {
       await flushPromises()
       expect(wrapper.find('.abnormal-count-link').text()).toBe('8')
-      expect(wrapper.find('.abnormal-summary-link').text()).toBe('8 个异常实例')
+      expect(wrapper.find('.node-content-header').text()).not.toContain('8 个异常实例')
+      expect(wrapper.findAll('.abnormal-count-link')).toHaveLength(1)
       const requestCount = applicationApi.getApplicationDeploymentList.mock.calls.length
       await wrapper.find('.abnormal-count-link').trigger('click')
       const modal = wrapper.findComponent({ name: 'AModal' })
@@ -425,12 +426,12 @@ describe('ServiceTreeNodeContent', () => {
         businessSystemId: 7, environment: 72, projectId: 5, projectName: '订单项目',
       })
       expect(modal.props('open')).toBe(false)
-      await wrapper.find('.abnormal-summary-link').trigger('click')
+      await wrapper.find('.abnormal-count-link').trigger('click')
       await wrapper.find('.abnormal-instance-link').trigger('click')
       expect(wrapper.emitted('navigate').at(-1)[0]).toMatchObject({
         nodeType: 'deployment', deploymentId: 31, applicationServiceId: 21,
       })
-      await wrapper.find('.abnormal-summary-link').trigger('click')
+      await wrapper.find('.abnormal-count-link').trigger('click')
       await wrapper.setProps({ scope: { nodeType: 'all', nodeTitle: '其他范围' } })
       await flushPromises()
       expect(modal.props('open')).toBe(false)
@@ -583,10 +584,15 @@ describe('ServiceTreeNodeContent', () => {
         await wrapper.setProps({ scope })
         await flushPromises()
         const tag = wrapper.find('.node-content-header').findComponent({ name: 'ATag' })
-        expect(tag.text()).toBe(label)
-        expect(tag.props('color')).toBe(color)
+        const hasAbnormalInstances = statuses.some((status) => ['stopped', 'error'].includes(status))
+        expect(tag.exists()).toBe(!hasAbnormalInstances)
+        if (!hasAbnormalInstances) {
+          expect(tag.text()).toBe(label)
+          expect(tag.props('color')).toBe(color)
+        }
+        expect(wrapper.vm.summaryStatus).toEqual({ label, color })
         expect(wrapper.vm.descendants).toHaveLength(statuses.length)
-        expect(wrapper.find('.abnormal-count-link').exists()).toBe(statuses.some((status) => ['stopped', 'error'].includes(status)))
+        expect(wrapper.findAll('.abnormal-count-link')).toHaveLength(hasAbnormalInstances ? 1 : 0)
       }
       expect(applicationApi.refreshApplicationServiceRuntimeStatus).not.toHaveBeenCalled()
     } finally {

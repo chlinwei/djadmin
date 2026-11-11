@@ -48,10 +48,7 @@
             </a-button>
           </a-tooltip>
         </template>
-        <a-tag :color="summaryStatus.color">
-          <a v-if="abnormalCount > 0" class="abnormal-summary-link" href="#" @click.prevent="abnormalDetailsOpen = true">{{ summaryStatus.label }}</a>
-          <template v-else>{{ summaryStatus.label }}</template>
-        </a-tag>
+        <a-tag v-if="abnormalCount === 0" :color="summaryStatus.color">{{ summaryStatus.label }}</a-tag>
       </a-space>
     </header>
 
@@ -998,8 +995,7 @@ defineExpose({ refresh })
 .metric-label { color: #687386; font-size: 12px; }
 .metric-item strong { color: #172033; font-size: 22px; font-weight: 600; }
 .metric-item strong.metric-danger { color: #cf1322; }
-.abnormal-count-link,
-.abnormal-summary-link { color: inherit; text-decoration: underline; }
+.abnormal-count-link { color: inherit; text-decoration: underline; }
 .abnormal-details-tip { margin-bottom: 12px; }
 .abnormal-output {
   margin: 0;

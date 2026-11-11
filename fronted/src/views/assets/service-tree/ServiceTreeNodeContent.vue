@@ -303,7 +303,7 @@ import {
   getBusinessSystem,
   getBusinessSystemList,
   getProjectList,
-  refreshApplicationServiceRuntimeStatus,
+  refreshApplicationDeploymentRuntimeStatus,
 } from '@/api/assets/application'
 import { getHostById } from '@/api/assets/host'
 import { buildDeploymentWebSSHRoute, buildServiceTreeBreadcrumbs } from './navigation'
@@ -624,44 +624,58 @@ async function fetchAll(loader, params = {}) {
   return records
 }
 
-// Agent 检查与页面加载解耦；同服务复用在途请求，各节点只接收自己当前加载代次的结果。
+// 当前范围按实例去重；跨节点复用在途检查，避免共享实例或快速切换重复派发 Agent 作业。
 async function refreshRuntimeStatus(silent = false) {
   // 运行状态检查会在主机执行并回写结果，查看服务树不能代替应用更新权限。
   if (!checkPermission('assets:applications:update')) return
-  const serviceId = props.scope.nodeType === 'service' ? props.scope.applicationServiceId : null
-  if (!serviceId || !viewActive) return
-  const key = String(serviceId)
+  if (!viewActive || loading.value) return
+  const targets = props.scope.nodeType === 'deployment' ? [detail.value].filter(Boolean) : descendants.value
+  const ids = [...new Set(targets.filter((item) => item.enabled !== false).map((item) => item.id))]
+  if (!ids.length) return
   const sequence = loadSequence
-  if (runtimeRefreshRequests.has(key) && runtimeSubscriptionSequence === sequence) return
+  if (runtimeRefreshing.value && runtimeSubscriptionSequence === sequence) return
   runtimeSubscriptionSequence = sequence
   const isCurrent = () => viewActive && sequence === loadSequence
-    && props.scope.nodeType === 'service' && String(props.scope.applicationServiceId) === key
   runtimeRefreshing.value = true
   runtimeRefreshError.value = ''
   try {
-    let request = runtimeRefreshRequests.get(key)
-    if (!request) {
-      request = (async () => {
-        try {
-          const response = await refreshApplicationServiceRuntimeStatus(serviceId, 120000, {
+    const updates = []
+    // Match backend concurrency: queued waves must not consume the HTTP timeout,
+    // hold completed snapshots, or keep dispatching an obsolete scope.
+    for (let offset = 0; offset < ids.length; offset += 8) {
+      if (!isCurrent()) return
+      const batch = ids.slice(offset, offset + 8)
+      const pendingIds = batch.filter((id) => !runtimeRefreshRequests.has(id))
+      if (pendingIds.length) {
+        const request = (async () => {
+          const response = await refreshApplicationDeploymentRuntimeStatus(pendingIds, 150000, {
             suppressBusinessErrorMessage: true,
           })
-          // 离开节点后不再补拉列表；检查结果已由后端落库，重新进入时读取即可。
-          const deployments = viewActive && props.scope.nodeType === 'service'
-            && String(props.scope.applicationServiceId) === key
-            ? await fetchAll(getApplicationDeploymentList, { application_service: serviceId })
-            : null
-          return { response, deployments }
-        } finally {
-          runtimeRefreshRequests.delete(key)
+          const items = response?.data?.data?.results
+          if (!Array.isArray(items)) throw new Error('状态检查未返回实例明细')
+          const results = new Map()
+          for (const item of items) {
+            if (!item || !['running', 'stopped', 'error', 'unknown'].includes(item.runtime_status)) {
+              throw new Error(`实例 ${item?.id ?? '-'} 返回了无效运行状态`)
+            }
+            results.set(String(item.id), item)
+          }
+          if (pendingIds.some((id) => !results.has(String(id)))) throw new Error('状态检查返回的实例明细不完整')
+          return results
+        })()
+        for (const id of pendingIds) {
+          const pending = request.then((results) => results.get(String(id)))
+          runtimeRefreshRequests.set(id, pending)
+          // Both outcomes release the slot; each active subscriber handles the original rejection.
+          const release = () => {
+            if (runtimeRefreshRequests.get(id) === pending) runtimeRefreshRequests.delete(id)
+          }
+          pending.then(release, release)
         }
-      })()
-      runtimeRefreshRequests.set(key, request)
-    }
-    const { response, deployments } = await request
-    if (!isCurrent()) return
-    if (deployments) {
-      const latest = new Map(deployments.map((item) => [String(item.id), item]))
+      }
+      const batchUpdates = await Promise.all(batch.map((id) => runtimeRefreshRequests.get(id)))
+      if (!isCurrent()) return
+      const latest = new Map(batchUpdates.map((item) => [String(item.id), item]))
       const mergeStatus = (item) => {
         const update = latest.get(String(item.id))
         return update ? {
@@ -673,10 +687,18 @@ async function refreshRuntimeStatus(silent = false) {
       }
       rows.value = rows.value.map(mergeStatus)
       descendants.value = descendants.value.map(mergeStatus)
+      if (detail.value) detail.value = mergeStatus(detail.value)
+      updates.push(...batchUpdates)
     }
-    if (!silent) {
-      const summary = response?.data?.data?.summary || {}
-      message.success(`运行状态已刷新：运行中 ${summary.running || 0} / 已停止 ${summary.stopped || 0} / 检查失败 ${summary.error || 0}`)
+    const failures = updates.filter((item) => item.error)
+    if (failures.length) {
+      const text = failures.map((item) => `${item.id}: ${item.error}`).join('；')
+      runtimeRefreshError.value = text
+      if (!silent) message.error(text)
+    } else if (!silent) {
+      const summary = { running: 0, stopped: 0, error: 0, unknown: 0 }
+      for (const item of updates) summary[item.runtime_status]++
+      message.success(`运行状态已刷新：运行中 ${summary.running} / 已停止 ${summary.stopped} / 检查失败 ${summary.error}`)
     }
   } catch (error) {
     const text = error?.response?.data?.msg || error?.message || '查询运行状态失败'
@@ -684,7 +706,7 @@ async function refreshRuntimeStatus(silent = false) {
       runtimeRefreshError.value = text
       if (!silent) message.error(text)
     } else {
-      console.error('服务运行状态后台检查失败', serviceId, text)
+      console.error('实例运行状态后台检查失败', ids, text)
     }
   } finally {
     if (isCurrent()) runtimeRefreshing.value = false

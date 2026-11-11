@@ -96,7 +96,7 @@ func TestPreviewLogGlobReturnsMatches(t *testing.T) {
 			[]byte(`[]`),
 			sql.NullTime{}, sql.NullString{}, sql.NullString{}, sql.NullString{},
 			"nginx", "yilake", sql.NullString{String: "poc", Valid: true}, "tib", []byte("{}"),
-			[]byte("[]"), "/home/esb/data", "std",
+			[]byte("[]"), "/home/esb/data", "std", []byte(`[]`),
 		))
 	mock.ExpectQuery(regexp.QuoteMeta("FROM assets_application_service_deployment")).
 		WillReturnRows(sqlmock.NewRows([]string{"deployment_id"}).AddRow(int64(101)))
@@ -104,9 +104,9 @@ func TestPreviewLogGlobReturnsMatches(t *testing.T) {
 		WithArgs(int64(101), int64(15), int64(24)).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"deployment_id", "host_id", "host_instance_name", "deployment_instance_name",
-			"runtime_variables", "app_home", "macro_definitions", "macro_values", "path_pattern", "exclude_directories",
+			"runtime_variables", "app_home", "macro_definitions", "macro_values", "path_pattern", "exclude_directories", "exclude_file_patterns",
 		}).AddRow(int64(101), int64(5), "host-01", "inst-1", []byte("{}"), "", []byte("[]"), []byte("{}"),
-			"/home/esb/data/logs/*/log_error.log", []byte(`[]`)))
+			"/home/esb/data/logs/*/log_error.log", []byte(`[]`), []byte(`[]`)))
 
 	handler := &Handler{db: database, gateway: gateway}
 	preview, err := handler.PreviewLogGlob(context.Background(), assets.LogGlobPreviewRequest{

@@ -487,7 +487,7 @@ func (handler *Handler) persistLogTargetRuntimeStatus(context context.Context, i
 // ApplyLogTargetConfig 单条「下发配置」。
 //
 // 与批量下发（BatchApplyLogTargets）走**同一条**全流程 applyLogTargetConfigRow：读默认集群 →
-// 渲染期望片段 → 文件预检 → 指纹比对（一致则跳过）→ 一次应用主配置和 inputs.d 片段 →
+// 渲染期望片段 → 文件预检 → Agent 按实际文件应用主配置和 inputs.d 片段 →
 // 回写 config_fingerprint。
 //
 // 不单独更新 output，防止文件检查失败前就改变主机当前配置。
@@ -666,7 +666,7 @@ func (handler *Handler) batchServiceControl(context *gin.Context, action string)
 }
 
 // applyLogTargetConfigRow 是全流程下发：读默认集群 → 渲染期望片段（含 output 指纹）→
-// Agent 实际文件预检 → 指纹比对（一致则跳过）→ 一次应用主配置及片段 → 回写 config_fingerprint。
+// Agent 实际文件预检 → 按实际文件幂等应用主配置及片段 → 回写 config_fingerprint。
 //
 // 入参是 context.Context：批量作业的执行在队列消费者里跑，没有 *gin.Context 可依附；
 // 而 *gin.Context 不能带出请求生命周期（请求一结束就被取消，会把已下发的片段结果丢掉）。
@@ -689,8 +689,7 @@ func (handler *Handler) applyLogTargetConfigRow(context context.Context, row log
 		return nil, err
 	}
 
-	// 渲染服务级 inputs.d 片段（index = logs-<项目>-<业务>-<环境>-<服务>-<档位>），
-	// 指纹一致则跳过，避免无谓重启 Filebeat。
+	// 渲染服务级 inputs.d 片段（index = logs-<项目>-<业务>-<环境>-<服务>-<档位>）。
 	entries, instances, renderErr := handler.loadHostLogRenderInput(context, row.HostID)
 	if renderErr != nil {
 		return nil, fmt.Errorf("渲染 Filebeat 配置失败: %w", renderErr)
@@ -727,20 +726,8 @@ func (handler *Handler) applyLogTargetConfigRow(context context.Context, row log
 			"未发现启用的日志采集配置，仅下发 output.elasticsearch（请在服务的日志设置里开启采集后再下发一次）")
 	}
 
-	currentFingerprint, _ := queries.GetLogTargetConfigFingerprint(context, row.ID)
-	storedServiceFingerprints, _ := queries.GetLogTargetServiceFingerprints(context, row.ID)
-	// 跳过条件**必须同时**比对服务级指纹：存量目标的主机指纹没变但 service_fingerprints 为空，
-	// 只比主机指纹会一直跳过，服务级记录永远补不上（升级后服务视图会一直是"从未下发"）。
-	if rendered.Fingerprint != "" && currentFingerprint == rendered.Fingerprint && serviceFingerprintsMatch(rendered.ServiceFingerprints, storedServiceFingerprints) {
-		rendered.Warnings = append(rendered.Warnings, logPathCheckWarnings(pathCheck)...)
-		now := time.Now().UTC()
-		_ = queries.MarkLogTargetConfigApplied(context, generated.MarkLogTargetConfigAppliedParams{
-			LastAppliedTime: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: row.ID,
-		})
-		return gin.H{"skipped": true, "applied_at": now, "fingerprint": rendered.Fingerprint, "service_num": rendered.ServiceNum, "warnings": rendered.Warnings, "path_check": pathCheck}, nil
-	}
-
-	// 确实要下发时才解密口令。
+	// 数据库指纹不能证明主机文件仍存在；所有下发都交给 Agent 按实际内容幂等对账，
+	// 才能恢复丢失的主配置/目录/片段。Agent 仅在文件有写入或删除时校验并重启。
 	password, err := handler.secrets.Decrypt(cluster.Password)
 	if err != nil {
 		return nil, err
@@ -763,6 +750,20 @@ func (handler *Handler) applyLogTargetConfigRow(context context.Context, row log
 	if err != nil {
 		return nil, fmt.Errorf("Filebeat 配置应用失败，未记录同步指纹: %w", err)
 	}
+	var applied struct {
+		Restarted *bool `json:"restarted"`
+	}
+	if err := json.Unmarshal([]byte(fragmentResult.ResultDataJson), &applied); err != nil {
+		return nil, fmt.Errorf("Filebeat 配置应用回执无效，未记录同步指纹: %w", err)
+	}
+	if applied.Restarted == nil {
+		return nil, fmt.Errorf("Filebeat 配置应用回执缺少 restarted，未记录同步指纹")
+	}
+	// 内容未变时 Agent 不重启，不能把原本停止/异常的进程标成运行中。
+	restarted := int64(0)
+	if *applied.Restarted {
+		restarted = 1
+	}
 	rendered.Warnings = append(rendered.Warnings, logPathCheckWarnings(pathCheck)...)
 	now := time.Now().UTC()
 	// service_fingerprints **整体替换**为本次渲染的服务集合：服务停采/移出主机时它的 key 会消失，
@@ -770,31 +771,11 @@ func (handler *Handler) applyLogTargetConfigRow(context context.Context, row log
 	serviceFingerprintJSON, _ := json.Marshal(rendered.ServiceFingerprints)
 	if err = queries.MarkLogTargetConfigSynced(context, generated.MarkLogTargetConfigSyncedParams{
 		LastAppliedTime: sql.NullTime{Time: now, Valid: true}, ConfigFingerprint: rendered.Fingerprint,
-		ServiceFingerprints: serviceFingerprintJSON, UpdateTime: now, ID: row.ID,
+		ServiceFingerprints: serviceFingerprintJSON, Restarted: restarted, UpdateTime: now, ID: row.ID,
 	}); err != nil {
 		return nil, err
 	}
 	return gin.H{"skipped": false, "applied_at": now, "fingerprint": rendered.Fingerprint, "service_num": rendered.ServiceNum, "warnings": rendered.Warnings, "path_check": pathCheck}, nil
-}
-
-// serviceFingerprintsMatch 判断已存的服务级指纹与本次渲染的是否一致（用于下发跳过判定）。
-// 存的是 JSON map，键序不定，必须解析后逐项比对，不能比字符串。
-func serviceFingerprintsMatch(expected map[string]string, stored json.RawMessage) bool {
-	parsed := map[string]string{}
-	if len(stored) > 0 {
-		if err := json.Unmarshal(stored, &parsed); err != nil {
-			return false
-		}
-	}
-	if len(expected) != len(parsed) {
-		return false
-	}
-	for key, value := range expected {
-		if parsed[key] != value {
-			return false
-		}
-	}
-	return true
 }
 
 // ---- 批量创建（纳管 Filebeat） ----

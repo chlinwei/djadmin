@@ -70,7 +70,7 @@ func statusLogRows(entries []statusLogEntry) *sqlmock.Rows {
 			[]byte(`[]`),
 			sql.NullTime{}, entry.storedFingerprint, sql.NullString{}, sql.NullString{},
 			"nginx", "yilake", sql.NullString{String: "poc", Valid: true}, "tib", []byte("{}"),
-			[]byte(`[{"name":"APP_HOME","value":"/home/esb/tomcat"}]`), "/home/esb/tomcat", tierCode,
+			[]byte(`[{"name":"APP_HOME","value":"/home/esb/tomcat"}]`), "/home/esb/tomcat", tierCode, []byte(`[]`),
 		)
 	}
 	return rows

@@ -144,6 +144,7 @@ func TestSmokeTemplateServiceQueriesAgainstRealDatabase(t *testing.T) {
 		CreateTime: now, UpdateTime: now, Remark: sql.NullString{}, Name: "app.log",
 		PathPattern: "/opt/app/logs/*.log", DeploymentTemplateID: templateID,
 		ExtraFields: json.RawMessage(`{"tag":"smoke"}`), ProcessingRuleID: sql.NullInt64{},
+		ExcludeDirectories: json.RawMessage(`[]`), ExcludeFilePatterns: json.RawMessage(`[]`),
 	}); err != nil {
 		t.Fatalf("建模板日志定义：%v", err)
 	}

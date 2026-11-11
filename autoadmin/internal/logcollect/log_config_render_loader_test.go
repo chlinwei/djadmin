@@ -37,15 +37,15 @@ func TestLoadHostLogRenderInputsBatchesByHost(t *testing.T) {
 			"filter_include_rule_id", "filter_exclude_rule_id",
 			"collection_filter_rule_id", "collection_exclude_filter_rule_id",
 			// 服务级后处理器（2026-09-28）：本例未启用（[]）。
-			"extra_processors",
+			"extra_processors", "exclude_file_patterns",
 		}).
 			AddRow(int64(1), "kul", "test", "tib", "svc-a", int64(10), "app-a", "hot", "rule-a", "catalina.out",
 				"${APP_HOME}/logs/catalina.out", []byte(`[]`), []byte(`{"LOG_DIR":"/svc/logs"}`),
 				[]byte(`[{"name":"TEMPLATE_ONLY","value":"/tpl"}]`), true, `\d{4}`, uint32(3000),
-				nil, nil, nil, nil, []byte(`[]`)).
+				nil, nil, nil, nil, []byte(`[]`), []byte(`["-Thu\\.log$"]`)).
 			AddRow(int64(2), "kul", "prod", "tib", "svc-b", int64(20), "app-b", "std", "rule-b", "app.log",
 				"/data/app.log", []byte(`[]`), []byte(`{}`), []byte(`[]`), false, "", uint32(2000),
-				nil, nil, nil, nil, []byte(`[]`)),
+				nil, nil, nil, nil, []byte(`[]`), []byte(`[]`)),
 	)
 
 	gin.SetMode(gin.TestMode)
@@ -81,6 +81,9 @@ func TestLoadHostLogRenderInputsBatchesByHost(t *testing.T) {
 	}
 
 	entry := first.Entries[0]
+	if string(entry.ExcludeFilePatterns) != `["-Thu\\.log$"]` {
+		t.Errorf("file exclusions must survive database loading: %s", entry.ExcludeFilePatterns)
+	}
 	if entry.Project != "kul" || entry.Environment != "test" || entry.BusinessSystem != "tib" ||
 		entry.Service != "svc-a" || entry.Application != "app-a" {
 		t.Errorf("维度码映射错误（历史上曾把项目/服务写反）：%+v", entry)

@@ -1,10 +1,32 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import requestUtil from '@/util/request'
-import { getApplicationServiceLogStatusSummary, saveApplicationService, saveApplicationDeploymentTemplate } from './index'
+import { getApplicationServiceLogStatusSummary, refreshApplicationDeploymentRuntimeStatus, saveApplicationService, saveApplicationDeploymentTemplate } from './index'
 
 vi.mock('@/util/request', () => ({
     default: { get: vi.fn(), post: vi.fn(), patch: vi.fn() },
 }))
+
+describe('当前范围实例状态检查', () => {
+    beforeEach(() => vi.clearAllMocks())
+
+    it('仅通过 GET URL 参数提交实例 ID 并保留超时和错误提示归属', async () => {
+        const options = { suppressBusinessErrorMessage: true }
+        await refreshApplicationDeploymentRuntimeStatus([60, 61], 120000, options)
+        expect(requestUtil.get).toHaveBeenCalledWith(
+            'assets/application-deployments/refresh-runtime-status/',
+            { ids: '60,61' }, 120000, options,
+        )
+        expect(requestUtil.post).not.toHaveBeenCalled()
+    })
+
+    it('默认 HTTP 等待时间大于 Agent 执行和后端等待回包的期限', async () => {
+        await refreshApplicationDeploymentRuntimeStatus([60])
+        expect(requestUtil.get).toHaveBeenCalledWith(
+            'assets/application-deployments/refresh-runtime-status/',
+            { ids: '60' }, 150000, {},
+        )
+    })
+})
 
 describe('服务日志状态汇总查询', () => {
     beforeEach(() => vi.clearAllMocks())

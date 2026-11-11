@@ -64,6 +64,7 @@ func (r *Repository) loadTemplateNested(ctx context.Context, id int64) (Deployme
 		item.Remark = stringValue(row.Remark)
 		item.Name, item.PathPattern = row.Name, row.PathPattern
 		item.ExcludeDirectories = row.ExcludeDirectories
+		item.ExcludeFilePatterns = row.ExcludeFilePatterns
 		item.ExtraFields = rawJSONOrObject(row.ExtraFields)
 		item.ProcessingRule = intPtr(row.ProcessingRuleID)
 		item.FilterIncludeRule = intPtr(row.FilterIncludeRuleID)

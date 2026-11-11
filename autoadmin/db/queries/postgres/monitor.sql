@@ -1041,7 +1041,8 @@ SELECT DISTINCT d.host_id, p.code AS project_code, e.code AS environment_code,
     ld.filter_include_rule_id, ld.filter_exclude_rule_id,
     ls.collection_filter_rule_id, ls.collection_exclude_filter_rule_id,
     -- 所有绑定解析规则的日志统一指向服务包装；额外处理器可为空。
-    COALESCE(ls.extra_processors, '[]'::json) AS extra_processors
+    COALESCE(ls.extra_processors, '[]'::json) AS extra_processors,
+    ld.exclude_file_patterns
 FROM assets_application_service s
 JOIN assets_business_system bs ON bs.id = s.business_system_id
 JOIN assets_project p ON p.id = bs.project_id
@@ -1101,7 +1102,8 @@ WHERE id = sqlc.arg(id);
 -- 指纹变化并下发成功后：记下发时间与指纹。
 -- name: MarkLogTargetConfigSynced :exec
 UPDATE monitor_log_collection_target
-SET last_applied_time=sqlc.arg(last_applied_time), runtime_status='running', last_error='',
+SET last_applied_time=sqlc.arg(last_applied_time),
+    runtime_status=CASE WHEN sqlc.arg(restarted) = 1 THEN 'running' ELSE runtime_status END, last_error='',
     config_fingerprint=sqlc.arg(config_fingerprint), service_fingerprints=sqlc.arg(service_fingerprints),
     update_time=sqlc.arg(update_time)
 WHERE id = sqlc.arg(id);

@@ -95,15 +95,16 @@ type TemplateConfigFile struct {
 // （`assets_application_service_log_setting.collection_enabled`，无覆盖行 = 采），
 // 模板只描述"这条日志的路径怎么算、挂哪条处理规则"（迁移 000034 删掉了模板级开关）。
 type TemplateLog struct {
-	ID                 int64           `json:"id"`
-	CreateTime         string          `json:"create_time"`
-	UpdateTime         string          `json:"update_time"`
-	Remark             *string         `json:"remark"`
-	Name               string          `json:"name"`
-	PathPattern        string          `json:"path_pattern"`
-	ExcludeDirectories json.RawMessage `json:"exclude_directories"`
-	ProcessingRule     *int64          `json:"processing_rule"`
-	ExtraFields        json.RawMessage `json:"extra_fields"`
+	ID                  int64           `json:"id"`
+	CreateTime          string          `json:"create_time"`
+	UpdateTime          string          `json:"update_time"`
+	Remark              *string         `json:"remark"`
+	Name                string          `json:"name"`
+	PathPattern         string          `json:"path_pattern"`
+	ExcludeDirectories  json.RawMessage `json:"exclude_directories"`
+	ExcludeFilePatterns json.RawMessage `json:"exclude_file_patterns"`
+	ProcessingRule      *int64          `json:"processing_rule"`
+	ExtraFields         json.RawMessage `json:"extra_fields"`
 	// 采集过滤的模板级默认值（2026-09-19）：include 只采匹配、exclude 丢掉匹配；
 	// NULL = 该方向不过滤。服务级可覆盖或显式关闭（见 LOG_COLLECTION_ARCHITECTURE §6）。
 	FilterIncludeRule *int64 `json:"filter_include_rule"`
@@ -198,13 +199,14 @@ type TemplateConfigFileInput struct {
 type TemplateLogInput struct {
 	// ID 是模板日志定义行的 id：非 0 表示"更新这一行"（id 保持不变，引用它的服务级覆盖
 	// 因此不会失效），0/缺省表示新增。提交的 id 必须属于本模板，否则整个保存被拒。
-	ID                 int64           `json:"id"`
-	Name               string          `json:"name"`
-	PathPattern        string          `json:"path_pattern"`
-	ExcludeDirectories []string        `json:"exclude_directories"`
-	ProcessingRule     *int64          `json:"processing_rule"`
-	ExtraFields        json.RawMessage `json:"extra_fields"`
-	Remark             *string         `json:"remark"`
+	ID                  int64           `json:"id"`
+	Name                string          `json:"name"`
+	PathPattern         string          `json:"path_pattern"`
+	ExcludeDirectories  []string        `json:"exclude_directories"`
+	ExcludeFilePatterns []string        `json:"exclude_file_patterns"`
+	ProcessingRule      *int64          `json:"processing_rule"`
+	ExtraFields         json.RawMessage `json:"extra_fields"`
+	Remark              *string         `json:"remark"`
 	// 采集过滤默认值：规则类型必须与槽位一致（include 槽只接 include 规则），
 	// 渲染时还会再校验一次方向（见 logcollect/log_collection_filter.go）。
 	FilterIncludeRule *int64 `json:"filter_include_rule"`
@@ -478,6 +480,9 @@ func planTemplateLogWrites(existingIDs []int64, submitted []TemplateLogInput, cr
 		if err := logmacro.ValidateExcludeDirectories(item.ExcludeDirectories); err != nil {
 			return plan, apperror.New(apperror.CodeInvalidArgument, fmt.Sprintf("日志 %s：%s", item.Name, err))
 		}
+		if err := logmacro.ValidateExcludeFilePatterns(item.ExcludeFilePatterns); err != nil {
+			return plan, apperror.New(apperror.CodeInvalidArgument, fmt.Sprintf("日志 %s：%s", item.Name, err))
+		}
 		switch {
 		case item.ID <= 0:
 			plan.Inserts = append(plan.Inserts, item)
@@ -532,11 +537,13 @@ func applyTemplateLogWrites(
 	}
 	for _, item := range plan.Updates {
 		directories, _ := json.Marshal(append([]string{}, item.ExcludeDirectories...))
+		filePatterns, _ := json.Marshal(append([]string{}, item.ExcludeFilePatterns...))
 		result, updateErr := queries.UpdateTemplateLogDefinition(context, db.UpdateTemplateLogDefinitionParams{
 			UpdateTime: now, Remark: nullableString(item.Remark), Name: strings.TrimSpace(item.Name),
 			PathPattern: item.PathPattern, ExtraFields: jsonValue(item.ExtraFields, "{}"),
-			ExcludeDirectories: directories,
-			ProcessingRuleID:   nullableInt(item.ProcessingRule),
+			ExcludeDirectories:  directories,
+			ExcludeFilePatterns: filePatterns,
+			ProcessingRuleID:    nullableInt(item.ProcessingRule),
 			// 模板级采集过滤默认值（服务级可覆盖/关闭，见 logcollect/log_collection_filter.go）
 			FilterIncludeRuleID: nullableInt(item.FilterIncludeRule),
 			FilterExcludeRuleID: nullableInt(item.FilterExcludeRule),
@@ -552,10 +559,12 @@ func applyTemplateLogWrites(
 	}
 	for _, item := range plan.Inserts {
 		directories, _ := json.Marshal(append([]string{}, item.ExcludeDirectories...))
+		filePatterns, _ := json.Marshal(append([]string{}, item.ExcludeFilePatterns...))
 		if err = queries.CreateTemplateLogDefinition(context, db.CreateTemplateLogDefinitionParams{
 			CreateTime: now, UpdateTime: now, Remark: nullableString(item.Remark),
 			Name: strings.TrimSpace(item.Name), PathPattern: item.PathPattern,
 			ExcludeDirectories:   directories,
+			ExcludeFilePatterns:  filePatterns,
 			DeploymentTemplateID: templateID, ExtraFields: jsonValue(item.ExtraFields, "{}"),
 			ProcessingRuleID:    nullableInt(item.ProcessingRule),
 			FilterIncludeRuleID: nullableInt(item.FilterIncludeRule),

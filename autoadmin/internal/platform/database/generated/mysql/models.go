@@ -124,6 +124,7 @@ type AssetsApplicationLogDefinition struct {
 	Name                 string          `json:"name"`
 	PathPattern          string          `json:"path_pattern"`
 	ExcludeDirectories   json.RawMessage `json:"exclude_directories"`
+	ExcludeFilePatterns  json.RawMessage `json:"exclude_file_patterns"`
 	DeploymentTemplateID int64           `json:"deployment_template_id"`
 	ExtraFields          json.RawMessage `json:"extra_fields"`
 	ProcessingRuleID     sql.NullInt64   `json:"processing_rule_id"`

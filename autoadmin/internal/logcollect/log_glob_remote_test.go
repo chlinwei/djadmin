@@ -60,6 +60,9 @@ func TestTailRemoteFilePicksNewestGlobMatch(t *testing.T) {
 		},
 		"/var/log/app-new": {
 			{Name: "error.log", IsDir: false, Size: newestSize, Mtime: 2},
+			{Name: "HAK_random.log", Size: 10, Mtime: 2},
+			{Name: "HAK_random-星期四.log", Size: 10, Mtime: 2},
+			{Name: "HAK_other-Thu.log", Size: 10, Mtime: 2},
 		},
 	}
 	var newDirectoryReads atomic.Int32
@@ -107,6 +110,14 @@ func TestTailRemoteFilePicksNewestGlobMatch(t *testing.T) {
 	}
 	if _, err := handler.resolveRemoteGlob(ctx, "host-01", "/var/log/*/error.log", `^/var/log/app-[^/]*/`); err == nil {
 		t.Fatal("all files excluded must not pass certification")
+	}
+	files, err = handler.resolveRemoteGlob(ctx, "host-01", "/var/log/app-new/HAK*.log",
+		`-(星期[一二三四五六日天]|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\.log$`)
+	if err != nil || len(files) != 1 || files[0].Path != "/var/log/app-new/HAK_random.log" {
+		t.Fatalf("preview/certification must skip weekday suffixes regardless of random prefixes: %+v, %v", files, err)
+	}
+	if _, err := handler.resolveRemoteGlob(ctx, "host-01", "/var/log/app-new/HAK_other-Thu.log", `-Thu\.log$`); err == nil {
+		t.Fatal("literal excluded path must also fail without reading its contents")
 	}
 }
 

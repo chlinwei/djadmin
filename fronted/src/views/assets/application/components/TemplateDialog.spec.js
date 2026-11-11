@@ -191,9 +191,13 @@ describe('模板命令行控制', () => {
 })
 
 describe('模板端口表达式', () => {
-  it.each([{}, { templateId: 2 }, { copyFromId: 2 }])('模板保存保留固定和通配排除目录 %j', async (props) => {
+  it.each([{}, { templateId: 2 }, { copyFromId: 2 }])('模板保存独立保留排除目录和文件名正则 %j', async (props) => {
     const wrapper = await openDialog(props)
-    wrapper.vm.form.logs = [{ id: 8, name: 'error', path_pattern: '${LOG_DIR}/*/error.log', exclude_directories: ['${LOG_DIR}/backup'] }]
+    const weekday = String.raw`-(星期[一二三四五六日天]|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\.log$`
+    wrapper.vm.form.logs = [{
+      id: 8, name: 'error', path_pattern: '${LOG_DIR}/*/error.log', exclude_directories: ['${LOG_DIR}/backup'],
+      exclude_file_patterns: [weekday],
+    }]
     await wrapper.findAll('.ant-tabs-tab').find((tab) => tab.text() === '路径与文件').trigger('click')
     await flushPromises()
     const exclusions = wrapper.get('.log-exclude-directories textarea')
@@ -201,19 +205,28 @@ describe('模板端口表达式', () => {
     await exclusions.setValue('${LOG_DIR}/backup\n')
     expect(exclusions.element.value).toBe('${LOG_DIR}/backup\n')
     await exclusions.setValue('${LOG_DIR}/backup\n  ${LOG_DIR}/test-*  \n\n${LOG_DIR}/node[12]/archive')
+    const files = wrapper.get('.log-exclude-file-patterns textarea')
+    expect(files.element.value).toBe(weekday)
+    await files.setValue(`${weekday}\n`)
+    expect(files.element.value).toBe(`${weekday}\n`)
+    await files.setValue(`  ${weekday}  \n\n\\.bak$`)
     await wrapper.vm.saveTemplate()
     expect(saveApplicationDeploymentTemplate).toHaveBeenCalledWith(expect.objectContaining({
       logs: [expect.objectContaining({
         exclude_directories: ['${LOG_DIR}/backup', '${LOG_DIR}/test-*', '${LOG_DIR}/node[12]/archive'],
+        exclude_file_patterns: [weekday, String.raw`\.bak$`],
       })],
     }))
     expect(saveApplicationDeploymentTemplate.mock.calls[0][0].logs[0].id).toBe(props.templateId ? 8 : undefined)
   })
 
-  it('只读模板回显排除目录且禁止修改', async () => {
+  it('只读模板回显排除目录和文件正则且禁止修改', async () => {
     getApplicationDeploymentTemplate.mockResolvedValueOnce({ data: { data: {
       id: 2, application: 1, name: 'Template', control_type: 'systemd', service_name: 'app',
-      logs: [{ name: 'error', path_pattern: '/logs/*/error.log', exclude_directories: ['/logs/backup', '/logs/test-*'] }],
+      logs: [{
+        name: 'error', path_pattern: '/logs/*/error.log', exclude_directories: ['/logs/backup', '/logs/test-*'],
+        exclude_file_patterns: [String.raw`-Thu\.log$`],
+      }],
     } } })
     const wrapper = await openDialog({ templateId: 2, readOnly: true })
     await wrapper.findAll('.ant-tabs-tab').find((tab) => tab.text() === '路径与文件').trigger('click')
@@ -221,6 +234,9 @@ describe('模板端口表达式', () => {
     const exclusions = wrapper.get('.log-exclude-directories textarea')
     expect(exclusions.element.value).toBe('/logs/backup\n/logs/test-*')
     expect(exclusions.attributes('disabled')).toBeDefined()
+    const files = wrapper.get('.log-exclude-file-patterns textarea')
+    expect(files.element.value).toBe(String.raw`-Thu\.log$`)
+    expect(files.attributes('disabled')).toBeDefined()
   })
 
   it.each([

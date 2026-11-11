@@ -36,7 +36,7 @@ import (
 
 // 批量作业的动作。取值即 monitor_log_batch_job.action。
 const (
-	// LogBatchActionApply 下发采集配置（渲染片段 + output，指纹一致则跳过）。
+	// LogBatchActionApply 下发采集配置（渲染片段 + output，由 Agent 按实际文件幂等应用）。
 	LogBatchActionApply = "apply"
 	// LogBatchActionInstall 安装/重新安装 Filebeat（离线 ansible playbook）。
 	LogBatchActionInstall = "install"

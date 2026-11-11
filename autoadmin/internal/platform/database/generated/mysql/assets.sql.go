@@ -1327,11 +1327,11 @@ func (q *Queries) CreateTemplateDockerConfig(ctx context.Context, arg CreateTemp
 const createTemplateLogDefinition = `-- name: CreateTemplateLogDefinition :exec
 INSERT INTO assets_application_log_definition
   (create_time,update_time,remark,name,path_pattern,deployment_template_id,extra_fields,exclude_directories,processing_rule_id,
-   filter_include_rule_id,filter_exclude_rule_id)
+   filter_include_rule_id,filter_exclude_rule_id,exclude_file_patterns)
 VALUES (?,?,?,?,?,
         ?,?,?,
         ?,
-        ?,?)
+        ?,?,?)
 `
 
 type CreateTemplateLogDefinitionParams struct {
@@ -1346,6 +1346,7 @@ type CreateTemplateLogDefinitionParams struct {
 	ProcessingRuleID     sql.NullInt64   `json:"processing_rule_id"`
 	FilterIncludeRuleID  sql.NullInt64   `json:"filter_include_rule_id"`
 	FilterExcludeRuleID  sql.NullInt64   `json:"filter_exclude_rule_id"`
+	ExcludeFilePatterns  json.RawMessage `json:"exclude_file_patterns"`
 }
 
 func (q *Queries) CreateTemplateLogDefinition(ctx context.Context, arg CreateTemplateLogDefinitionParams) error {
@@ -1361,6 +1362,7 @@ func (q *Queries) CreateTemplateLogDefinition(ctx context.Context, arg CreateTem
 		arg.ProcessingRuleID,
 		arg.FilterIncludeRuleID,
 		arg.FilterExcludeRuleID,
+		arg.ExcludeFilePatterns,
 	)
 	return err
 }
@@ -2669,7 +2671,7 @@ SELECT d.id AS deployment_id, d.host_id, COALESCE(h.instance_name, '') AS host_i
        COALESCE(t.app_home, '') AS app_home,
        COALESCE(t.macro_definitions, '[]') AS macro_definitions,
        COALESCE(s.macro_values, '{}') AS macro_values,
-      ld.path_pattern AS path_pattern, ld.exclude_directories
+      ld.path_pattern AS path_pattern, ld.exclude_directories, ld.exclude_file_patterns
 FROM assets_application_deployment d
 JOIN assets_host h ON h.id = d.host_id
 JOIN assets_application_service_deployment sd ON sd.deployment_id = d.id
@@ -2697,6 +2699,7 @@ type GetLogVerifyInstanceContextRow struct {
 	MacroValues            json.RawMessage `json:"macro_values"`
 	PathPattern            string          `json:"path_pattern"`
 	ExcludeDirectories     json.RawMessage `json:"exclude_directories"`
+	ExcludeFilePatterns    json.RawMessage `json:"exclude_file_patterns"`
 }
 
 // 日志格式认证的 instance 依据：一条 (逻辑服务 × 部署实例 × 日志定义) 的取样上下文。
@@ -2722,6 +2725,7 @@ func (q *Queries) GetLogVerifyInstanceContext(ctx context.Context, arg GetLogVer
 		&i.MacroValues,
 		&i.PathPattern,
 		&i.ExcludeDirectories,
+		&i.ExcludeFilePatterns,
 	)
 	return i, err
 }
@@ -4429,7 +4433,8 @@ SELECT ld.id, ld.name, ld.path_pattern, ld.exclude_directories,
        -- 就必须用与渲染同一套顺序（模板默认 → 服务覆盖 → 实例变量），见 internal/shared/logmacro。
        COALESCE(t.macro_definitions, '[]') AS macro_definitions,
        COALESCE(t.app_home, '') AS app_home,
-      CASE WHEN tier.enabled = TRUE THEN COALESCE(tier.code, '') ELSE '' END AS tier_code
+      CASE WHEN tier.enabled = TRUE THEN COALESCE(tier.code, '') ELSE '' END AS tier_code,
+       ld.exclude_file_patterns
 FROM assets_application_log_definition ld
 JOIN assets_application_service s ON s.id = ?
 JOIN assets_application_deployment_template t ON t.id = s.deployment_template_id
@@ -4477,6 +4482,7 @@ type ListServiceTemplateLogsRow struct {
 	MacroDefinitions                  json.RawMessage `json:"macro_definitions"`
 	AppHome                           string          `json:"app_home"`
 	TierCode                          string          `json:"tier_code"`
+	ExcludeFilePatterns               json.RawMessage `json:"exclude_file_patterns"`
 }
 
 // ---- 逻辑服务的日志设置读取（编辑弹窗"模板日志"表格 = 模板日志定义 + 服务级覆盖）----
@@ -4530,6 +4536,7 @@ func (q *Queries) ListServiceTemplateLogs(ctx context.Context, serviceID int64) 
 			&i.MacroDefinitions,
 			&i.AppHome,
 			&i.TierCode,
+			&i.ExcludeFilePatterns,
 		); err != nil {
 			return nil, err
 		}
@@ -4642,7 +4649,7 @@ func (q *Queries) ListTemplateControlActions(ctx context.Context, deploymentTemp
 
 const listTemplateLogDefinitions = `-- name: ListTemplateLogDefinitions :many
 SELECT id,create_time,update_time,remark,name,path_pattern,extra_fields,exclude_directories,processing_rule_id,
-       filter_include_rule_id,filter_exclude_rule_id
+       filter_include_rule_id,filter_exclude_rule_id,exclude_file_patterns
 FROM assets_application_log_definition WHERE deployment_template_id=? ORDER BY id
 `
 
@@ -4658,6 +4665,7 @@ type ListTemplateLogDefinitionsRow struct {
 	ProcessingRuleID    sql.NullInt64   `json:"processing_rule_id"`
 	FilterIncludeRuleID sql.NullInt64   `json:"filter_include_rule_id"`
 	FilterExcludeRuleID sql.NullInt64   `json:"filter_exclude_rule_id"`
+	ExcludeFilePatterns json.RawMessage `json:"exclude_file_patterns"`
 }
 
 func (q *Queries) ListTemplateLogDefinitions(ctx context.Context, deploymentTemplateID int64) ([]ListTemplateLogDefinitionsRow, error) {
@@ -4681,6 +4689,7 @@ func (q *Queries) ListTemplateLogDefinitions(ctx context.Context, deploymentTemp
 			&i.ProcessingRuleID,
 			&i.FilterIncludeRuleID,
 			&i.FilterExcludeRuleID,
+			&i.ExcludeFilePatterns,
 		); err != nil {
 			return nil, err
 		}
@@ -5436,7 +5445,8 @@ SET update_time=?,remark=?,name=?,
     processing_rule_id=?,
     -- 采集过滤的模板级默认值（NULL = 该方向不过滤；服务级可覆盖/关闭）
     filter_include_rule_id=?,
-    filter_exclude_rule_id=?
+    filter_exclude_rule_id=?,
+    exclude_file_patterns=?
 WHERE id=? AND deployment_template_id=?
 `
 
@@ -5450,6 +5460,7 @@ type UpdateTemplateLogDefinitionParams struct {
 	ProcessingRuleID     sql.NullInt64   `json:"processing_rule_id"`
 	FilterIncludeRuleID  sql.NullInt64   `json:"filter_include_rule_id"`
 	FilterExcludeRuleID  sql.NullInt64   `json:"filter_exclude_rule_id"`
+	ExcludeFilePatterns  json.RawMessage `json:"exclude_file_patterns"`
 	ID                   int64           `json:"id"`
 	DeploymentTemplateID int64           `json:"deployment_template_id"`
 }
@@ -5467,6 +5478,7 @@ func (q *Queries) UpdateTemplateLogDefinition(ctx context.Context, arg UpdateTem
 		arg.ProcessingRuleID,
 		arg.FilterIncludeRuleID,
 		arg.FilterExcludeRuleID,
+		arg.ExcludeFilePatterns,
 		arg.ID,
 		arg.DeploymentTemplateID,
 	)

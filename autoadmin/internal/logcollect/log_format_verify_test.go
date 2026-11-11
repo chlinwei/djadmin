@@ -237,7 +237,7 @@ func logFormatDefinitionColumns() []string {
 		"filter_include_rule_id", "filter_exclude_rule_id", "format_verified_at",
 		"format_verified_fingerprint", "format_verified_source", "format_verified_by",
 		"service_code", "project_code", "environment_code", "business_system_code",
-		"macro_values", "macro_definitions", "app_home", "tier_code",
+		"macro_values", "macro_definitions", "app_home", "tier_code", "exclude_file_patterns",
 	}
 }
 
@@ -252,7 +252,7 @@ func expectLogFormatDefinition(mock sqlmock.Sqlmock) {
 			[]byte(`[]`),
 			sql.NullTime{}, sql.NullString{}, sql.NullString{}, sql.NullString{},
 			"nginx", "yilake", sql.NullString{String: "poc", Valid: true}, "tib", []byte("{}"),
-			[]byte(`[{"name":"APP_HOME","value":"/home/esb/tomcat"}]`), "/home/esb/tomcat", "std",
+			[]byte(`[{"name":"APP_HOME","value":"/home/esb/tomcat"}]`), "/home/esb/tomcat", "std", []byte(`[]`),
 		))
 }
 
@@ -522,9 +522,9 @@ func TestVerifyLogFormatAllDeploymentsAllFiles(t *testing.T) {
 		WithArgs(int64(101), int64(15), int64(24)).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"deployment_id", "host_id", "host_instance_name", "deployment_instance_name",
-			"runtime_variables", "app_home", "macro_definitions", "macro_values", "path_pattern", "exclude_directories",
+			"runtime_variables", "app_home", "macro_definitions", "macro_values", "path_pattern", "exclude_directories", "exclude_file_patterns",
 		}).AddRow(int64(101), int64(5), "host-01", "inst-1", []byte("{}"), "", []byte("[]"), []byte("{}"),
-			"/var/log/*/error.log", []byte(`[]`)))
+			"/var/log/*/error.log", []byte(`[]`), []byte(`[]`)))
 
 	handler.gateway = gateway
 	report, err := handler.VerifyLogFormat(context.Background(), assets.LogFormatVerifyRequest{

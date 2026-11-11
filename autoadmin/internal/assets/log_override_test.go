@@ -63,7 +63,7 @@ func overrideFixtureRows(stored sql.NullString, collectionEnabled *bool, tier sq
 		[]byte(`[]`),
 		sql.NullTime{}, stored, sql.NullString{}, sql.NullString{},
 		"nginx", "yilake", sql.NullString{String: "poc", Valid: true}, "tib", []byte("{}"),
-		[]byte(`[{"name":"APP_HOME","value":"/home/esb/tomcat"}]`), "/home/esb/tomcat", "std",
+		[]byte(`[{"name":"APP_HOME","value":"/home/esb/tomcat"}]`), "/home/esb/tomcat", "std", []byte(`[]`),
 	)
 	return rows
 }

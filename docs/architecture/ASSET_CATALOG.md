@@ -756,7 +756,15 @@ assets 域的内联 SQL 正在按 [SQL_DESIGN.md](SQL_DESIGN.md) 的约定收敛
   其他控制类型保留非零退出码记为 `stopped` 的约定。`response.Status != success`
   或 Agent 调用失败同样记为 `error`，结果写回
   `runtime_status` / `runtime_status_output` / `last_status_check_time`。
-- **逻辑服务批量**：`GET /assets/application-services/{id}/refresh-runtime-status/`，对服务名下**所有启用**部署实例并发（最多 8）执行一次 `status` 检查，逐实例写回状态，返回 `{summary:{running,stopped,error,unknown}, total}`。服务树选中逻辑服务时的手动刷新与 15s 轮询都走这里；沿用原动作权限、自定义超时及后台错误提示策略。
+  Agent 控制命令的执行上限为 120 秒；`status` 在后端额外设置 125 秒等待回包期限，
+  为 Agent 超时响应预留 5 秒传输时间。超时明确返回检查失败，并使用未过期的请求上下文保存失败诊断，
+  不把“会话仍在线”当作可以无限等待的理由；start/stop 不增加状态检查的等待期限。
+- **逻辑服务批量**：`GET /assets/application-services/{id}/refresh-runtime-status/`，对服务名下**所有启用**部署实例并发（最多 8）执行一次 `status` 检查，逐实例写回状态，返回 `{summary:{running,stopped,error,unknown}, total}`。
+- **当前界面范围检查**：服务树统一使用 `GET /assets/application-deployments/refresh-runtime-status/?ids=...`，
+  要求 `assets:applications:update`，响应禁止缓存。ID 只从 URL 读取，缺失或非法时拒绝，不扩大为全部实例；
+  去重后最多 8 并发检查启用实例，停用实例只返回既有状态。返回
+  `{results:[{id,runtime_status,runtime_status_output,last_status_check_time,error?}],summary,total}`，
+  逐实例失败通过 `error` 明确返回并记录日志，不以旧的运行中状态伪装检查成功。
 - **主机事实观测**：单台使用 `GET /assets/hosts/{id}/refresh-info/`，批量使用 `GET /assets/hosts/refresh-info/?ids=7,8`，均要求 `assets:hosts:view`。只读取 Agent 当前事实并保存观测快照，不修改主机配置；批量 ID 缺失或非法直接拒绝，不扩展为全部主机。实时观测返回 `Cache-Control: no-store`，不保留 POST 查询入口。
 - **诊断与失败语义**：状态输出保留动作、控制类型、systemd 服务名与 scope、退出码、
   stdout/stderr/Agent 错误。Agent 未连接或模板冲突等提前失败时，
@@ -766,13 +774,18 @@ assets 域的内联 SQL 正在按 [SQL_DESIGN.md](SQL_DESIGN.md) 的约定收敛
 - **服务树页面加载**：切换节点或手动刷新时，先读取数据库中的服务详情、日志配置与部署实例快照；
   页面加载结束后独立发起运行状态检查，不等待 Agent 才显示页面。顶部刷新按钮只等待页面数据，
   慢状态检查以「状态检查中」标签提示，不遮罩页面，也不阻止切换节点。
-- **状态轮询与局部更新**：当前服务每 15 秒尝试一次检查，同一服务仍有在途请求时复用，
-  不重复向 Agent 发起检查。检查完成后补读该服务实例列表，仅合并
+- **状态轮询与局部更新**：根、项目、业务系统、环境、服务和部署节点均在进入后检查当前范围，
+  并每 15 秒尝试刷新。根节点遵循项目/环境筛选；部署节点只检查自身。
+  前端按实例 ID 复用跨节点在途检查，共享实例只发起一次检查；按后端并发数每批最多 8 个实例，
+  串行派发，单批 HTTP 超时 150 秒，长于 Agent 执行与后端回包期限；不把多轮排队塞进同一个请求，
+  也不丢弃超出首批的实例。每批完成立即合并响应中的
   `runtime_status`、`runtime_status_output`、`last_status_check_time` 并更新派生统计；
   不清空表格、不重新请求详情或日志配置、不覆盖实例其他字段。手动刷新完成检查后按
-  `summary` 提示结果，自动检查失败则保留已有状态并显示「状态刷新失败」及原因。
-- **切换与缓存生命周期**：状态请求按服务隔离，使用页面加载代次与当前服务 ID 校验结果；
-  旧节点响应不能覆盖新节点。离开服务节点后不再补拉其状态列表。keep-alive 页面失活时停止轮询、
+  当前范围结果提示汇总，逐实例失败合并为检查失败并显示原因；后续批次失败保留已完成批次的新状态，
+  未完成实例保留已有快照并明确显示「状态刷新失败」。
+- **切换与缓存生命周期**：状态结果使用页面加载代次校验；
+  旧节点响应不能覆盖新节点，切换节点或页面失活后停止派发旧范围未发出的批次，
+  新范围不等待旧范围尚未派发的批次。keep-alive 页面失活时停止轮询、
   失效未完成的页面更新，恢复时重新加载快照并恢复检查。已经下发的检查可继续落库，但不更新隐藏页面。
   状态接口自身仍在 HTTP 请求内等待 Agent，并非新增后台任务；等待已从页面主加载链路移除。
 

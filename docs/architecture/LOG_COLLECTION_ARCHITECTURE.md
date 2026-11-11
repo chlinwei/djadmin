@@ -171,9 +171,9 @@ make test PKG=./internal/assets TESTFLAGS='-run TestLogConfigSerializablePrevent
    `files_digest=SHA256(JSON(files))`，并核对完整启用 input 数量。
    无回执、假成功、摘要或数量不一致、旧 Agent 不支持动作、离线或检查错误均拒绝下发；
    不回退到旧下发链路，不修改 ES 包装、主机配置或同步指纹。
-4. 检查通过才同步 ES 包装并判断是否可按指纹跳过。指纹相同也必须先检查，
-   因为实际文件/链接变化不反映在数据库指纹中。跳过不写主机配置，响应携带检查回执。
-5. 确需应用时，只调用一次 `apply_filebeat_config`，同时传 `files`、`output` 和 `restart`。
+4. 检查通过才同步 ES 包装。数据库指纹仅记录上次成功应用的期望内容，
+   不能证明主机配置文件仍存在，不作为跳过下发的依据。
+5. 每次下发都调用一次 `apply_filebeat_config`，同时传 `files`、`output` 和 `restart`。
    Agent 在与日志撤销共用的配置锁内再次检查实际文件，完成撤销归属预检，
    然后才写 `filebeat.yml`、更新/清理 `inputs.d`，有变化时 `filebeat test config` 后重启。
    文件检查失败不写入任何主配置/片段，不清理旧 input，不重启。
@@ -217,6 +217,35 @@ service、instance、log_name、input ID、路径模式及命中文件。
 数据库迁移 `000064_log_exclude_directories` 为两种数据库增加非空 JSON 数组列；既有日志默认不排除。
 部署须执行迁移、更新后端与 Agent，再重新下发受影响主机配置；不更新运行中的 Filebeat 配置不会立即停止旧采集范围。
 
+### 日志文件正则排除
+
+每条模板日志定义可独立设置 `exclude_file_patterns` 字符串数组，默认 `[]`；
+模板「路径与文件 → 日志 → 排除文件名正则」每行一个 RE2 表达式，随模板继承到服务及部署实例。
+正则按 Filebeat `exclude_files` 的语义匹配**完整日志路径**，不是路径 glob，
+不展开 `${...}` 宏；`^` 表示完整路径开头，`$` 表示路径结尾。空行由表单提交前移除，
+后端拒绝空表达式、换行、无效 RE2（含前置裸 `*`、环视等不支持语法），不降级成不过滤。
+“排除目录”仍只接受绝对目录及目录通配符，不能填写文件正则；正文保留/丢弃规则不参与文件筛选。
+
+例如采集 `${RUN_DIR}/log/*.log`，仅排除以中文或英文星期结尾的文件：
+
+```regex
+-(星期[一二三四五六日天]|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\.log$
+```
+
+无需在前面添加 `*`，任意随机后缀的 `HAK_random.log` 保留，
+`HAK_random-星期四.log`、`HAK_random-Thu.log` 排除。
+目录规则宏展开后生成的 RE2 与文件正则合并为同一组排除表达式：
+远端预览、逐文件格式认证、实时源日志授权、Filebeat 渲染及 Agent 预检/写盘前复检一致使用；
+排除发生在读取正文、格式试算及文件重叠判定前，仅在当前 input 内生效。
+目录扫描以带 `/` 边界的路径判断是否跳过，不能因父目录自身以 `-Thu.log` 结尾而漏掉其中正常文件。
+全部排除时预览/实例认证明确报告无匹配；Agent 返回零匹配 warning，不冒充正在采集。
+改动非空文件正则会使格式认证与主机配置指纹失效，需要重新认证、重新下发。
+
+迁移 `000065_log_exclude_file_patterns` 在 MySQL/PostgreSQL 为日志定义增加非空 JSON/JSONB 数组列，
+旧记录初始化为 `[]`，不改动其采集范围，不自动把错误填入目录字段的文本搬到新字段。
+上线先执行迁移，再更新后端、前端及 Agent，然后保存模板、重新认证及下发受影响主机配置。
+回滚删除该列会丢失文件排除配置；仅更新数据库或模板不会修改主机上已下发的 Filebeat 配置。
+
 `path_check` 包含 `version`、`checked`、`files_digest`、`inputs_checked`、
 `matched_files`（匹配路径数）和 `unmatched_patterns`。它只证明检查时的文件快照，
 不保证检查之后新增文件、日志轮转或链接变化永不重叠；没有后台文件监视器，也不自动停止已运行的 Filebeat。
@@ -229,7 +258,7 @@ service、instance、log_name、input ID、路径模式及命中文件。
 
 回归命令：`cd autoadmin && make vet && make test`，以及
 `cd dj_agent && make vet && make test`。测试覆盖通配符、文件/目录软链接、硬链接、
-扫描权限及预算错误、旧/缺失回执、指纹跳过前检查、应用前新建链接复检及失败时现有配置保留。
+扫描权限及预算错误、旧/缺失回执、每次下发前检查、应用前新建链接复检及失败时现有配置保留。
 
 ## 遗留共享采集源数据保留
 
@@ -1434,7 +1463,7 @@ output.elasticsearch:
       warnings 随 preview/apply 响应返回，前端在「下发配置」成功/批量结果里提示（此前被丢弃）。
   → agent 动作 check_filebeat_paths（只读，检查实际文件身份及跨 input 重叠）
   → 验证检查回执，通过后才同步 ES 包装、比较整机和服务子指纹
-  → 指纹与 monitor_log_collection_target.config_fingerprint 一致则跳过（仅刷新时间）
+  → 不按数据库指纹跳过；由 Agent 读取实际配置内容进行幂等对账
   → agent 动作 apply_filebeat_config（配置锁内再次检查实际文件，写主配置及 inputs.d/*.yml，
     删残留片段，test config 后 restart）
       —— inputs 为空不报错：output 配置照常下发，主机先纳管可用
@@ -1442,9 +1471,12 @@ output.elasticsearch:
 ```
 
 - **`runtime_status` 的写入语义**：成功路径在实际文件检查与 `apply_filebeat_config` 均成功后才回写
-  `runtime_status='running'` / 清空 `last_error`——这是"刚重启过、服务应在运行"的推断，
-  不是独立探活（真实状态仍由启停/查状态的结果维护）。指纹一致走跳过分支时只刷新
-  `last_applied_time`，**不动** `runtime_status`。旧单条旁路的问题是没有任何下发动作却直接置 running。
+  同步指纹并清空 `last_error`；仅当 Agent 回执确认 `restarted=true` 才写
+  `runtime_status='running'`——这是"刚重启过、服务应在运行"的推断，
+  不是独立探活（真实状态仍由启停/查状态的结果维护）。配置未变时 Agent 不改写、不重启、
+  不修改已有运行态；缺失或无效的 `restarted` 回执明确拒绝记录同步。
+  但仍实际检查并应用配置后才记录同步状态；不根据数据库指纹直接刷新下发时间。
+  旧单条旁路的问题是没有任何下发动作却直接置 running。
 - **安装/卸载与下发的时间口径（Go 版，2026-09-16 随 SQL 迁移定型）**：作业/历史的时长由应用层算
   （历史的 `create_time` 就是派发时刻；原实现用 `TIMESTAMPDIFF(MICROSECOND,create_time,?)/1000000`），
   取消时同样按 `create_time` 算时长；作业收尾读回 `automation_execution_job.result_summary` 的 `message`
@@ -1561,14 +1593,15 @@ Filebeat 的 `filebeat.config.inputs.reload.enabled: true` 支持 inputs.d 热�
 - **解析主机时不过滤启用态**（`ListServiceLogApplyTargets` 不滤 `s.enabled` / `s.log_collection_enabled` /
   `sd.enabled` / `d.enabled`）。停用服务或关掉采集之后，恰恰需要下发一次才能**移除**主机上的旧片段
   （渲染层把停用服务排除 → agent 删掉未交付的 `.yml`，见 §8.6）。按启用态过滤主机，停用的服务
-  就永远清不干净。变化后的主机是否需要真下发由渲染指纹决定（一致则跳过，见 §8.7 之后的配置态）。
+  就永远清不干净。所有选中的主机都交给 Agent 按实际文件对账，不能只凭数据库指纹跳过。
 - **未纳管的主机必须显式回报**（`target_id` 为 NULL 即未纳管）：下发不了它们，接口把主机名列出来，
   否则用户以为整个服务都下发了，实际少了几台。
 - **状态只能是聚合，没有"服务级指纹"**：`config_fingerprint` 是主机级的，同一服务在不同主机上因
   实例级 `runtime_variables` 不同、渲染结果本就不同。接口只回"N 台里 M 台待下发"这类计数。
 
-**幂等且廉价**：指纹一致的主机在 `applyLogTargetConfigRow` 里被整段跳过（只刷新 `last_applied_time`），
-所以"把服务的主机都下发一遍"不必先筛待下发。
+**按实际文件幂等**：`applyLogTargetConfigRow` 始终发送完整配置，Agent 补齐缺失目录、
+主配置与片段，修复被修改的内容并清理多余托管片段；内容一致时不改写或重启。
+因此"把服务的主机都下发一遍"不必先筛待下发，也能修复数据库显示已同步但磁盘文件缺失的主机。
 
 **文案要说实话**：按钮语义是"对承载本服务的主机重新下发"，会连带重算同主机上其他服务的配置
 （渲染确定性所以内容等价；若它们本来就有未下发的改动，会被一起带上——通常是想要的）。
@@ -1690,7 +1723,9 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
 2. **下发是目录级全量对账**：agent 把 `/etc/filebeat/inputs.d` 恢复成"本次清单"，
    不在清单里的 `*.yml` 一律删除（含手工放进去的文件、改名后的残留文件）；
    有写入或删除才 `filebeat test config` + 重启（`builtin_actions.go:223-249`）。
-3. **指纹一致则跳过**：不碰主机、不重启，只刷新 `last_applied_time`（`log_target_actions.go:711`）。
+3. **实际内容一致才不改写**：数据库指纹不阻断下发。`inputs.d` 不存在时自动创建，
+   主配置或片段丢失/被修改时自动恢复；内容一致且无多余片段时不改写、不重启。
+   只有 Agent 实际应用成功且回执通过校验后才回写同步记录；失败明确报错，不伪造新的成功下发时间。
 
 片段文件粒度是**服务 × 日志定义**（`<app code>__<svc code>__<日志定义 name>.yml`，
 `log_config_render.go:65`），文件内每个部署实例一个 filestream input——所以"关掉一个服务"
@@ -1759,7 +1794,7 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
 ② 复用批量作业队列 + 有界并发（`LOG_BATCH_APPLY_CONCURRENCY` 默认 5）+ **时间窗合并**
 （同一主机 N 分钟内多次变更合并成一次下发），避免连续改配置把 Filebeat 反复重启；
 ③ 预检不通过不自动（渲染 warning 非空、片段为空、没有启用的默认集群、agent 离线）→ 落回
-"待下发 + 原因"，可见性不变；④ 幂等靠现有指纹比对（一致即跳过）；⑤ 失败不回滚配置、
+"待下发 + 原因"，可见性不变；④ 幂等靠 Agent 对实际配置内容比对（未变不改写或重启）；⑤ 失败不回滚配置、
 停在 `drift`，保留「一键下发」兜底。
 
 > **状态**：以上**是建议，尚未实现**。当前实现只有"安装成功后自动下发一次"（§8.4）

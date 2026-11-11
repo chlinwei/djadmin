@@ -4,11 +4,45 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"autoadmin/internal/agent/pb"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
+
+func TestDeploymentControlExecutionContext(t *testing.T) {
+	started := time.Now()
+	ctx, cancel := deploymentControlExecutionContext(context.Background(), "status")
+	deadline, ok := ctx.Deadline()
+	if !ok || deadline.Before(started.Add(125*time.Second)) || deadline.After(time.Now().Add(125*time.Second)) {
+		t.Fatalf("status checks need a 125s reply deadline, got %v, %v", deadline, ok)
+	}
+	cancel()
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("execution context did not release: %v", ctx.Err())
+	}
+	for _, action := range []string{"start", "stop"} {
+		ctx, cancel := deploymentControlExecutionContext(context.Background(), action)
+		if _, ok := ctx.Deadline(); ok {
+			t.Errorf("%s unexpectedly acquired a status-check deadline", action)
+		}
+		cancel()
+	}
+	parent, cancelParent := context.WithTimeout(context.Background(), time.Second)
+	defer cancelParent()
+	child, cancelChild := deploymentControlExecutionContext(parent, "status")
+	defer cancelChild()
+	want, _ := parent.Deadline()
+	got, _ := child.Deadline()
+	if !got.Equal(want) {
+		t.Fatalf("caller deadline was extended: got %v, want %v", got, want)
+	}
+	cancelParent()
+	if !errors.Is(child.Err(), context.Canceled) {
+		t.Fatalf("caller cancellation was lost: %v", child.Err())
+	}
+}
 
 func deploymentControlRows(templates ...int64) *sqlmock.Rows {
 	rows := sqlmock.NewRows([]string{

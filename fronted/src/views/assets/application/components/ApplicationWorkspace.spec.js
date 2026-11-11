@@ -44,6 +44,17 @@ vi.mock('@/api/assets/application', () => ({
   getApplicationList: vi.fn(() => Promise.resolve({
     data: { data: { results: [{ id: 1, name: 'Tomcat', versions: [], enabled: true }], count: 1 } },
   })),
+  SaveOrCreateApplication: vi.fn(async () => ({ data: { data: { id: 1 } } })),
+  getApplicationVersionList: vi.fn(async () => ({ data: { data: { results: [], count: 0 } } })),
+  saveApplicationVersion: vi.fn(async () => ({ data: { data: { id: 1, version: '1.0' } } })),
+  batchDeleteApplicationVersions: vi.fn(),
+  getApplicationDeploymentTemplate: vi.fn(),
+  saveApplicationDeploymentTemplate: vi.fn(async () => ({ data: { data: { id: 2 } } })),
+}))
+
+vi.mock('@/api/monitor', () => ({
+  getLogProcessingRules: vi.fn(async () => ({ data: { data: { results: [] } } })),
+  getLogCollectionFilterRules: vi.fn(async () => ({ data: { data: { results: [] } } })),
 }))
 
 vi.mock('@/store', () => ({
@@ -60,6 +71,10 @@ vi.mock('@/util/deleteConfirm', () => ({
 
 import * as applicationApi from '@/api/assets/application'
 import ApplicationWorkspace from './ApplicationWorkspace.vue'
+import ApplicationDialog from './Dialog.vue'
+import VersionDialog from './VersionDialog.vue'
+import TemplateManagerDialog from './TemplateManagerDialog.vue'
+import TemplateDialog from './TemplateDialog.vue'
 
 function mountWorkspace(props = {}, stubs = {}, component = ApplicationWorkspace) {
   return mount(component, {
@@ -92,6 +107,61 @@ async function clickTab(wrapper, label) {
 }
 
 describe('ApplicationWorkspace tab switching', () => {
+  it('creates an application, a version and its first template using real modal portals', async () => {
+    const application = { id: 1, name: 'Tomcat', versions: [], enabled: true }
+    const versionedApplication = { ...application, versions: [{ id: 1, version: '1.0' }] }
+    applicationApi.getApplicationList
+      .mockResolvedValueOnce({ data: { data: { results: [], count: 0 } } })
+      .mockResolvedValueOnce({ data: { data: { results: [application], count: 1 } } })
+      .mockResolvedValueOnce({ data: { data: { results: [versionedApplication], count: 1 } } })
+      .mockResolvedValueOnce({ data: { data: { results: [versionedApplication], count: 1 } } })
+    applicationApi.getApplicationDeploymentTemplateList.mockResolvedValueOnce({ data: { data: { results: [], count: 0 } } })
+    const wrapper = mountWorkspace({}, {
+      Dialog: false, VersionDialog: false, TemplateManagerDialog: false, TemplateDialog: false,
+      transition: false, 'transition-group': false,
+    })
+    try {
+      await flushPromises()
+      wrapper.vm.openCurrentTabCreateDialog()
+      await flushPromises()
+      const applicationDialog = wrapper.findComponent(ApplicationDialog)
+      Object.assign(applicationDialog.vm.form, { name: 'Tomcat', code: 'tomcat' })
+      applicationDialog.vm.handleOk()
+      await flushPromises()
+      expect(applicationApi.SaveOrCreateApplication).toHaveBeenCalledTimes(1)
+      wrapper.vm.openVersions(wrapper.vm.rows[0])
+      await flushPromises()
+      const versionDialog = wrapper.findComponent(VersionDialog)
+      versionDialog.vm.versionForm.version = '1.0'
+      await versionDialog.vm.saveVersion()
+      await flushPromises()
+      versionDialog.vm.$emit('update:open', false)
+      await flushPromises()
+      wrapper.vm.openTemplateManager(wrapper.vm.rows[0])
+      await flushPromises()
+      const manager = wrapper.findComponent(TemplateManagerDialog)
+      expect(manager.vm.templates).toEqual([])
+      manager.vm.openCreate()
+      await flushPromises()
+      const templateDialog = wrapper.findComponent(TemplateDialog)
+      Object.assign(templateDialog.vm.form, { name: 'tomcat-systemd', run_user: 'app', service_name: 'tomcat' })
+      templateDialog.vm.addMacro()
+      await flushPromises()
+      await templateDialog.findComponent({ name: 'ATable' }).find('input.ant-input').setValue('LOG_DIR')
+      await templateDialog.vm.saveTemplate()
+      await flushPromises()
+      expect(applicationApi.saveApplicationDeploymentTemplate).toHaveBeenCalledTimes(1)
+      expect(applicationApi.saveApplicationDeploymentTemplate).toHaveBeenCalledWith(
+        expect.objectContaining({ macro_definitions: [{ name: 'LOG_DIR', value: '', description: '' }] }),
+      )
+      expect(manager.vm.templateDialogOpen).toBe(false)
+      expect(manager.vm.templates).toHaveLength(1)
+      expect(document.body.textContent).toContain('tomcat-systemd')
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('updates template portals after an in-flight response arrives on a deactivated page', async () => {
     const visible = ref(true)
     const cachedWorkspace = defineComponent({

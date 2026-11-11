@@ -1,9 +1,47 @@
 package logmacro
 
 import (
+	"encoding/json"
 	"regexp"
 	"testing"
 )
+
+func TestExcludeFilePatterns(t *testing.T) {
+	const pattern = `-(星期[一二三四五六日天]|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\.log$`
+	raw, err := json.Marshal([]string{pattern})
+	if err != nil {
+		t.Fatal(err)
+	}
+	patterns, err := ResolveExcludeJSON([]byte(`["${LOG_DIR}/backup"]`), raw, map[string]string{"LOG_DIR": "/logs"})
+	if err != nil || len(patterns) != 2 || patterns[1] != pattern {
+		t.Fatalf("directory and file expressions must be combined unchanged: %v, %v", patterns, err)
+	}
+	re := regexp.MustCompile(patterns[1])
+	for _, name := range []string{
+		"cat.log", "cat2.log", "HAK10.log", "HAK1_random123.log", "HAK_whatever_name.log",
+		"HAK_other-2026.log", "HAK_星期四.log", "HAK-random.log", "backup-Thu.log/HAK.log",
+	} {
+		if re.MatchString("/logs/" + name) {
+			t.Errorf("non-weekday filename must remain: %s", name)
+		}
+	}
+	for _, day := range []string{"星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日", "星期天", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"} {
+		if !re.MatchString("/logs/HAK_arbitrary_" + day + "-" + day + ".log") {
+			t.Errorf("weekday suffix must be excluded: %s", day)
+		}
+	}
+	for _, invalid := range []string{"", " ", "*-Thu.log", "[", "(?=Thu)", "a\nb", "a\rb"} {
+		if err := ValidateExcludeFilePatterns([]string{invalid}); err == nil {
+			t.Errorf("invalid RE2 expression accepted: %q", invalid)
+		}
+	}
+	if _, err := ResolveExcludeJSON(nil, []byte(`{"pattern":"Thu"}`)); err == nil {
+		t.Fatal("object accepted instead of a string array")
+	}
+	if err := ValidateExcludeDirectories([]string{pattern}); err == nil {
+		t.Fatal("filename regex must not be accepted as a directory")
+	}
+}
 
 func TestExcludeDirectories(t *testing.T) {
 	patterns, err := ResolveExcludeDirectories([]string{"${LOG_DIR}/backup", "${LOG_DIR}/test-*", "/logs/app[12]/archive", "/logs/node?/old", "/logs/备份", "/logs/node[^12]/archive"}, map[string]string{"LOG_DIR": "/logs"})

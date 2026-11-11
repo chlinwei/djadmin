@@ -207,12 +207,20 @@
                 placeholder="丢掉匹配的记录（可选）"
               />
               <a-button v-if="!readOnly" danger @click="form.logs.splice(index, 1)">移除</a-button>
-              <a-form-item label="排除目录" class="log-exclude-directories">
+              <a-form-item label="排除目录" class="log-exclude-directories" extra="仅填写绝对目录路径；按文件名排除请使用下方正则，不要填在这里。">
                 <a-textarea
                   :value="(item.exclude_directories || []).join('\n')"
                   :rows="2"
                   placeholder="${LOG_DIR}/backup&#10;${LOG_DIR}/test-*"
                   @update:value="item.exclude_directories = $event.split(/\r?\n/)"
+                />
+              </a-form-item>
+              <a-form-item label="排除文件名正则" class="log-exclude-file-patterns" extra="每行一个 RE2 正则，匹配完整日志路径，不展开宏。例如按星期后缀排除，无需在前面加 *。">
+                <a-textarea
+                  :value="(item.exclude_file_patterns || []).join('\n')"
+                  :rows="2"
+                  placeholder="-(星期[一二三四五六日天]|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\.log$"
+                  @update:value="item.exclude_file_patterns = $event.split(/\r?\n/)"
                 />
               </a-form-item>
             </div>
@@ -453,7 +461,11 @@ async function submitTemplate() {
   // 新建/复制时不能提交 id——复制场景里这些 id 属于源模板，后端会拒。
   const keepLogIds = Boolean(props.templateId) && !props.copyFromId
   payload.logs = (form.logs || []).map(({ id, ...rest }) => {
-    const log = { ...rest, exclude_directories: (rest.exclude_directories || []).map((value) => value.trim()).filter(Boolean) }
+    const log = {
+      ...rest,
+      exclude_directories: (rest.exclude_directories || []).map((value) => value.trim()).filter(Boolean),
+      exclude_file_patterns: (rest.exclude_file_patterns || []).map((value) => value.trim()).filter(Boolean),
+    }
     return keepLogIds ? { id, ...log } : log
   })
   // Keep the numeric API contract for literals without coercing macro expressions to zero.
@@ -482,7 +494,7 @@ const addMacro = () => macroDefinitions.value.push({ _uid: ++macroKeySeq, name: 
 const addPath = () => form.paths.push({ name: '', path_type: 'other', path: '', required: true, expected_owner: '', expected_group: '', expected_mode: '', check_enabled: true })
 const addConfigFile = () => form.config_files.push({ name: '', path: '', file_format: 'text', required: true })
 const addLog = () => form.logs.push({
-  name: '', path_pattern: '', exclude_directories: [], processing_rule: null, extra_fields: {},
+  name: '', path_pattern: '', exclude_directories: [], exclude_file_patterns: [], processing_rule: null, extra_fields: {},
   filter_include_rule: null, filter_exclude_rule: null,
 })
 
@@ -541,7 +553,8 @@ watch(() => props.open, (visible) => {
 .path-row { grid-template-columns: 1fr 150px 2fr 72px; }
 .config-row { grid-template-columns: 1fr 2fr 130px 72px; }
 .log-row { grid-template-columns: 1fr 2fr 110px 72px; }
-.log-exclude-directories { grid-column: 1 / -1; margin-bottom: 0; min-width: 0; }
+.log-exclude-directories,
+.log-exclude-file-patterns { grid-column: 1 / -1; margin-bottom: 0; min-width: 0; }
 :global(.application-template-modal .ant-modal) {
   width: min(1180px, calc(100vw - 240px)) !important;
   max-width: none;

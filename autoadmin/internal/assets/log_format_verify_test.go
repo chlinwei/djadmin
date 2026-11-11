@@ -40,7 +40,7 @@ func serviceTemplateLogColumns() []string {
 		"filter_include_rule_id", "filter_exclude_rule_id", "format_verified_at",
 		"format_verified_fingerprint", "format_verified_source", "format_verified_by",
 		"service_code", "project_code", "environment_code", "business_system_code",
-		"macro_values", "macro_definitions", "app_home", "tier_code",
+		"macro_values", "macro_definitions", "app_home", "tier_code", "exclude_file_patterns",
 	}
 }
 
@@ -76,7 +76,7 @@ func addServiceTemplateLogRowWithRule(rows *sqlmock.Rows, stored sql.NullString,
 		[]byte(`[]`),
 		sql.NullTime{}, stored, sql.NullString{}, sql.NullString{},
 		"nginx", "yilake", sql.NullString{String: "poc", Valid: true}, "tib", []byte("{}"),
-		[]byte(`[{"name":"APP_HOME","value":"/home/esb/tomcat"}]`), "/home/esb/tomcat", "std",
+		[]byte(`[{"name":"APP_HOME","value":"/home/esb/tomcat"}]`), "/home/esb/tomcat", "std", []byte(`[]`),
 	)
 }
 
@@ -348,9 +348,9 @@ func expectCurrentLogFormatTarget(mock sqlmock.Sqlmock, instance db.GetLogVerify
 func expectLogFormatInstanceContext(mock sqlmock.Sqlmock, instance db.GetLogVerifyInstanceContextRow) {
 	mock.ExpectQuery("FROM assets_application_deployment d").WithArgs(instance.DeploymentID, int64(15), int64(24)).
 		WillReturnRows(sqlmock.NewRows([]string{"deployment_id", "host_id", "host_instance_name", "deployment_instance_name",
-			"runtime_variables", "app_home", "macro_definitions", "macro_values", "path_pattern", "exclude_directories"}).
+			"runtime_variables", "app_home", "macro_definitions", "macro_values", "path_pattern", "exclude_directories", "exclude_file_patterns"}).
 			AddRow(instance.DeploymentID, instance.HostID, instance.HostInstanceName, instance.DeploymentInstanceName,
-				instance.RuntimeVariables, instance.AppHome, instance.MacroDefinitions, []byte(`{}`), "${APP_HOME}/error.log", []byte(`[]`)))
+				instance.RuntimeVariables, instance.AppHome, instance.MacroDefinitions, []byte(`{}`), "${APP_HOME}/error.log", []byte(`[]`), []byte(`[]`)))
 }
 
 func TestManualLogFormatRequestsPersistEachInstance(t *testing.T) {

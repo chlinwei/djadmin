@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"reflect"
@@ -17,7 +18,18 @@ import (
 
 var deploymentGateway *agent.Gateway
 
+const deploymentControlTimeoutSeconds = 120
+
 func SetDeploymentGateway(gateway *agent.Gateway) { deploymentGateway = gateway }
+
+func deploymentControlExecutionContext(ctx context.Context, action string) (context.Context, context.CancelFunc) {
+	if action == "status" {
+		// Agent execution has its own 120s limit; allow its timeout response to arrive,
+		// but do not wait indefinitely on a connected session that never replies.
+		return context.WithTimeout(ctx, (deploymentControlTimeoutSeconds+5)*time.Second)
+	}
+	return context.WithCancel(ctx)
+}
 
 func (r *Repository) deploymentControl(ctx context.Context, id int64) (string, map[string]any, error) {
 	tx, err := r.pool.BeginTx(ctx, nil)
@@ -103,10 +115,15 @@ func (s *Service) executeDeploymentControl(ctx context.Context, gateway *agent.G
 	}
 	params["control_action"] = action
 	raw, _ := json.Marshal(params)
-	response, err := gateway.Execute(ctx, instanceName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("app-control-%d", time.Now().UnixNano()), Type: "custom", Action: "control_application", ParamsJson: string(raw), TimeoutSeconds: 120})
+	executionCtx, cancel := deploymentControlExecutionContext(ctx, action)
+	defer cancel()
+	response, err := gateway.Execute(executionCtx, instanceName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("app-control-%d", time.Now().UnixNano()), Type: "custom", Action: "control_application", ParamsJson: string(raw), TimeoutSeconds: deploymentControlTimeoutSeconds})
 	if err != nil {
 		// 保留原始错误原因，便于前端区分"Agent 未连接"与其他执行失败。
 		s.persistRuntimeCheckFailure(ctx, id, action, err)
+		if action == "status" && errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("运行状态检查超时: %w", err)
+		}
 		return nil, ErrAgentUnavailable
 	}
 	status := response.Status

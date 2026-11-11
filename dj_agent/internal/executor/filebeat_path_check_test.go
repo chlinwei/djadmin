@@ -130,6 +130,42 @@ func TestFilebeatPathCheckExcludeDirectories(t *testing.T) {
 	}
 }
 
+func TestFilebeatPathCheckExcludeWeekdayFiles(t *testing.T) {
+	dir := t.TempDir()
+	const pattern = `-(星期[一二三四五六日天]|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\.log$`
+	for _, name := range []string{"cat2.log", "HAK_random.log", "HAK_whatever.log", "HAK_random-星期四.log", "HAK_random-Thu.log"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("log"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := pathCheckFragment("/etc/filebeat/inputs.d/a.yml", "a", "svc-a", filepath.Join(dir, "*.log"))
+	first.Content += "  prospector.scanner.exclude_files:\n    - " + yamlQuote(pattern) + "\n"
+	second := pathCheckFragment("/etc/filebeat/inputs.d/b.yml", "b", "svc-b", filepath.Join(dir, "HAK_random-Thu.log"))
+	receipt, err := checkFilebeatPaths(context.Background(), []filebeatConfigFile{first, second})
+	if err != nil || !receipt.Checked || receipt.MatchedFiles != 4 {
+		t.Fatalf("excluded weekday files must not count as overlap, random suffixes must remain: %+v %v", receipt, err)
+	}
+	weekdayDir := filepath.Join(dir, "archive-Thu.log")
+	if err := os.Mkdir(weekdayDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(weekdayDir, "HAK_random.log"), []byte("log"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first = pathCheckFragment("/etc/filebeat/inputs.d/a.yml", "a", "svc-a", filepath.Join(weekdayDir, "*.log"))
+	first.Content += "  prospector.scanner.exclude_files:\n    - " + yamlQuote(pattern) + "\n"
+	receipt, err = checkFilebeatPaths(context.Background(), []filebeatConfigFile{first})
+	if err != nil || receipt.MatchedFiles != 1 {
+		t.Fatalf("a directory's weekday suffix must not exclude a non-weekday filename: %+v %v", receipt, err)
+	}
+	first = pathCheckFragment("/etc/filebeat/inputs.d/a.yml", "a", "svc-a", filepath.Join(dir, "HAK_random-Thu.log"))
+	first.Content += "  prospector.scanner.exclude_files:\n    - " + yamlQuote(pattern) + "\n"
+	receipt, err = checkFilebeatPaths(context.Background(), []filebeatConfigFile{first})
+	if err != nil || receipt.MatchedFiles != 0 || len(receipt.UnmatchedPatterns) != 1 {
+		t.Fatalf("all-excluded paths must be an explicit zero-match receipt: %+v %v", receipt, err)
+	}
+}
+
 func TestFilebeatPathCheckRejectsIncompleteScans(t *testing.T) {
 	dir := t.TempDir()
 	broken := filepath.Join(dir, "broken")
@@ -297,6 +333,88 @@ func TestFilebeatApplyWritesOutputAndInputsAfterCheck(t *testing.T) {
 	}
 	if _, err := os.Stat(files[0].Path); !os.IsNotExist(err) {
 		t.Fatalf("empty config must remove old managed fragment: %v", err)
+	}
+}
+
+func TestFilebeatApplyReconcilesActualConfig(t *testing.T) {
+	for _, state := range []string{
+		"missing-inputs-directory", "missing-input-fragment", "missing-main-config",
+		"modified-main-config", "modified-input-fragment", "stale-input-fragment", "unchanged",
+	} {
+		t.Run(state, func(t *testing.T) {
+			// A regression must not invoke the host's real service manager.
+			t.Setenv("PATH", t.TempDir())
+			dir := t.TempDir()
+			main, inputs := filepath.Join(dir, "filebeat.yml"), filepath.Join(dir, "inputs.d")
+			files := []filebeatConfigFile{
+				pathCheckFragment(filepath.Join(inputs, "a.yml"), "a", "svc-a", filepath.Join(dir, "future.log")),
+			}
+			job := protocol.Job{Params: pathCheckParams(t, files)}
+			executor := New(0)
+			if result := executor.applyFilebeatConfigAt(context.Background(), job, main, inputs); result.Status != protocol.StatusSuccess {
+				t.Fatalf("initial apply: %+v", result)
+			}
+			mainContent, err := os.ReadFile(main)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stale := filepath.Join(inputs, "stale.yml")
+			switch state {
+			case "missing-inputs-directory":
+				if err := os.Remove(files[0].Path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(inputs); err != nil {
+					t.Fatal(err)
+				}
+			case "missing-input-fragment":
+				if err := os.Remove(files[0].Path); err != nil {
+					t.Fatal(err)
+				}
+			case "missing-main-config":
+				if err := os.Remove(main); err != nil {
+					t.Fatal(err)
+				}
+			case "modified-main-config":
+				if err := os.WriteFile(main, []byte("outdated"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "modified-input-fragment":
+				if err := os.WriteFile(files[0].Path, []byte("outdated"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "stale-input-fragment":
+				if err := os.WriteFile(stale, []byte("outdated"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "unchanged":
+				job.Params["restart"] = "true"
+			}
+			result := executor.applyFilebeatConfigAt(context.Background(), job, main, inputs)
+			if result.Status != protocol.StatusSuccess || result.Data["path_check"] == nil {
+				t.Fatalf("config reconciliation failed: %+v", result)
+			}
+			if raw, err := os.ReadFile(main); err != nil || string(raw) != string(mainContent) {
+				t.Fatalf("main config not restored: %q %v", raw, err)
+			}
+			if raw, err := os.ReadFile(files[0].Path); err != nil || string(raw) != files[0].Content {
+				t.Fatalf("input directory/fragment not restored: %q %v", raw, err)
+			}
+			if _, err := os.Stat(stale); !os.IsNotExist(err) {
+				t.Fatalf("stale fragment remains: %v", err)
+			}
+			changed, changedOK := result.Data["changed_files"].([]string)
+			removed, removedOK := result.Data["removed_files"].([]string)
+			if !changedOK || !removedOK || result.Data["restarted"] != false {
+				t.Fatalf("invalid reconciliation result: %+v", result.Data)
+			}
+			if state == "unchanged" && (len(changed) != 0 || len(removed) != 0) {
+				t.Fatalf("unchanged config must not be rewritten or restarted: %+v", result.Data)
+			}
+			if state != "unchanged" && len(changed)+len(removed) == 0 {
+				t.Fatalf("missing/drifted config must be repaired: %+v", result.Data)
+			}
+		})
 	}
 }
 

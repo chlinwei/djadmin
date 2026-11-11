@@ -89,8 +89,13 @@ type filebeatPathScanner struct {
 }
 
 func (scanner *filebeatPathScanner) excluded(path string, directory bool) bool {
+	if directory {
+		// Directory rules include a trailing slash; filename suffix expressions
+		// must not prune a directory merely because its own name ends in .log.
+		path = strings.TrimSuffix(path, "/") + "/"
+	}
 	for _, exclusion := range scanner.exclusions {
-		if exclusion.MatchString(path) || (directory && exclusion.MatchString(strings.TrimSuffix(path, "/")+"/")) {
+		if exclusion.MatchString(path) {
 			return true
 		}
 	}

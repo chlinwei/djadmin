@@ -12,7 +12,7 @@ vi.mock('@/api/assets/application', () => ({
   getApplicationDeploymentList: vi.fn(),
   getApplicationDeployment: vi.fn(),
   getApplicationServiceLogConfig: vi.fn(),
-  refreshApplicationServiceRuntimeStatus: vi.fn(),
+  refreshApplicationDeploymentRuntimeStatus: vi.fn(),
 }))
 vi.mock('@/store', async () => {
   const { reactive } = await import('vue')
@@ -77,7 +77,7 @@ describe('ServiceTreeNodeContent', () => {
     store.state.user.timezone = 'Asia/Shanghai'
     store.state.perms = ['assets:hosts:execute', 'assets:service-tree:manage']
     store.state.role_codes = ['operator']
-    applicationApi.refreshApplicationServiceRuntimeStatus.mockResolvedValue({ data: { data: { summary: {} } } })
+    applicationApi.refreshApplicationDeploymentRuntimeStatus.mockResolvedValue({ data: { data: { results: [] } } })
     applicationApi.getBusinessSystemList.mockResolvedValue(listResponse([
       { id: 7, name: '订单系统', code: 'order-system', deployment_count: 2, enabled: true },
     ]))
@@ -417,7 +417,7 @@ describe('ServiceTreeNodeContent', () => {
       await flushPromises()
       expect(table.text()).toContain(`${checkedAt} @ UTC`)
       expect(applicationApi.getApplicationDeploymentList).toHaveBeenCalledTimes(requestCount)
-      expect(applicationApi.refreshApplicationServiceRuntimeStatus).not.toHaveBeenCalled()
+      expect(applicationApi.refreshApplicationDeploymentRuntimeStatus).not.toHaveBeenCalled()
       const serviceLinks = table.findAll('.abnormal-service-link')
       await serviceLinks[scope.nodeType === 'service' ? 0 : 1].trigger('click')
       expect(wrapper.emitted('navigate').at(-1)[0]).toMatchObject({
@@ -594,7 +594,7 @@ describe('ServiceTreeNodeContent', () => {
         expect(wrapper.vm.descendants).toHaveLength(statuses.length)
         expect(wrapper.findAll('.abnormal-count-link')).toHaveLength(hasAbnormalInstances ? 1 : 0)
       }
-      expect(applicationApi.refreshApplicationServiceRuntimeStatus).not.toHaveBeenCalled()
+      expect(applicationApi.refreshApplicationDeploymentRuntimeStatus).not.toHaveBeenCalled()
     } finally {
       wrapper.unmount()
     }

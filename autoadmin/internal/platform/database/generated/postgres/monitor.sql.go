@@ -3818,7 +3818,8 @@ SELECT DISTINCT d.host_id, p.code AS project_code, e.code AS environment_code,
     ld.filter_include_rule_id, ld.filter_exclude_rule_id,
     ls.collection_filter_rule_id, ls.collection_exclude_filter_rule_id,
     -- 所有绑定解析规则的日志统一指向服务包装；额外处理器可为空。
-    COALESCE(ls.extra_processors, '[]'::json) AS extra_processors
+    COALESCE(ls.extra_processors, '[]'::json) AS extra_processors,
+    ld.exclude_file_patterns
 FROM assets_application_service s
 JOIN assets_business_system bs ON bs.id = s.business_system_id
 JOIN assets_project p ON p.id = bs.project_id
@@ -3860,6 +3861,7 @@ type ListHostLogRenderEntriesRow struct {
 	CollectionFilterRuleID        sql.NullInt64   `json:"collection_filter_rule_id"`
 	CollectionExcludeFilterRuleID sql.NullInt64   `json:"collection_exclude_filter_rule_id"`
 	ExtraProcessors               json.RawMessage `json:"extra_processors"`
+	ExcludeFilePatterns           json.RawMessage `json:"exclude_file_patterns"`
 }
 
 // 渲染 Filebeat inputs 所需的「服务×日志定义」行，按主机批量取。
@@ -3907,6 +3909,7 @@ func (q *Queries) ListHostLogRenderEntries(ctx context.Context, hostIds []int64)
 			&i.CollectionFilterRuleID,
 			&i.CollectionExcludeFilterRuleID,
 			&i.ExtraProcessors,
+			&i.ExcludeFilePatterns,
 		); err != nil {
 			return nil, err
 		}
@@ -6342,14 +6345,16 @@ func (q *Queries) MarkLogTargetConfigApplied(ctx context.Context, arg MarkLogTar
 
 const markLogTargetConfigSynced = `-- name: MarkLogTargetConfigSynced :exec
 UPDATE monitor_log_collection_target
-SET last_applied_time=$1, runtime_status='running', last_error='',
-    config_fingerprint=$2, service_fingerprints=$3,
-    update_time=$4
-WHERE id = $5
+SET last_applied_time=$1,
+    runtime_status=CASE WHEN $2 = 1 THEN 'running' ELSE runtime_status END, last_error='',
+    config_fingerprint=$3, service_fingerprints=$4,
+    update_time=$5
+WHERE id = $6
 `
 
 type MarkLogTargetConfigSyncedParams struct {
 	LastAppliedTime     sql.NullTime    `json:"last_applied_time"`
+	Restarted           interface{}     `json:"restarted"`
 	ConfigFingerprint   string          `json:"config_fingerprint"`
 	ServiceFingerprints json.RawMessage `json:"service_fingerprints"`
 	UpdateTime          time.Time       `json:"update_time"`
@@ -6360,6 +6365,7 @@ type MarkLogTargetConfigSyncedParams struct {
 func (q *Queries) MarkLogTargetConfigSynced(ctx context.Context, arg MarkLogTargetConfigSyncedParams) error {
 	_, err := q.db.ExecContext(ctx, markLogTargetConfigSynced,
 		arg.LastAppliedTime,
+		arg.Restarted,
 		arg.ConfigFingerprint,
 		arg.ServiceFingerprints,
 		arg.UpdateTime,

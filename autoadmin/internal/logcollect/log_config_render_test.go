@@ -1,7 +1,9 @@
 package logcollect
 
 import (
+	"encoding/json"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -10,6 +12,46 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+func TestRenderExcludeFilePatterns(t *testing.T) {
+	const pattern = `-(星期[一二三四五六日天]|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\.log$`
+	raw, err := json.Marshal([]string{pattern})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := hostLogRenderInput{
+		Application: "app", Service: "svc", ServiceID: 1, Tier: "std", Pipeline: "rule",
+		LogName: "app", ResolvedPath: "/logs/*.log", ExcludeDirectories: []byte(`["/logs/backup"]`),
+		ExcludeFilePatterns: raw,
+	}
+	instances := []hostInstanceInput{{ServiceID: 1, Instance: "app-1"}}
+	rendered := renderHostLogConfig([]hostLogRenderInput{entry}, instances, testOutputIdentity)
+	if len(rendered.Errors) != 0 || len(rendered.Fragments) != 1 {
+		t.Fatalf("render file exclusions: %+v", rendered)
+	}
+	var inputs []struct {
+		Paths      []string `yaml:"paths"`
+		Exclusions []string `yaml:"prospector.scanner.exclude_files"`
+	}
+	if err := yaml.Unmarshal([]byte(rendered.Fragments[0].Content), &inputs); err != nil {
+		t.Fatal(err)
+	}
+	if len(inputs) != 1 || len(inputs[0].Exclusions) != 2 || inputs[0].Exclusions[1] != pattern || inputs[0].Paths[0] != "/logs/*.log" {
+		t.Fatalf("Filebeat must receive the literal regex without glob or YAML escape changes: %+v", inputs)
+	}
+	re := regexp.MustCompile(inputs[0].Exclusions[1])
+	if !re.MatchString("/logs/HAK_random-星期四.log") || re.MatchString("/logs/HAK_random.log") {
+		t.Fatal("rendered expression does not preserve the requested filename scope")
+	}
+	entry.ExcludeFilePatterns = []byte(`[]`)
+	if without := renderHostLogConfig([]hostLogRenderInput{entry}, instances, testOutputIdentity); without.Fingerprint == rendered.Fingerprint {
+		t.Fatal("file exclusion changes must invalidate deployed config fingerprint")
+	}
+	entry.ExcludeFilePatterns = []byte(`["["]`)
+	if invalid := renderHostLogConfig([]hostLogRenderInput{entry}, instances, testOutputIdentity); len(invalid.Errors) == 0 || len(invalid.Fragments) != 0 {
+		t.Fatalf("invalid regex must block deployment: %+v", invalid)
+	}
+}
 
 func TestRenderExcludeDirectories(t *testing.T) {
 	entry := hostLogRenderInput{

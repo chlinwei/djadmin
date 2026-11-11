@@ -128,6 +128,7 @@ func TestActionPermissionsReachHandlersWithoutAdmin(t *testing.T) {
 		{http.MethodGet, "/assets/hosts/invalid/refresh-info/", []string{"assets:hosts:view"}},
 		{http.MethodGet, "/assets/hosts/refresh-info/", []string{"assets:hosts:view"}},
 		{http.MethodGet, "/assets/application-services/invalid/refresh-runtime-status/", []string{"assets:applications:update"}},
+		{http.MethodGet, "/assets/application-deployments/refresh-runtime-status/", []string{"assets:applications:update"}},
 		{http.MethodGet, "/assets/hosts/invalid/webssh/", []string{"assets:hosts:execute"}},
 		{http.MethodGet, "/ws/assets/hosts/invalid/webssh/", []string{"assets:hosts:execute"}},
 		{http.MethodPatch, "/sys/scheduler/tasks/invalid/", []string{"system:scheduler:update"}},

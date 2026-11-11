@@ -177,6 +177,10 @@ export function refreshApplicationServiceRuntimeStatus(id, timeout = 120000, opt
     return requestUtil.get(`${applicationServicePrefix}${id}/refresh-runtime-status/`, {}, timeout, options)
 }
 
+export function refreshApplicationDeploymentRuntimeStatus(ids, timeout = 150000, options = {}) {
+    return requestUtil.get(`${deploymentPrefix}refresh-runtime-status/`, { ids: ids.join(',') }, timeout, options)
+}
+
 export function getApplicationVersionList(params) {
     return requestUtil.get(versionPrefix, params)
 }

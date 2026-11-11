@@ -55,6 +55,7 @@ func TestReadOnlyRoutesUseGET(t *testing.T) {
 		"/assets/hosts/:id/refresh-info/",
 		"/assets/hosts/refresh-info/",
 		"/assets/application-services/:id/refresh-runtime-status/",
+		"/assets/application-deployments/refresh-runtime-status/",
 		"/monitor/log-targets/:id/check-status/",
 		"/monitor/elasticsearch-clusters/:id/test-connection/",
 	} {
@@ -86,6 +87,7 @@ func TestObservationQueriesDoNotKeepPOSTRoutes(t *testing.T) {
 		"/assets/hosts/1/refresh-info/",
 		"/assets/hosts/refresh-info/",
 		"/assets/application-services/1/refresh-runtime-status/",
+		"/assets/application-deployments/refresh-runtime-status/",
 		"/monitor/log-targets/1/check-status/",
 		"/monitor/elasticsearch-clusters/1/test-connection/",
 	} {

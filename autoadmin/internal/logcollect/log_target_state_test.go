@@ -38,11 +38,11 @@ func TestServiceConfigReadKeepsHostsOnInvalidTier(t *testing.T) {
 		"host_id", "project_code", "environment_code", "business_system_code", "service_code", "service_id",
 		"application_code", "tier_code", "pipeline_name", "log_name", "path_pattern", "exclude_directories",
 		"macro_values", "macro_definitions", "multiline_enabled", "start_pattern", "flush_timeout",
-		"filter_include_rule_id", "filter_exclude_rule_id", "collection_filter_rule_id", "collection_exclude_filter_rule_id", "extra_processors",
+		"filter_include_rule_id", "filter_exclude_rule_id", "collection_filter_rule_id", "collection_exclude_filter_rule_id", "extra_processors", "exclude_file_patterns",
 	})
 	for _, tier := range []string{"hot", ""} {
 		entries.AddRow(719, "p", "test", "imf", "aos_122", 32, "app", tier, "rule", tier+".log",
-			"/logs/"+tier+".log", []byte(`[]`), []byte(`{}`), []byte(`[]`), false, "", 1000, nil, nil, nil, nil, []byte(`[]`))
+			"/logs/"+tier+".log", []byte(`[]`), []byte(`{}`), []byte(`[]`), false, "", 1000, nil, nil, nil, nil, []byte(`[]`), []byte(`[]`))
 	}
 	mock.ExpectQuery("FROM assets_application_service s").WillReturnRows(entries)
 	recorder := httptest.NewRecorder()
@@ -104,12 +104,12 @@ func TestConfigStateEvaluatorsRejectDuplicatePaths(t *testing.T) {
 				"host_id", "project_code", "environment_code", "business_system_code", "service_code", "service_id",
 				"application_code", "tier_code", "pipeline_name", "log_name", "path_pattern", "exclude_directories",
 				"macro_values", "macro_definitions", "multiline_enabled", "start_pattern", "flush_timeout",
-				"filter_include_rule_id", "filter_exclude_rule_id", "collection_filter_rule_id", "collection_exclude_filter_rule_id", "extra_processors",
+				"filter_include_rule_id", "filter_exclude_rule_id", "collection_filter_rule_id", "collection_exclude_filter_rule_id", "extra_processors", "exclude_file_patterns",
 			})
 			for _, id := range []int64{33, 32} {
 				entries.AddRow(779, "p", "test", "imf", "mq", id, "mq", "hot", "ibmmq", "error.log",
 					"/var/mqm/errors/AMQERR01.LOG", []byte(`[]`), []byte(`{}`), []byte(`[]`), false, "", 1000,
-					nil, nil, nil, nil, []byte(`[]`))
+					nil, nil, nil, nil, []byte(`[]`), []byte(`[]`))
 			}
 			mock.ExpectQuery("FROM assets_application_service s").WillReturnRows(entries)
 			refs := []LogConfigTargetRef{{HostID: 779}}
@@ -180,14 +180,14 @@ func TestEvaluateLogConfigStates(t *testing.T) {
 				"filter_include_rule_id", "filter_exclude_rule_id",
 				"collection_filter_rule_id", "collection_exclude_filter_rule_id",
 				// 服务级后处理器（2026-09-28）：本例未启用（[]）。
-				"extra_processors",
+				"extra_processors", "exclude_file_patterns",
 			}).
 				AddRow(int64(1), "kul", "test", "tib", "svc-a", int64(10), "app-a", "hot", "rule-a", "catalina.out",
 					"/data/tpl/logs/catalina.out", []byte(`[]`), []byte(`{}`), []byte(`[]`), false, "", uint32(2000),
-					nil, nil, nil, nil, []byte(`[]`)).
+					nil, nil, nil, nil, []byte(`[]`), []byte(`[]`)).
 				AddRow(int64(2), "kul", "prod", "tib", "svc-b", int64(20), "app-b", "std", "rule-b", "app.log",
 					"/data/tpl/logs/app.log", []byte(`[]`), []byte(`{}`), []byte(`[]`), false, "", uint32(2000),
-					nil, nil, nil, nil, []byte(`[]`)),
+					nil, nil, nil, nil, []byte(`[]`), []byte(`[]`)),
 		)
 	}
 

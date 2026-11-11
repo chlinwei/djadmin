@@ -67,23 +67,24 @@ func (rendered renderedHostLogConfig) configurationError(hostID int64) error {
 
 // hostLogRenderInput 渲染所需的全部维度数据（由 loadHostLogRenderInput 查询填充）。
 type hostLogRenderInput struct {
-	Prefix             string
-	Application        string // 应用 code
-	Service            string // 逻辑服务 code（写入 ES 的 service 字段）
-	ServiceID          int64  // 逻辑服务主键：同主机内部分组/指纹的身份（code 可跨业务重复）
-	Instance           string // 实例名（deployment.instance_name）
-	Project            string
-	Environment        string
-	BusinessSystem     string
-	Tier               string // 有效档位 code（服务级 log_setting 优先，回落服务表）
-	Pipeline           string // 有效处理规则 name（空=不过 pipeline）
-	LogName            string // 日志定义 name
-	ResolvedPath       string
-	ExcludeDirectories json.RawMessage
-	Macros             map[string]string
-	Multiline          bool   // 有效处理规则开启多行合并
-	StartPattern       string // 多行首行正则（处理规则）
-	FlushTimeout       int64  // 多行 flush 超时（毫秒，处理规则）
+	Prefix              string
+	Application         string // 应用 code
+	Service             string // 逻辑服务 code（写入 ES 的 service 字段）
+	ServiceID           int64  // 逻辑服务主键：同主机内部分组/指纹的身份（code 可跨业务重复）
+	Instance            string // 实例名（deployment.instance_name）
+	Project             string
+	Environment         string
+	BusinessSystem      string
+	Tier                string // 有效档位 code（服务级 log_setting 优先，回落服务表）
+	Pipeline            string // 有效处理规则 name（空=不过 pipeline）
+	LogName             string // 日志定义 name
+	ResolvedPath        string
+	ExcludeDirectories  json.RawMessage
+	ExcludeFilePatterns json.RawMessage
+	Macros              map[string]string
+	Multiline           bool   // 有效处理规则开启多行合并
+	StartPattern        string // 多行首行正则（处理规则）
+	FlushTimeout        int64  // 多行 flush 超时（毫秒，处理规则）
 	// 采集过滤（2026-09-19）：解析后的白名单/黑名单正则，空串 = 该方向不过滤。
 	// 解析规则（模板默认 → 服务覆盖 → 三态）见 log_collection_filter.go；
 	// 这里只拿最终结果，纯函数渲染不认识"继承"这种概念。
@@ -221,9 +222,9 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 		indexName := LogDataStreamName(entry.Prefix, entry.Project, entry.Environment, entry.BusinessSystem, entry.Service, entry.Tier)
 		for _, instance := range instancesByService[entry.ServiceID] {
 			resolved := resolveMacros(entry.ResolvedPath, entry.Macros, instance.Macros)
-			exclusions, exclusionErr := logmacro.ResolveExcludeJSON(entry.ExcludeDirectories, entry.Macros, instance.Macros)
+			exclusions, exclusionErr := logmacro.ResolveExcludeJSON(entry.ExcludeDirectories, entry.ExcludeFilePatterns, entry.Macros, instance.Macros)
 			if exclusionErr != nil {
-				recordHardProblem(fmt.Sprintf("服务 %s 实例 %s 日志 %s 排除目录无效：%s", entry.Service, instance.Instance, entry.LogName, exclusionErr))
+				recordHardProblem(fmt.Sprintf("服务 %s 实例 %s 日志 %s 排除规则无效：%s", entry.Service, instance.Instance, entry.LogName, exclusionErr))
 				continue
 			}
 			// 含未展开宏的路径会导致 Filebeat 监听不到任何文件，必须跳过该实例并记录告警。
@@ -442,7 +443,8 @@ func loadHostLogRenderInputsPool(context context.Context, pool db.DBTX, hostIDs 
 			Project: row.ProjectCode, Environment: row.EnvironmentCode,
 			BusinessSystem: row.BusinessSystemCode, Tier: row.TierCode,
 			Pipeline: row.PipelineName, LogName: row.LogName, ResolvedPath: row.PathPattern,
-			ExcludeDirectories: row.ExcludeDirectories,
+			ExcludeDirectories:  row.ExcludeDirectories,
+			ExcludeFilePatterns: row.ExcludeFilePatterns,
 			// 宏优先级：部署模板 macro_definitions 作默认值，服务级 macro_values 覆盖同名项。
 			Macros: mergeMacroValues(
 				templateMacroDefaults(string(row.MacroDefinitions)),

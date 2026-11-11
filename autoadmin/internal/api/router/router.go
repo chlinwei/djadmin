@@ -400,6 +400,8 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	dependencyTypes.POST("/batch-delete/", middleware.RequirePermission("assets:applications:delete"), assetsHandler.BatchDeleteServiceDependencyTypes)
 	deployments := engine.Group("/assets/application-deployments", middleware.Authenticate(tokens))
 	deployments.GET("/", middleware.RequirePermission("assets:applications:view"), assetsHandler.ListApplicationDeployments)
+	// Status observation executes on hosts and persists results; viewing assets alone is insufficient.
+	deployments.GET("/refresh-runtime-status/", middleware.RequirePermission("assets:applications:update"), assetsHandler.RefreshApplicationDeploymentRuntimeStatus)
 	deployments.GET("/:id/", middleware.RequirePermission("assets:applications:view"), assetsHandler.GetApplicationDeployment)
 	deployments.POST("/:id/control/", middleware.RequirePermission("assets:applications:update"), assetsHandler.ControlApplicationDeployment)
 	deployments.POST("/", middleware.RequirePermission("assets:applications:create"), assetsHandler.CreateApplicationDeployment)

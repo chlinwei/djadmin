@@ -6,73 +6,76 @@
     :footer="null"
     @cancel="emit('update:open', false)"
   >
-    <div class="template-manager-toolbar">
-      <a-button v-permission="'assets:applications:create'" type="primary" @click="openCreate">
-        <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
-        <span>&nbsp;新增模板</span>
-      </a-button>
+    <div class="template-manager-content">
+      <div class="template-manager-toolbar">
+        <a-button v-permission="'assets:applications:create'" type="primary" @click="openCreate">
+          <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
+          <span>&nbsp;新增模板</span>
+        </a-button>
+      </div>
+
+      <a-table
+        row-key="id"
+        size="small"
+        :columns="columns"
+        :data-source="templates"
+        :loading="loading"
+        :pagination="false"
+        :scroll="{ x: 1200 }"
+        :locale="tableLocale"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'control_type'">
+            <a-tag :color="controlTypeColors[record.control_type]">{{ controlTypeLabels[record.control_type] || record.control_type }}</a-tag>
+          </template>
+          <template v-else-if="column.key === 'service_count'">
+            <a-tooltip :title="record.service_count ? '已被逻辑服务引用，需先解除引用才能删除' : '无逻辑服务引用，可直接删除'">
+              <a-tag :color="record.service_count ? 'blue' : 'default'">{{ record.service_count ?? 0 }}</a-tag>
+            </a-tooltip>
+          </template>
+          <template v-else-if="column.key === 'enabled'">
+            <EnabledSwitch v-model:checked="record.enabled" :endpoint="`assets/application-deployment-templates/${record.id}/`" permission="assets:applications:update" @changed="emit('changed')" />
+          </template>
+          <template v-else-if="column.key === 'action'">
+            <a-space>
+              <a-tooltip title="查看详情" placement="top">
+                <a-button v-permission="'assets:applications:view'" data-view-template type="link" size="small" class="detail-action" @click="openView(record)">
+                  <FontAwesomeIcon :icon="['fas', 'eye']" />
+                  <span>详情</span>
+                </a-button>
+              </a-tooltip>
+              <a-tooltip title="编辑">
+                <a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openEdit(record)">
+                  <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
+                </a-button>
+              </a-tooltip>
+              <a-tooltip title="复制">
+                <a-button v-permission="'assets:applications:create'" size="small" @click="openCopy(record)">
+                  <FontAwesomeIcon :icon="['fas', 'copy']" />
+                </a-button>
+              </a-tooltip>
+              <a-tooltip title="删除">
+                <a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDelete(record)">
+                  <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                </a-button>
+              </a-tooltip>
+            </a-space>
+          </template>
+        </template>
+      </a-table>
     </div>
-
-    <a-table
-      row-key="id"
-      size="small"
-      :columns="columns"
-      :data-source="templates"
-      :loading="loading"
-      :pagination="false"
-      :scroll="{ x: 1200 }"
-      :locale="tableLocale"
-    >
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'control_type'">
-          <a-tag :color="controlTypeColors[record.control_type]">{{ controlTypeLabels[record.control_type] || record.control_type }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'service_count'">
-          <a-tooltip :title="record.service_count ? '已被逻辑服务引用，需先解除引用才能删除' : '无逻辑服务引用，可直接删除'">
-            <a-tag :color="record.service_count ? 'blue' : 'default'">{{ record.service_count ?? 0 }}</a-tag>
-          </a-tooltip>
-        </template>
-        <template v-else-if="column.key === 'enabled'">
-          <EnabledSwitch v-model:checked="record.enabled" :endpoint="`assets/application-deployment-templates/${record.id}/`" permission="assets:applications:update" @changed="emit('changed')" />
-        </template>
-        <template v-else-if="column.key === 'action'">
-          <a-space>
-            <a-tooltip title="查看详情" placement="top">
-              <a-button v-permission="'assets:applications:view'" data-view-template type="link" size="small" class="detail-action" @click="openView(record)">
-                <FontAwesomeIcon :icon="['fas', 'eye']" />
-                <span>详情</span>
-              </a-button>
-            </a-tooltip>
-            <a-tooltip title="编辑">
-              <a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openEdit(record)">
-                <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
-              </a-button>
-            </a-tooltip>
-            <a-tooltip title="复制">
-              <a-button v-permission="'assets:applications:create'" size="small" @click="openCopy(record)">
-                <FontAwesomeIcon :icon="['fas', 'copy']" />
-              </a-button>
-            </a-tooltip>
-            <a-tooltip title="删除">
-              <a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDelete(record)">
-                <FontAwesomeIcon :icon="['fas', 'trash-can']" />
-              </a-button>
-            </a-tooltip>
-          </a-space>
-        </template>
-      </template>
-    </a-table>
-
-    <TemplateDialog
-      :open="templateDialogOpen"
-      :template-id="selectedTemplateId"
-      :copy-from-id="selectedTemplateCopyId"
-      :read-only="templateReadOnly"
-      :initial-application-id="application?.id"
-      @update:open="templateDialogOpen = $event"
-      @saved="handleTemplateSaved"
-    />
   </a-modal>
+
+  <!-- 编辑弹窗独立于列表 Portal，避免列表刷新或关闭动画影响编辑弹窗的 DOM 锚点。 -->
+  <TemplateDialog
+    :open="templateDialogOpen"
+    :template-id="selectedTemplateId"
+    :copy-from-id="selectedTemplateCopyId"
+    :read-only="templateReadOnly"
+    :initial-application-id="application?.id"
+    @update:open="templateDialogOpen = $event"
+    @saved="handleTemplateSaved"
+  />
 </template>
 
 <script setup>
@@ -177,6 +180,7 @@ function confirmDelete(record) {
 // 支持首次挂载即打开；保持关闭的实例不预取数据。
 watch(() => props.open, (visible) => {
   if (visible) loadTemplates()
+  else templateDialogOpen.value = false
 }, { immediate: true })
 </script>
 

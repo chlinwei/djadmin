@@ -87,11 +87,11 @@ func (handler *Handler) PreviewLogGlob(ctx context.Context, request assets.LogGl
 			result.Instances = append(result.Instances, item)
 			continue
 		}
-		exclusions, exclusionErr := logmacro.ResolveExcludeJSON(instance.ExcludeDirectories,
+		exclusions, exclusionErr := logmacro.ResolveExcludeJSON(instance.ExcludeDirectories, instance.ExcludeFilePatterns,
 			templateMacroDefaults(string(instance.MacroDefinitions)), parseMacroJSON(string(instance.MacroValues)),
 			instanceMacros(string(instance.RuntimeVariables), instance.AppHome))
 		if exclusionErr != nil {
-			item.Error = "排除目录无效：" + exclusionErr.Error()
+			item.Error = "排除规则无效：" + exclusionErr.Error()
 			result.Instances = append(result.Instances, item)
 			continue
 		}

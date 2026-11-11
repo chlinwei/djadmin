@@ -11,6 +11,16 @@ vi.mock('@/api/assets/application', () => ({
     ], count: 1 } },
   })),
   batchDeleteApplicationDeploymentTemplates: vi.fn(() => Promise.resolve({ data: { data: null } })),
+  getApplicationList: vi.fn(async () => ({ data: { data: { results: [{ id: 1, name: 'Tomcat' }] } } })),
+  getApplicationDeploymentTemplate: vi.fn(async () => ({ data: { data: {
+    id: 2, application: 1, name: 'tomcat-systemd', control_type: 'systemd', service_name: 'tomcat', run_user: 'app',
+  } } })),
+  saveApplicationDeploymentTemplate: vi.fn(async () => ({ data: { data: { id: 2 } } })),
+}))
+
+vi.mock('@/api/monitor', () => ({
+  getLogProcessingRules: vi.fn(async () => ({ data: { data: { results: [] } } })),
+  getLogCollectionFilterRules: vi.fn(async () => ({ data: { data: { results: [] } } })),
 }))
 
 vi.mock('@/util/deleteConfirm', () => ({
@@ -20,6 +30,7 @@ vi.mock('@/util/deleteConfirm', () => ({
 import * as applicationApi from '@/api/assets/application'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import TemplateManagerDialog from './TemplateManagerDialog.vue'
+import TemplateDialog from './TemplateDialog.vue'
 
 const TemplateDialogStub = {
   name: 'TemplateDialog',
@@ -27,7 +38,7 @@ const TemplateDialogStub = {
   template: '<div class="template-dialog-stub" />',
 }
 
-function mountDialog(props = {}, component = TemplateManagerDialog) {
+function mountDialog(props = {}, component = TemplateManagerDialog, stubs = {}) {
   return mount(component, {
     props: { open: false, application: { id: 1, name: 'Tomcat' }, ...props },
     attachTo: document.body,
@@ -36,6 +47,7 @@ function mountDialog(props = {}, component = TemplateManagerDialog) {
       stubs: {
         TemplateDialog: TemplateDialogStub,
         FontAwesomeIcon: true,
+        ...stubs,
       },
       directives: {
         permission,
@@ -45,6 +57,66 @@ function mountDialog(props = {}, component = TemplateManagerDialog) {
 }
 
 describe('TemplateManagerDialog', () => {
+  it('saves the first template with an empty macro value through real modal portals and refreshes the empty list', async () => {
+    applicationApi.getApplicationDeploymentTemplateList.mockResolvedValueOnce({ data: { data: { results: [] } } })
+    const wrapper = mountDialog({ open: true }, TemplateManagerDialog, { TemplateDialog: false })
+    try {
+      await flushPromises()
+      expect(wrapper.vm.templates).toEqual([])
+      await wrapper.vm.openCreate()
+      await flushPromises()
+      const dialog = wrapper.findComponent(TemplateDialog)
+      Object.assign(dialog.vm.form, { name: 'tomcat-systemd', run_user: 'app', service_name: 'tomcat' })
+      dialog.vm.addMacro()
+      await flushPromises()
+      await dialog.findComponent({ name: 'ATable' }).find('input.ant-input').setValue('LOG_DIR')
+      await dialog.vm.saveTemplate()
+      await flushPromises()
+      expect(applicationApi.saveApplicationDeploymentTemplate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          application: 1, name: 'tomcat-systemd',
+          macro_definitions: [{ name: 'LOG_DIR', value: '', description: '' }],
+        }),
+      )
+      expect(wrapper.vm.templateDialogOpen).toBe(false)
+      expect(wrapper.vm.templates).toHaveLength(1)
+      expect(document.body.textContent).toContain('tomcat-systemd')
+      await wrapper.vm.openEdit({ id: 2 })
+      await flushPromises()
+      expect(dialog.vm.form.name).toBe('tomcat-systemd')
+      await dialog.vm.saveTemplate()
+      await flushPromises()
+      expect(wrapper.vm.templateDialogOpen).toBe(false)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('keeps the editor outside the list portal and closes it when the manager closes', async () => {
+    const wrapper = mountDialog({ open: true }, TemplateManagerDialog, { TemplateDialog: false })
+    try {
+      await flushPromises()
+      wrapper.vm.openCreate()
+      await flushPromises()
+      const dialog = wrapper.findComponent(TemplateDialog)
+      const listContent = document.body.querySelector('.template-manager-content')
+      expect(listContent).not.toBeNull()
+      expect(dialog.vm.$.parent.uid).toBe(wrapper.vm.$.uid)
+      expect(listContent.contains(dialog.vm.$.vnode.el)).toBe(false)
+      const uid = dialog.vm.$.uid
+      await wrapper.vm.handleTemplateSaved()
+      await flushPromises()
+      expect(wrapper.findComponent(TemplateDialog).vm.$.uid).toBe(uid)
+      expect(wrapper.vm.templateDialogOpen).toBe(true)
+      await wrapper.setProps({ open: false })
+      await flushPromises()
+      expect(wrapper.vm.templateDialogOpen).toBe(false)
+      expect(wrapper.findComponent(TemplateDialog).props('open')).toBe(false)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('updates an open portal after list refresh and template HMR', async () => {
     const hmrId = 'template-manager-portal-regression'
     const component = { ...TemplateManagerDialog, __hmrId: hmrId }

@@ -97,12 +97,39 @@ func ResolveExcludeDirectories(directories []string, macroSets ...map[string]str
 	return patterns, nil
 }
 
-func ResolveExcludeJSON(raw json.RawMessage, macroSets ...map[string]string) ([]string, error) {
+func ValidateExcludeFilePatterns(patterns []string) error {
+	for _, pattern := range patterns {
+		if strings.TrimSpace(pattern) == "" || strings.ContainsAny(pattern, "\r\n") {
+			return fmt.Errorf("排除文件正则不能为空或包含换行")
+		}
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("排除文件正则无效 %q：%w", pattern, err)
+		}
+	}
+	return nil
+}
+
+// File expressions are literal RE2 patterns against the full path, just like
+// Filebeat exclude_files; macro expansion must not rewrite their regex syntax.
+func ResolveExcludeJSON(raw, filePatterns json.RawMessage, macroSets ...map[string]string) ([]string, error) {
 	var directories []string
 	if len(raw) != 0 {
 		if err := json.Unmarshal(raw, &directories); err != nil {
 			return nil, fmt.Errorf("排除目录必须是字符串数组：%w", err)
 		}
 	}
-	return ResolveExcludeDirectories(directories, macroSets...)
+	patterns, err := ResolveExcludeDirectories(directories, macroSets...)
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	if len(filePatterns) != 0 {
+		if err := json.Unmarshal(filePatterns, &files); err != nil {
+			return nil, fmt.Errorf("排除文件正则必须是字符串数组：%w", err)
+		}
+	}
+	if err := ValidateExcludeFilePatterns(files); err != nil {
+		return nil, err
+	}
+	return append(patterns, files...), nil
 }

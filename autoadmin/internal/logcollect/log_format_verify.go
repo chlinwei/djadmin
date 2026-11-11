@@ -184,11 +184,11 @@ func (handler *Handler) verifyDeployment(ctx context.Context, request assets.Log
 		return target
 	}
 	// Filebeat 会采集 glob 匹配到的**每一个**文件，认证必须逐个验，不能只抽样最新那个。
-	exclusions, exclusionErr := logmacro.ResolveExcludeJSON(instance.ExcludeDirectories,
+	exclusions, exclusionErr := logmacro.ResolveExcludeJSON(instance.ExcludeDirectories, instance.ExcludeFilePatterns,
 		templateMacroDefaults(string(instance.MacroDefinitions)), parseMacroJSON(string(instance.MacroValues)),
 		instanceMacros(string(instance.RuntimeVariables), instance.AppHome))
 	if exclusionErr != nil {
-		target.Error = "排除目录无效：" + exclusionErr.Error()
+		target.Error = "排除规则无效：" + exclusionErr.Error()
 		target.FailureKind = "format"
 		return target
 	}

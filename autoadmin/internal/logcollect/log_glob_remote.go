@@ -48,12 +48,12 @@ func (handler *Handler) resolveRemoteGlob(ctx context.Context, agentID, pattern 
 	for _, exclusion := range exclusions {
 		filter, err := regexp.Compile(exclusion)
 		if err != nil {
-			return nil, fmt.Errorf("排除目录正则无效：%w", err)
+			return nil, fmt.Errorf("日志排除正则无效：%w", err)
 		}
 		filters = append(filters, filter)
 	}
 	if excludedRemotePath(pattern, filters) && !hasGlobMeta(pattern) {
-		return nil, apperror.New(apperror.CodeInvalidArgument, "日志文件已被排除目录规则排除："+pattern)
+		return nil, apperror.New(apperror.CodeInvalidArgument, "日志文件已被排除规则排除："+pattern)
 	}
 	if !hasGlobMeta(pattern) {
 		stat, err := handler.gateway.StatFile(ctx, agentID, pattern)

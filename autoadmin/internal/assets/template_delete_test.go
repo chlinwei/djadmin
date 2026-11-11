@@ -25,9 +25,9 @@ func TestDeleteDeploymentTemplateRemovesChildrenThenParent(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id,create_time,update_time,remark,name,path_pattern")).WillReturnRows(
 		sqlmock.NewRows([]string{
 			"id", "create_time", "update_time", "remark", "name", "path_pattern",
-			"extra_fields", "exclude_directories", "processing_rule_id", "filter_include_rule_id", "filter_exclude_rule_id",
+			"extra_fields", "exclude_directories", "processing_rule_id", "filter_include_rule_id", "filter_exclude_rule_id", "exclude_file_patterns",
 		}).AddRow(int64(7), time.Now(), time.Now(), nil, "catalina.out", "/opt/logs/*.log",
-			[]byte("[]"), []byte("[]"), nil, nil, nil),
+			[]byte("[]"), []byte("[]"), nil, nil, nil, []byte("[]")),
 	)
 	// 日志定义被服务级覆盖行引用：删定义前先清覆盖行。
 	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM assets_application_service_log_setting")).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -70,9 +70,9 @@ func TestDeleteDeploymentTemplateDeleteProtectedRollsBack(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id,create_time,update_time,remark,name,path_pattern")).WillReturnRows(
 		sqlmock.NewRows([]string{
 			"id", "create_time", "update_time", "remark", "name", "path_pattern",
-			"extra_fields", "exclude_directories", "processing_rule_id", "filter_include_rule_id", "filter_exclude_rule_id",
+			"extra_fields", "exclude_directories", "processing_rule_id", "filter_include_rule_id", "filter_exclude_rule_id", "exclude_file_patterns",
 		}).AddRow(int64(7), time.Now(), time.Now(), nil, "catalina.out", "/opt/logs/*.log",
-			[]byte("[]"), []byte("[]"), nil, nil, nil),
+			[]byte("[]"), []byte("[]"), nil, nil, nil, []byte("[]")),
 	)
 	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM assets_application_service_log_setting")).WillReturnResult(sqlmock.NewResult(0, 1))
 	for _, table := range []string{

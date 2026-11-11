@@ -243,9 +243,9 @@ func resolveLiveSource(source liveSource, entries []hostLogRenderInput, instance
 				continue
 			}
 			pattern := resolveMacros(entry.ResolvedPath, entry.Macros, instance.Macros)
-			exclusions, exclusionErr := logmacro.ResolveExcludeJSON(entry.ExcludeDirectories, entry.Macros, instance.Macros)
+			exclusions, exclusionErr := logmacro.ResolveExcludeJSON(entry.ExcludeDirectories, entry.ExcludeFilePatterns, entry.Macros, instance.Macros)
 			if exclusionErr != nil {
-				return fmt.Errorf("排除目录无效：%w", exclusionErr)
+				return fmt.Errorf("排除规则无效：%w", exclusionErr)
 			}
 			excluded := false
 			for _, exclusion := range exclusions {

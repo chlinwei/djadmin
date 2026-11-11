@@ -2,6 +2,7 @@ package assets
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
 	"autoadmin/internal/api/response"
@@ -9,6 +10,101 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+type deploymentRuntimeOutcome struct {
+	ID                  int64   `json:"id"`
+	RuntimeStatus       string  `json:"runtime_status"`
+	RuntimeStatusOutput string  `json:"runtime_status_output"`
+	LastStatusCheckTime *string `json:"last_status_check_time"`
+	Error               string  `json:"error,omitempty"`
+}
+
+// Each visible scope sends explicit deployment IDs, so shared instances are checked once
+// without expanding a single-instance observation to its sibling deployments.
+func (handler *Handler) RefreshApplicationDeploymentRuntimeStatus(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	ids, err := requiredIDListQuery(c, "ids")
+	if err != nil {
+		response.Error(c, ErrInvalid)
+		return
+	}
+	results := collectDeploymentRuntimeStatuses(c.Request.Context(), ids, handler.refreshOneDeploymentRuntimeStatus)
+	summary := map[string]int{"running": 0, "stopped": 0, "error": 0, "unknown": 0}
+	for _, result := range results {
+		if _, ok := summary[result.RuntimeStatus]; ok {
+			summary[result.RuntimeStatus]++
+		} else {
+			summary["unknown"]++
+		}
+	}
+	response.Success(c, gin.H{"results": results, "summary": summary, "total": len(results)})
+}
+
+func collectDeploymentRuntimeStatuses(ctx context.Context, ids []int64, check func(context.Context, int64) deploymentRuntimeOutcome) []deploymentRuntimeOutcome {
+	seen := make(map[int64]bool, len(ids))
+	targets := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			targets = append(targets, id)
+		}
+	}
+	results := make([]deploymentRuntimeOutcome, len(targets))
+	// Bound actual Agent work, including scopes containing many services.
+	semaphore := make(chan struct{}, 8)
+	var waitGroup sync.WaitGroup
+	for index, id := range targets {
+		select {
+		case semaphore <- struct{}{}:
+		case <-ctx.Done():
+			results[index] = deploymentRuntimeFailure(id, ctx.Err())
+			continue
+		}
+		waitGroup.Add(1)
+		go func(index int, id int64) {
+			defer waitGroup.Done()
+			defer func() { <-semaphore }()
+			results[index] = check(ctx, id)
+		}(index, id)
+	}
+	waitGroup.Wait()
+	return results
+}
+
+func deploymentRuntimeFailure(id int64, err error) deploymentRuntimeOutcome {
+	slog.Error("deployment runtime observation failed", "deployment_id", id, "error", err)
+	return deploymentRuntimeOutcome{ID: id, RuntimeStatus: "error", RuntimeStatusOutput: err.Error(), Error: err.Error()}
+}
+
+func (handler *Handler) refreshOneDeploymentRuntimeStatus(ctx context.Context, id int64) deploymentRuntimeOutcome {
+	item, err := handler.service.repository.GetApplicationDeployment(ctx, id)
+	if err != nil {
+		return deploymentRuntimeFailure(id, translate(err))
+	}
+	var checkErr error
+	if item.Enabled {
+		_, checkErr = handler.service.executeDeploymentControl(ctx, handler.gateway, id, "status")
+		item, err = handler.service.repository.GetApplicationDeployment(ctx, id)
+		if err != nil {
+			return deploymentRuntimeFailure(id, err)
+		}
+	}
+	result := deploymentRuntimeOutcome{
+		ID: id, RuntimeStatus: item.RuntimeStatus, RuntimeStatusOutput: item.RuntimeStatusOutput,
+		LastStatusCheckTime: item.LastStatusCheckTime,
+	}
+	if checkErr != nil {
+		// A failed check must never leave the old "running" snapshot looking fresh,
+		// including when writing the failure snapshot itself failed.
+		result.RuntimeStatus = "error"
+		result.Error = checkErr.Error()
+		if item.RuntimeStatus != "error" {
+			result.RuntimeStatusOutput = checkErr.Error()
+		}
+		slog.Error("deployment runtime check failed", "deployment_id", id, "error", checkErr)
+	}
+	return result
+}
 
 // RefreshHostInfo dispatches a synchronous get_host_info job to the host's agent, persists the
 // result, then returns {result, host} — mirroring Django's HostViewSet.refresh_info.

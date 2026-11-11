@@ -97,6 +97,16 @@ func TestResolveLiveSourceFailsClosed(t *testing.T) {
 	if err := resolveLiveSource(source, []hostLogRenderInput{entry}, []hostInstanceInput{instance}); err == nil {
 		t.Fatal("excluded source file admitted")
 	}
+	entry.ExcludeDirectories = nil
+	entry.ExcludeFilePatterns = []byte(`["-(星期[一二三四五六日天]|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\\.log$"]`)
+	source.Path = "/logs/HAK_random-星期四.log"
+	if err := resolveLiveSource(source, []hostLogRenderInput{entry}, []hostInstanceInput{instance}); err == nil {
+		t.Fatal("weekday-excluded source file admitted")
+	}
+	source.Path = "/logs/HAK_arbitrary.log"
+	if err := resolveLiveSource(source, []hostLogRenderInput{entry}, []hostInstanceInput{instance}); err != nil {
+		t.Fatalf("random suffix without a weekday must remain accessible: %v", err)
+	}
 }
 
 func TestLiveTailOrigin(t *testing.T) {

@@ -14,14 +14,15 @@ vi.mock('@/api/assets/application', () => ({
   getApplicationDeployment: vi.fn(), getApplicationDeploymentList: vi.fn(),
   getApplicationServiceList: vi.fn(), getBusinessEnvironmentList: vi.fn(),
   getBusinessSystem: vi.fn(), getBusinessSystemList: vi.fn(), getProjectList: vi.fn(),
-  refreshApplicationServiceRuntimeStatus: vi.fn(),
+  refreshApplicationDeploymentRuntimeStatus: vi.fn(),
 }))
 
 import ServiceTreeNodeContent from './ServiceTreeNodeContent.vue'
 import store from '@/store'
 import {
   getApplicationService, getApplicationServiceLogConfig,
-  getApplicationDeployment, getApplicationDeploymentList, refreshApplicationServiceRuntimeStatus,
+  getApplicationDeployment, getApplicationDeploymentList, refreshApplicationDeploymentRuntimeStatus,
+  getBusinessSystem, getBusinessSystemList, getProjectList, getApplicationServiceList,
 } from '@/api/assets/application'
 
 const response = (data) => ({ data: { data } })
@@ -31,6 +32,7 @@ const deployment = (id, status = 'stopped') => ({
   runtime_status_output: `output-${status}`, last_status_check_time: null,
 })
 const list = (items) => response({ results: items, totalPages: 1 })
+const checked = (items) => response({ results: items })
 function deferred() {
   let resolve, reject
   const promise = new Promise((yes, no) => { resolve = yes; reject = no })
@@ -47,7 +49,7 @@ describe('service-tree non-blocking runtime checks', () => {
     getApplicationDeploymentList.mockImplementation(({ application_service }) => Promise.resolve(list([deployment(application_service * 10)])))
     store.state.perms = ['assets:applications:update']
     store.state.role_codes = ['operator']
-    refreshApplicationServiceRuntimeStatus.mockResolvedValue(response({ summary: {} }))
+    refreshApplicationDeploymentRuntimeStatus.mockImplementation((ids) => Promise.resolve(checked(ids.map((id) => deployment(id)))))
     vi.spyOn(message, 'success').mockImplementation(() => {})
     vi.spyOn(message, 'error').mockImplementation(() => {})
   })
@@ -56,9 +58,9 @@ describe('service-tree non-blocking runtime checks', () => {
     vi.useRealTimers()
     vi.restoreAllMocks()
   })
-  function mountNode() {
+  function mountNode(nodeScope = scope(1)) {
     wrapper = shallowMount(ServiceTreeNodeContent, {
-      props: { scope: scope(1) },
+      props: { scope: nodeScope },
       global: {
         plugins: [Antd], directives: { permission: () => {} },
         renderStubDefaultSlot: true,
@@ -70,26 +72,170 @@ describe('service-tree non-blocking runtime checks', () => {
     })
   }
 
+  it.each([
+    { nodeType: 'all', projectIds: [1], environmentIds: [72] },
+    { nodeType: 'project', projectId: 1 },
+    { nodeType: 'businessSystem', businessSystemId: 7 },
+    { nodeType: 'environment', businessSystemId: 7, environment: 72 },
+    { nodeType: 'service', applicationServiceId: 1 },
+    { nodeType: 'deployment', deploymentId: 10 },
+  ])('checks only the current visible instances when entering any node %j', async (nodeScope) => {
+    getProjectList.mockResolvedValue(list([{ id: 1, business_systems: [7] }]))
+    getBusinessSystemList.mockResolvedValue(list([{ id: 7, project: 1 }]))
+    getBusinessSystem.mockResolvedValue(response({ id: 7, project: 1 }))
+    getApplicationServiceList.mockResolvedValue(list([{ id: 1, business_system: 7, environment: 72 }]))
+    getApplicationDeploymentList.mockResolvedValue(list([
+      { ...deployment(10, 'unknown'), application_service_ids: [1], enabled: true },
+      { ...deployment(20, 'unknown'), application_service_ids: [1], enabled: false },
+    ]))
+    getApplicationDeployment.mockResolvedValue(response({ ...deployment(10, 'unknown'), enabled: true }))
+    const check = deferred()
+    refreshApplicationDeploymentRuntimeStatus.mockReturnValueOnce(check.promise)
+    mountNode(nodeScope)
+    await flushPromises()
+    expect(wrapper.vm.loading).toBe(false)
+    expect(wrapper.vm.runtimeRefreshing).toBe(true)
+    expect(refreshApplicationDeploymentRuntimeStatus).toHaveBeenCalledWith([10], 150000, { suppressBusinessErrorMessage: true })
+    check.resolve(checked([deployment(10, 'running')]))
+    await flushPromises()
+    expect(wrapper.vm.runtimeRefreshing).toBe(false)
+    if (nodeScope.nodeType === 'deployment') {
+      expect(wrapper.vm.detail.runtime_status).toBe('running')
+      expect(getApplicationDeployment).toHaveBeenCalledTimes(1)
+    } else {
+      expect(wrapper.vm.descendants.find((item) => item.id === 10).runtime_status).toBe('running')
+      expect(wrapper.vm.descendants.find((item) => item.id === 20).runtime_status).toBe('unknown')
+    }
+  })
+
+  it('reuses overlapping instance checks across root and service scopes', async () => {
+    getProjectList.mockResolvedValue(list([]))
+    getBusinessSystemList.mockResolvedValue(list([{ id: 7 }]))
+    getApplicationServiceList.mockResolvedValue(list([{ id: 1, business_system: 7 }, { id: 2, business_system: 7 }]))
+    getApplicationDeploymentList.mockImplementation(({ application_service }) => Promise.resolve(list(
+      application_service ? [deployment(10)] : [
+        { ...deployment(10), application_service_ids: [1, 2] },
+        { ...deployment(20), application_service_ids: [2] },
+      ],
+    )))
+    const check = deferred()
+    refreshApplicationDeploymentRuntimeStatus.mockReturnValueOnce(check.promise)
+    mountNode({ nodeType: 'all' })
+    await flushPromises()
+    expect(refreshApplicationDeploymentRuntimeStatus).toHaveBeenCalledWith([10, 20], 150000, { suppressBusinessErrorMessage: true })
+    await wrapper.setProps({ scope: scope(1) })
+    await flushPromises()
+    expect(refreshApplicationDeploymentRuntimeStatus).toHaveBeenCalledTimes(1)
+    check.resolve(checked([deployment(10, 'running'), deployment(20, 'running')]))
+    await flushPromises()
+    expect(wrapper.vm.rows.map((item) => item.id)).toEqual([10])
+    expect(wrapper.vm.rows[0].runtime_status).toBe('running')
+    expect(wrapper.vm.summaryStatus.label).toBe('运行正常')
+  })
+
+  it('checks every instance in a large scope in sequential URL batches', async () => {
+    const deployments = Array.from({ length: 205 }, (_, index) => deployment(index + 1, 'unknown'))
+    getApplicationDeploymentList.mockResolvedValue(list(deployments))
+    refreshApplicationDeploymentRuntimeStatus.mockImplementation((ids) => Promise.resolve(checked(ids.map((id) => deployment(id, 'running')))))
+    mountNode()
+    await flushPromises()
+    expect(refreshApplicationDeploymentRuntimeStatus.mock.calls.map(([ids]) => ids.length)).toEqual([...Array(25).fill(8), 5])
+    expect(refreshApplicationDeploymentRuntimeStatus.mock.calls.flatMap(([ids]) => ids)).toEqual(deployments.map((item) => item.id))
+    expect(wrapper.vm.runningCount).toBe(205)
+    expect(wrapper.vm.descendants.every((item) => item.runtime_status === 'running')).toBe(true)
+  })
+
+  it('merges a finished wave before the next wave and preserves it when that wave times out', async () => {
+    const deployments = Array.from({ length: 17 }, (_, index) => deployment(index + 1, 'unknown'))
+    getApplicationDeploymentList.mockResolvedValue(list(deployments))
+    const first = deferred(), second = deferred()
+    refreshApplicationDeploymentRuntimeStatus.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    mountNode()
+    await flushPromises()
+    expect(refreshApplicationDeploymentRuntimeStatus).toHaveBeenCalledTimes(1)
+    first.resolve(checked(deployments.slice(0, 8).map((item) => deployment(item.id, 'running'))))
+    await flushPromises()
+    expect(wrapper.vm.runningCount).toBe(8)
+    expect(wrapper.vm.descendants[8].runtime_status).toBe('unknown')
+    expect(wrapper.vm.runtimeRefreshing).toBe(true)
+    expect(refreshApplicationDeploymentRuntimeStatus).toHaveBeenCalledTimes(2)
+    second.reject(new Error('timeout of 150000ms exceeded'))
+    await flushPromises()
+    expect(wrapper.vm.runningCount).toBe(8)
+    expect(wrapper.vm.runtimeRefreshing).toBe(false)
+    expect(wrapper.vm.runtimeRefreshError).toContain('timeout')
+    expect(message.success).not.toHaveBeenCalled()
+    expect(refreshApplicationDeploymentRuntimeStatus).toHaveBeenCalledTimes(2)
+  })
+
+  it('checks a newly selected instance without waiting for unrelated queued waves and stops the old queue', async () => {
+    const deployments = Array.from({ length: 17 }, (_, index) => deployment(index + 1, 'unknown'))
+    getApplicationDeploymentList.mockImplementation(({ application_service }) => Promise.resolve(list(
+      application_service === 1 ? deployments : [deployment(9, 'unknown')],
+    )))
+    const first = deferred()
+    refreshApplicationDeploymentRuntimeStatus.mockReturnValueOnce(first.promise)
+    mountNode()
+    await flushPromises()
+    await wrapper.setProps({ scope: scope(2) })
+    await flushPromises()
+    expect(refreshApplicationDeploymentRuntimeStatus.mock.calls.map(([ids]) => ids)).toEqual([
+      [1, 2, 3, 4, 5, 6, 7, 8], [9],
+    ])
+    expect(wrapper.vm.runtimeRefreshing).toBe(false)
+    expect(wrapper.vm.rows[0].id).toBe(9)
+    first.resolve(checked(deployments.slice(0, 8).map((item) => deployment(item.id, 'running'))))
+    await flushPromises()
+    expect(refreshApplicationDeploymentRuntimeStatus).toHaveBeenCalledTimes(2)
+    expect(wrapper.vm.rows[0].id).toBe(9)
+  })
+
+  it('does not send queued waves after the page becomes inactive', async () => {
+    const deployments = Array.from({ length: 17 }, (_, index) => deployment(index + 1, 'unknown'))
+    getApplicationDeploymentList.mockResolvedValue(list(deployments))
+    const first = deferred()
+    refreshApplicationDeploymentRuntimeStatus.mockReturnValueOnce(first.promise)
+    mountNode()
+    await flushPromises()
+    lifecycle.stop()
+    first.resolve(checked(deployments.slice(0, 8).map((item) => deployment(item.id, 'running'))))
+    await flushPromises()
+    expect(refreshApplicationDeploymentRuntimeStatus).toHaveBeenCalledTimes(1)
+    expect(wrapper.vm.runningCount).toBe(0)
+    expect(wrapper.vm.runtimeRefreshing).toBe(false)
+  })
+
+  it('merges per-instance failures and makes the incomplete refresh explicit', async () => {
+    refreshApplicationDeploymentRuntimeStatus.mockResolvedValueOnce(checked([{
+      ...deployment(10, 'error'), error: 'Agent 未连接',
+    }]))
+    mountNode()
+    await flushPromises()
+    expect(wrapper.vm.rows[0].runtime_status).toBe('error')
+    expect(wrapper.vm.runtimeRefreshError).toContain('Agent 未连接')
+    expect(message.success).not.toHaveBeenCalled()
+  })
+
   it('does not dispatch a runtime check when the user can only view the service tree', async () => {
     store.state.perms = ['assets:applications:view']
     mountNode()
     await flushPromises()
     expect(wrapper.vm.loading).toBe(false)
     expect(wrapper.vm.rows[0].runtime_status).toBe('stopped')
-    expect(refreshApplicationServiceRuntimeStatus).not.toHaveBeenCalled()
+    expect(refreshApplicationDeploymentRuntimeStatus).not.toHaveBeenCalled()
   })
 
   it('renders cached rows and ends page loading before a slow Agent check completes', async () => {
     const check = deferred()
-    refreshApplicationServiceRuntimeStatus.mockReturnValue(check.promise)
+    refreshApplicationDeploymentRuntimeStatus.mockReturnValue(check.promise)
     mountNode()
     await flushPromises()
     expect(wrapper.vm.loading).toBe(false)
     expect(wrapper.vm.entity.id).toBe(1)
     expect(wrapper.vm.rows[0].runtime_status).toBe('stopped')
     expect(wrapper.text()).toContain('状态检查中')
-    expect(refreshApplicationServiceRuntimeStatus).toHaveBeenCalledWith(1, 120000, { suppressBusinessErrorMessage: true })
-    check.resolve(response({ summary: {} }))
+    expect(refreshApplicationDeploymentRuntimeStatus).toHaveBeenCalledWith([10], 150000, { suppressBusinessErrorMessage: true })
+    check.resolve(checked([deployment(10)]))
     await flushPromises()
   })
 
@@ -153,19 +299,18 @@ describe('service-tree non-blocking runtime checks', () => {
 
   it('deduplicates slow polling and updates only status fields without reloading details', async () => {
     const check = deferred()
-    refreshApplicationServiceRuntimeStatus.mockReturnValue(check.promise)
+    refreshApplicationDeploymentRuntimeStatus.mockReturnValue(check.promise)
     mountNode()
     await flushPromises()
     lifecycle.start()
     vi.advanceTimersByTime(45000)
     await flushPromises()
-    expect(refreshApplicationServiceRuntimeStatus).toHaveBeenCalledTimes(1)
+    expect(refreshApplicationDeploymentRuntimeStatus).toHaveBeenCalledTimes(1)
     expect(getApplicationDeploymentList).toHaveBeenCalledTimes(1)
     expect(wrapper.vm.summaryStatus).toEqual({ label: '1 个异常实例', color: 'error' })
     expect(wrapper.vm.abnormalRows.map((item) => item.id)).toEqual([10])
     wrapper.vm.abnormalDetailsOpen = true
-    getApplicationDeploymentList.mockResolvedValue(list([{ ...deployment(10, 'running'), instance_name: 'changed-metadata' }]))
-    check.resolve(response({ summary: { running: 1 } }))
+    check.resolve(checked([{ ...deployment(10, 'running'), instance_name: 'changed-metadata' }]))
     await flushPromises()
     expect(wrapper.vm.rows[0]).toMatchObject({
       instance_name: 'instance-10', runtime_status: 'running', runtime_status_output: 'output-running',
@@ -181,40 +326,39 @@ describe('service-tree non-blocking runtime checks', () => {
     expect(getApplicationServiceLogConfig).toHaveBeenCalledTimes(1)
     vi.advanceTimersByTime(15000)
     await flushPromises()
-    expect(refreshApplicationServiceRuntimeStatus).toHaveBeenCalledTimes(2)
+    expect(refreshApplicationDeploymentRuntimeStatus).toHaveBeenCalledTimes(2)
     expect(getApplicationService).toHaveBeenCalledTimes(1)
   })
 
   it('switches services without waiting and prevents old results from altering the new node', async () => {
     const first = deferred(), second = deferred()
-    refreshApplicationServiceRuntimeStatus.mockImplementation((id) => id === 1 ? first.promise : second.promise)
+    refreshApplicationDeploymentRuntimeStatus.mockImplementation(([id]) => id === 10 ? first.promise : second.promise)
     mountNode()
     await flushPromises()
     await wrapper.setProps({ scope: scope(2) })
     await flushPromises()
     expect(wrapper.vm.loading).toBe(false)
     expect(wrapper.vm.rows[0].id).toBe(20)
-    expect(refreshApplicationServiceRuntimeStatus).toHaveBeenCalledTimes(2)
-    first.resolve(response({ summary: { running: 1 } }))
+    expect(refreshApplicationDeploymentRuntimeStatus).toHaveBeenCalledTimes(2)
+    first.resolve(checked([deployment(10, 'running')]))
     await flushPromises()
     expect(wrapper.vm.rows[0].id).toBe(20)
     expect(wrapper.vm.runtimeRefreshing).toBe(true)
     expect(getApplicationDeploymentList).toHaveBeenCalledTimes(2)
-    second.resolve(response({ summary: {} }))
+    second.resolve(checked([deployment(20)]))
     await flushPromises()
   })
 
   it('finishes manual page refresh without waiting and reuses the pending status request', async () => {
     const check = deferred()
-    refreshApplicationServiceRuntimeStatus.mockReturnValue(check.promise)
+    refreshApplicationDeploymentRuntimeStatus.mockReturnValue(check.promise)
     mountNode()
     await flushPromises()
     await wrapper.vm.refresh()
     expect(wrapper.vm.loading).toBe(false)
     expect(wrapper.vm.runtimeRefreshing).toBe(true)
-    expect(refreshApplicationServiceRuntimeStatus).toHaveBeenCalledTimes(1)
-    getApplicationDeploymentList.mockResolvedValue(list([deployment(10, 'running')]))
-    check.resolve(response({ summary: { running: 1 } }))
+    expect(refreshApplicationDeploymentRuntimeStatus).toHaveBeenCalledTimes(1)
+    check.resolve(checked([deployment(10, 'running')]))
     await flushPromises()
     expect(wrapper.vm.rows[0].runtime_status).toBe('running')
     expect(message.success).toHaveBeenCalledTimes(1)
@@ -222,44 +366,37 @@ describe('service-tree non-blocking runtime checks', () => {
 
   it('reuses an in-flight service check after navigating away and back', async () => {
     const first = deferred(), second = deferred()
-    refreshApplicationServiceRuntimeStatus.mockImplementation((id) => id === 1 ? first.promise : second.promise)
+    refreshApplicationDeploymentRuntimeStatus.mockImplementation(([id]) => id === 10 ? first.promise : second.promise)
     mountNode()
     await flushPromises()
     await wrapper.setProps({ scope: scope(2) })
     await flushPromises()
     await wrapper.setProps({ scope: scope(1) })
     await flushPromises()
-    expect(refreshApplicationServiceRuntimeStatus).toHaveBeenCalledTimes(2)
-    getApplicationDeploymentList.mockResolvedValue(list([deployment(10, 'running')]))
-    first.resolve(response({ summary: {} }))
+    expect(refreshApplicationDeploymentRuntimeStatus).toHaveBeenCalledTimes(2)
+    first.resolve(checked([deployment(10, 'running')]))
     await flushPromises()
     expect(wrapper.vm.rows[0].runtime_status).toBe('running')
-    second.resolve(response({ summary: {} }))
+    second.resolve(checked([deployment(20)]))
     await flushPromises()
     expect(wrapper.vm.rows[0].id).toBe(10)
   })
 
-  it('discards a late status-list response after switching nodes', async () => {
-    const check = deferred(), statusList = deferred(), otherCheck = deferred()
-    refreshApplicationServiceRuntimeStatus.mockReturnValueOnce(check.promise).mockReturnValue(otherCheck.promise)
+  it('rejects incomplete or invalid status snapshots instead of reporting success', async () => {
+    refreshApplicationDeploymentRuntimeStatus.mockResolvedValueOnce(checked([]))
     mountNode()
     await flushPromises()
-    getApplicationDeploymentList.mockReturnValueOnce(statusList.promise)
-    check.resolve(response({ summary: {} }))
-    await flushPromises()
+    expect(wrapper.vm.runtimeRefreshError).toContain('实例明细不完整')
+    expect(wrapper.vm.rows[0].runtime_status).toBe('stopped')
+    expect(message.success).not.toHaveBeenCalled()
+    refreshApplicationDeploymentRuntimeStatus.mockResolvedValueOnce(checked([{ id: 20, runtime_status: 'invalid' }]))
     await wrapper.setProps({ scope: scope(2) })
     await flushPromises()
-    expect(wrapper.vm.rows[0].id).toBe(20)
-    statusList.resolve(list([deployment(10, 'running')]))
-    await flushPromises()
-    expect(wrapper.vm.rows[0].id).toBe(20)
-    expect(wrapper.vm.runtimeRefreshing).toBe(true)
-    otherCheck.resolve(response({ summary: {} }))
-    await flushPromises()
+    expect(wrapper.vm.runtimeRefreshError).toContain('无效运行状态')
   })
 
   it('preserves cached data and displays background errors without blocking the page', async () => {
-    refreshApplicationServiceRuntimeStatus.mockRejectedValue(new Error('Agent timeout'))
+    refreshApplicationDeploymentRuntimeStatus.mockRejectedValue(new Error('Agent timeout'))
     mountNode()
     await flushPromises()
     expect(wrapper.vm.rows[0].runtime_status).toBe('stopped')
@@ -271,20 +408,20 @@ describe('service-tree non-blocking runtime checks', () => {
 
   it('stops polling and discards inactive results, then resumes on activation', async () => {
     const check = deferred()
-    refreshApplicationServiceRuntimeStatus.mockReturnValueOnce(check.promise)
+    refreshApplicationDeploymentRuntimeStatus.mockReturnValueOnce(check.promise)
     mountNode()
     await flushPromises()
     lifecycle.start()
     lifecycle.stop()
     vi.advanceTimersByTime(30000)
-    check.resolve(response({ summary: {} }))
+    check.resolve(checked([deployment(10, 'running')]))
     await flushPromises()
-    expect(refreshApplicationServiceRuntimeStatus).toHaveBeenCalledTimes(1)
+    expect(refreshApplicationDeploymentRuntimeStatus).toHaveBeenCalledTimes(1)
     expect(getApplicationDeploymentList).toHaveBeenCalledTimes(1)
     expect(wrapper.vm.rows[0].runtime_status).toBe('stopped')
     lifecycle.start()
     await flushPromises()
     expect(getApplicationService).toHaveBeenCalledTimes(2)
-    expect(refreshApplicationServiceRuntimeStatus).toHaveBeenCalledTimes(2)
+    expect(refreshApplicationDeploymentRuntimeStatus).toHaveBeenCalledTimes(2)
   })
 })

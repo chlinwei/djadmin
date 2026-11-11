@@ -15,9 +15,9 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-func testPathReceipt(fragments []logConfigFragment, inputs int) string {
+func testPathReceipt(fragments []logConfigFragment, inputs int, restarted bool) string {
 	raw, _ := json.Marshal(fragments)
-	data, _ := json.Marshal(map[string]any{"path_check": logPathCheckReceipt{
+	data, _ := json.Marshal(map[string]any{"restarted": restarted, "path_check": logPathCheckReceipt{
 		Version: 1, Checked: true, FilesDigest: fmt.Sprintf("%x", sha256.Sum256(raw)),
 		InputsChecked: inputs, MatchedFiles: inputs, UnmatchedPatterns: []string{},
 	}})
@@ -61,7 +61,7 @@ func TestLogPathPreflightFailsBeforeAnySideEffect(t *testing.T) {
 				case "malformed-receipt":
 					status, data = "success", "{"
 				case "wrong-digest":
-					status, data = "success", testPathReceipt([]logConfigFragment{}, 0)
+					status, data = "success", testPathReceipt([]logConfigFragment{}, 0, false)
 				}
 				return testPathResponse(request, status, data, message)
 			})
@@ -82,7 +82,7 @@ func TestLogPathPreflightFailsBeforeAnySideEffect(t *testing.T) {
 	}
 }
 
-func TestLogPathPreflightRunsBeforeFingerprintSkip(t *testing.T) {
+func TestLogPathPreflightAlwaysReachesConfigReconciliation(t *testing.T) {
 	pool, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -95,27 +95,23 @@ func TestLogPathPreflightRunsBeforeFingerprintSkip(t *testing.T) {
 			return nil
 		}
 		requests = append(requests, request.Action)
-		return testPathResponse(request, "success", testPathReceipt([]logConfigFragment{}, 0), "")
+		return testPathResponse(request, "success", testPathReceipt([]logConfigFragment{}, 0, false), "")
 	})
 	expectPathApplyCluster(mock)
 	mock.ExpectQuery("FROM assets_application_service_deployment").WillReturnRows(sqlmock.NewRows([]string{"host_id"}))
 	mock.ExpectQuery("FROM assets_application_service s").WillReturnRows(sqlmock.NewRows([]string{"host_id"}))
-	identity, err := filebeatOutputIdentity("http://es:9200", "", false)
+	mock.ExpectExec("UPDATE monitor_log_collection_target SET last_applied_time").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	secrets, err := assets.NewSecretEncryptor("", "test-secret")
 	if err != nil {
 		t.Fatal(err)
 	}
-	rendered := renderHostLogConfig(nil, nil, identity)
-	mock.ExpectQuery("SELECT COALESCE\\(config_fingerprint").
-		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"config_fingerprint"}).AddRow(rendered.Fingerprint))
-	mock.ExpectQuery("SELECT COALESCE\\(service_fingerprints").
-		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"service_fingerprints"}).AddRow([]byte(`{}`)))
-	mock.ExpectExec("UPDATE monitor_log_collection_target SET last_applied_time").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	result, err := (&Handler{db: pool, gateway: gateway}).applyLogTargetConfigRow(context.Background(),
+	result, err := (&Handler{db: pool, gateway: gateway, secrets: secrets}).applyLogTargetConfigRow(context.Background(),
 		logTargetRow{ID: 1, HostID: 42, HostName: "host-01"})
-	if err != nil || result["skipped"] != true || len(requests) != 1 || requests[0] != "check_filebeat_paths" ||
+	if err != nil || result["skipped"] != false || len(requests) != 2 ||
+		requests[0] != "check_filebeat_paths" || requests[1] != "apply_filebeat_config" ||
 		result["path_check"] == nil {
-		t.Fatalf("unchanged fingerprint must still be checked: %v %v requests=%v", result, err, requests)
+		t.Fatalf("apply must reconcile actual config even with no inputs: %v %v requests=%v", result, err, requests)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -123,8 +119,18 @@ func TestLogPathPreflightRunsBeforeFingerprintSkip(t *testing.T) {
 }
 
 func TestLogPathCheckedApplyUsesOneConfigAction(t *testing.T) {
-	for _, failedRecheck := range []bool{false, true} {
-		t.Run(map[bool]string{false: "success", true: "apply-recheck-fails"}[failedRecheck], func(t *testing.T) {
+	for _, testCase := range []struct {
+		name           string
+		failedRecheck  bool
+		restarted      bool
+		missingRestart bool
+	}{
+		{name: "success-with-restart", restarted: true},
+		{name: "success-without-restart"},
+		{name: "apply-recheck-fails", failedRecheck: true},
+		{name: "missing-restart-receipt", missingRestart: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
 			pool, mock, err := sqlmock.New()
 			if err != nil {
 				t.Fatal(err)
@@ -148,13 +154,28 @@ func TestLogPathCheckedApplyUsesOneConfigAction(t *testing.T) {
 					if params.Output == nil || params.Output.URL != "http://es:9200" {
 						t.Error("main output config must accompany inputs in a single checked apply")
 					}
-					if failedRecheck {
+					if testCase.failedRecheck {
 						return testPathResponse(request, "failed", "", "log file overlap after preflight")
 					}
 				} else if request.Action != "check_filebeat_paths" {
 					t.Errorf("unexpected config action: %s", request.Action)
 				}
-				return testPathResponse(request, "success", testPathReceipt(params.Files, 2), "")
+				data := testPathReceipt(params.Files, 2, testCase.restarted)
+				if request.Action == "apply_filebeat_config" && testCase.missingRestart {
+					var envelope map[string]json.RawMessage
+					if err := json.Unmarshal([]byte(data), &envelope); err != nil {
+						t.Error(err)
+						return testPathResponse(request, "failed", "", err.Error())
+					}
+					delete(envelope, "restarted")
+					raw, err := json.Marshal(envelope)
+					if err != nil {
+						t.Error(err)
+						return testPathResponse(request, "failed", "", err.Error())
+					}
+					data = string(raw)
+				}
+				return testPathResponse(request, "success", data, "")
 			})
 			expectPathApplyCluster(mock)
 			expectServiceConflictInputs(mock, "/data/app/logs/other.log")
@@ -162,12 +183,13 @@ func TestLogPathCheckedApplyUsesOneConfigAction(t *testing.T) {
 				mock.ExpectQuery("name: ListServiceExtraPipelineRows").
 					WithArgs(serviceID).WillReturnRows(sqlmock.NewRows([]string{"service_id"}))
 			}
-			mock.ExpectQuery("SELECT COALESCE\\(config_fingerprint").
-				WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"config_fingerprint"}).AddRow(""))
-			mock.ExpectQuery("SELECT COALESCE\\(service_fingerprints").
-				WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"service_fingerprints"}).AddRow([]byte(`{}`)))
-			if !failedRecheck {
+			if !testCase.failedRecheck && !testCase.missingRestart {
+				restarted := int64(0)
+				if testCase.restarted {
+					restarted = 1
+				}
 				mock.ExpectExec("UPDATE monitor_log_collection_target SET last_applied_time").
+					WithArgs(sqlmock.AnyArg(), restarted, sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(1)).
 					WillReturnResult(sqlmock.NewResult(0, 1))
 			}
 			secrets, err := assets.NewSecretEncryptor("", "test-secret")
@@ -176,7 +198,7 @@ func TestLogPathCheckedApplyUsesOneConfigAction(t *testing.T) {
 			}
 			result, err := (&Handler{db: pool, gateway: gateway, secrets: secrets}).applyLogTargetConfigRow(
 				context.Background(), logTargetRow{ID: 1, HostID: 42, HostName: "host-01"})
-			if failedRecheck {
+			if testCase.failedRecheck || testCase.missingRestart {
 				if err == nil || result != nil || !strings.Contains(err.Error(), "未记录同步指纹") {
 					t.Fatalf("failed apply-time check must not mark synced: %v %v", result, err)
 				}
@@ -210,7 +232,7 @@ func TestLogPathPreflightRejectsOfflineAndCanceled(t *testing.T) {
 func TestLogPathReceiptRequiresCompleteMatchingCheck(t *testing.T) {
 	files := []logConfigFragment{{Path: "/etc/filebeat/inputs.d/a.yml",
 		Content: "- type: filestream\n  id: a\n  paths: ['/logs/app.log']\n- type: filestream\n  id: b\n  paths: ['/logs/other.log']\n"}}
-	valid := testPathReceipt(files, 2)
+	valid := testPathReceipt(files, 2, false)
 	for _, invalid := range []string{
 		`{}`, `{"path_check":null}`,
 		strings.Replace(valid, `"checked":true`, `"checked":false`, 1),

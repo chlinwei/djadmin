@@ -1,4 +1,4 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { DOMWrapper, flushPromises, mount } from '@vue/test-utils'
 import Antd, { FormItem, message, Tooltip } from 'ant-design-vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import BaselinePage from './index.vue'
@@ -147,6 +147,31 @@ describe('策略只读详情', () => {
     await flushPromises()
     expect(document.body.querySelector('.ant-modal-title').textContent).toBe('策略详情：策略一')
     expect(document.body.querySelector('.ant-modal-footer')).toBeNull()
+  })
+})
+
+describe('策略采集命令编辑', () => {
+  it('在多行输入框中加载命令，并原样保存换行和缩进', async () => {
+    const policy = 'package baseline\nassertions contains {"name": "示例", "pass": true}'
+    const command = 'if [ "$value" != "old" ]; then\n  printf "%s\\n" "$value"\nfi'
+    savedItems = [{
+      ...items[0],
+      config: { input_commands: [{ key: 'example', exec: command, parse: 'raw' }], policy },
+    }, ...items.slice(1)]
+    requestUtil.patch.mockResolvedValueOnce(response({}))
+    await loadPage()
+    wrapper.vm.openItemEditModal(0)
+    await flushPromises()
+
+    const textarea = document.body.querySelector('textarea[aria-label="采集命令"]')
+    expect(textarea?.value).toBe(command)
+    const updated = command.replace('"old"', '"new"') + '\n'
+    await new DOMWrapper(textarea).setValue(updated)
+    await wrapper.vm.confirmItemEdit()
+
+    expect(requestUtil.patch).toHaveBeenCalledWith('sys/security/baseline/7/items/88/', expect.objectContaining({
+      config: expect.objectContaining({ input_commands: [{ key: 'example', exec: updated, parse: 'raw' }] }),
+    }))
   })
 })
 

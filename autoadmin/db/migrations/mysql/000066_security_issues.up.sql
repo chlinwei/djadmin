@@ -1,0 +1,57 @@
+-- 问题与证据独立保留，不以扫描、主机或规则删除级联清除整改台账。
+ALTER TABLE baseline_scan_result ADD COLUMN rule_key varchar(64) DEFAULT NULL;
+CREATE INDEX baseline_result_rule ON baseline_scan_result (host_id, rule_key, scan_id);
+CREATE TABLE security_issue (
+  id bigint NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  host_id bigint NOT NULL,
+  host_name varchar(255) NOT NULL,
+  host_ip varchar(64) NOT NULL,
+  baseline_id bigint NOT NULL,
+  item_id bigint NOT NULL,
+  rule_key varchar(64) NOT NULL,
+  title varchar(255) NOT NULL,
+  severity varchar(16) NOT NULL,
+  chapter varchar(64) NOT NULL,
+  status varchar(16) NOT NULL,
+  last_result varchar(16) NOT NULL,
+  first_seen datetime(6) NOT NULL,
+  last_seen datetime(6) NOT NULL,
+  last_checked datetime(6) NOT NULL,
+  latest_scan_id bigint NOT NULL,
+  occurrence_count bigint NOT NULL DEFAULT 0,
+  reopen_count bigint NOT NULL DEFAULT 0,
+  closed_at datetime(6) DEFAULT NULL,
+  UNIQUE KEY security_issue_identity (host_id, rule_key),
+  KEY security_issue_status_time (status, last_checked),
+  KEY security_issue_rule (rule_key),
+  KEY security_issue_severity (severity)
+);
+CREATE TABLE security_issue_history (
+  id bigint NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  issue_id bigint NOT NULL,
+  scan_id bigint NOT NULL,
+  checked_at datetime(6) NOT NULL,
+  result varchar(16) NOT NULL,
+  transition varchar(32) NOT NULL,
+  applied BOOLEAN NOT NULL,
+  expected_value json NOT NULL,
+  actual_value json NOT NULL,
+  message longtext NOT NULL,
+  remediation longtext NOT NULL,
+  UNIQUE KEY security_issue_history_scan (issue_id, scan_id),
+  KEY security_issue_history_time (issue_id, checked_at, scan_id),
+  CONSTRAINT security_issue_history_issue_fk FOREIGN KEY (issue_id) REFERENCES security_issue (id)
+);
+
+INSERT INTO sys_menu (name, icon, parent_id, order_num, path, component, menu_type, perms, location, is_expanded, create_time, update_time, remark)
+SELECT '安全问题', 'fa-shield-halved', p.id, 0, '/sys/security/issues', 'security/issues/index', 'C', 'security:issues:view',
+       p.location, FALSE, CURRENT_DATE, CURRENT_DATE, 'migration:000066:security_issues'
+FROM sys_menu p WHERE p.name = '安全中心' AND p.menu_type = 'M'
+  AND NOT EXISTS (SELECT 1 FROM sys_menu m WHERE m.perms = 'security:issues:view');
+
+-- 新权限仅为 admin 角色显式补授；其他角色由管理员单独授权。
+INSERT INTO sys_role_menu (role_id, menu_id)
+SELECT r.id, m.id FROM sys_role r
+JOIN sys_menu m ON m.remark = 'migration:000066:security_issues'
+WHERE r.code = 'admin'
+  AND NOT EXISTS (SELECT 1 FROM sys_role_menu rm WHERE rm.role_id = r.id AND rm.menu_id = m.id);

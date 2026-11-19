@@ -27,6 +27,7 @@ flowchart LR
 | 监控中心 → 监控告警 / 通知管理 | [监控告警与通知](architecture/modules/MONITORING.md) | 指标、告警摄取和通知分发分别排查 |
 | 监控中心 → 日志管理 | [日志管理](architecture/modules/LOGGING.md) | 配置 → Filebeat → ES，停止、换档与删除的区别 |
 | 安全中心 → 基线扫描 | [基线扫描](architecture/modules/SECURITY.md) | OS 合规检查，不是漏洞扫描或自动修复 |
+| 安全中心 → 安全问题 | [安全问题台账](architecture/SECURITY_ISSUES.md) | 跨扫描去重、按风险聚合、复查关闭与复发历史 |
 | 系统管理 | [系统管理](architecture/modules/SYSTEM.md) | 用户/组/角色、菜单、参数、调度与审计 |
 | 右上角用户菜单 | [个人中心](architecture/modules/PROFILE.md) | 密码、时区与通知收件绑定 |
 | 文档中心 | [阅读与维护说明](architecture/modules/DOCUMENTATION.md) | 目录、章节、流程图与发布边界 |

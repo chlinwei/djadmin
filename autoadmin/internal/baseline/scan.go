@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -309,11 +311,37 @@ func (handler *Handler) runScanHost(ctx context.Context, scanID int64, items []d
 		return
 	}
 	targetRowID := targetRow.ID
-	setFailed := func(message string) {
-		queries.SetBaselineScanTargetStatus(ctx, db.SetBaselineScanTargetStatusParams{Status: "failed", ErrorMessage: message, ID: targetRowID})
+	save := func(status, message string, results []scanResultRow) {
+		// 远端超时不应取消结果持久化；事务可安全重试，最终失败必须在扫描中显式呈现。
+		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer persistCancel()
+		var persistErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			persistErr = handler.persistHostResults(persistCtx, scanID, host, targetRowID, status, message, results)
+			if persistErr == nil {
+				return
+			}
+			log.Printf("[BASELINE] scan=%d host=%d persist attempt=%d: %v", scanID, host.HostID, attempt+1, persistErr)
+		}
+		if err := queries.FailSecurityIssuePersistence(persistCtx, targetRowID); err != nil {
+			log.Printf("[BASELINE] scan=%d host=%d persist failure status: %v", scanID, host.HostID, err)
+		}
+	}
+	saveError := func(status, message string) {
+		results, buildErr := buildScanResults(scanID, items, nil, message)
+		if buildErr != nil {
+			log.Printf("[BASELINE] scan=%d build error results: %v", scanID, buildErr)
+			if err := queries.SetBaselineScanTargetStatus(ctx, db.SetBaselineScanTargetStatusParams{
+				Status: "failed", ErrorMessage: buildErr.Error(), ID: targetRowID,
+			}); err != nil {
+				log.Printf("[BASELINE] scan=%d save build failure: %v", scanID, err)
+			}
+			return
+		}
+		save(status, message, results)
 	}
 	if host.InstanceName == "" || !handler.gateway.IsOnline(host.InstanceName) {
-		queries.SetBaselineScanTargetStatus(ctx, db.SetBaselineScanTargetStatusParams{Status: "skipped", ErrorMessage: "Agent 离线，未执行扫描", ID: targetRowID})
+		saveError("skipped", "Agent 离线，未执行扫描")
 		return
 	}
 	target := hostContext(host)
@@ -349,65 +377,42 @@ func (handler *Handler) runScanHost(ctx context.Context, scanID int64, items []d
 		// 离线是"未执行"而非"检查失败"：下发瞬间会话可能已断（IsOnline 仍看得到半死会话），
 		// 此时必须与前置检查一致地置 skipped，否则会把离线机器算作"存在不符合"。
 		if errors.Is(execErr, agent.ErrAgentOffline) {
-			queries.SetBaselineScanTargetStatus(ctx, db.SetBaselineScanTargetStatusParams{
-				Status: "skipped", ErrorMessage: "Agent 离线，未执行扫描", ID: targetRowID,
-			})
+			saveError("skipped", "Agent 离线，未执行扫描")
 			return
 		}
-		setFailed(execErr.Error())
+		saveError("failed", execErr.Error())
 		return
 	}
 	var decoded struct {
-		Checks []struct {
-			Key, Status, Message string
-			Expected, Actual     any
-		} `json:"checks"`
+		Checks []scanCheck `json:"checks"`
 	}
-	_ = json.Unmarshal([]byte(responseData.ResultDataJson), &decoded)
-	statusByKey := make(map[string]string, len(decoded.Checks))
-	messageByKey := make(map[string]string, len(decoded.Checks))
-	expectedByKey := make(map[string]any, len(decoded.Checks))
-	actualByKey := make(map[string]any, len(decoded.Checks))
+	if err := json.Unmarshal([]byte(responseData.ResultDataJson), &decoded); err != nil {
+		saveError("failed", "Agent 检查结果解析失败")
+		return
+	}
+	checks := make(map[string]scanCheck, len(decoded.Checks))
 	for _, check := range decoded.Checks {
-		statusByKey[check.Key] = check.Status
-		messageByKey[check.Key] = check.Message
-		expectedByKey[check.Key] = check.Expected
-		actualByKey[check.Key] = check.Actual
-	}
-	passed, failed := 0, 0
-	results := make([]scanResultRow, 0, len(items))
-	for index, item := range items {
-		key := fmt.Sprintf("baseline:%d:%d", scanID, index)
-		checkStatus, exists := statusByKey[key]
-		if !exists {
-			continue
+		if _, duplicate := checks[check.Key]; duplicate {
+			saveError("failed", "Agent 检查结果包含重复条目")
+			return
 		}
-		resultStatus := "fail"
-		if checkStatus == "pass" {
-			resultStatus, passed = "pass", passed+1
-		} else {
-			failed++
+		checks[check.Key] = check
+	}
+	results, err := buildScanResults(scanID, items, checks, "")
+	if err != nil {
+		saveError("failed", err.Error())
+		return
+	}
+	status, errorMessage := "success", ""
+	for _, result := range results {
+		if result.status != "pass" {
+			status = "failed"
 		}
-		var config map[string]any
-		_ = json.Unmarshal(item.Config, &config)
-		results = append(results, scanResultRow{itemID: item.ID, itemName: item.Name, chapter: item.Category,
-			severity: item.Severity, status: resultStatus, message: messageByKey[key],
-			expected: expectedByKey[key], actual: actualByKey[key],
-			remediation: stringFrom(config["remediation"])})
+		if result.status == "error" {
+			errorMessage = "部分检查执行异常，请查看条目明细"
+		}
 	}
-	compliance := 0.0
-	if passed+failed > 0 {
-		compliance = float64(passed) / float64(passed+failed) * 100
-	}
-	status := "failed"
-	if failed == 0 && passed > 0 {
-		status = "success"
-	}
-	queries.FinishBaselineScanTarget(ctx, db.FinishBaselineScanTargetParams{
-		Status: status, PassedItems: int32(passed), FailedItems: int32(failed),
-		ComplianceRate: decimalString(compliance), ErrorMessage: "", ID: targetRowID,
-	})
-	flushResults(ctx, handler.db, scanID, host.HostID, results)
+	save(status, errorMessage, results)
 }
 
 // finishScan 聚合全部目标结果并关闭扫描。
@@ -495,6 +500,9 @@ func mergeCanceledSummary(raw json.RawMessage) json.RawMessage {
 // scanResultRow 是一条待落库的条目结果。用结构体而不是 gin.H：这里的所有字段都要落库，
 // 结构体让字段名/类型由编译器钉住（原来从 map 里取 item_id 要做类型断言，断言失败会静默落 0）。
 type scanResultRow struct {
+	baselineID  int64
+	ruleKey     string
+	ruleVersion string
 	itemID      int64
 	itemName    string
 	chapter     string
@@ -506,13 +514,62 @@ type scanResultRow struct {
 	remediation string
 }
 
+type scanCheck struct {
+	Key, Status, Message string
+	Expected, Actual     any
+}
+
+func buildScanResults(scanID int64, items []db.ListBaselineItemsRow, checks map[string]scanCheck, failure string) ([]scanResultRow, error) {
+	results := make([]scanResultRow, 0, len(items))
+	for index, item := range items {
+		ruleVersion, err := issueRuleVersion(item)
+		if err != nil {
+			return nil, err
+		}
+		check, exists := checks[fmt.Sprintf("baseline:%d:%d", scanID, index)]
+		if !exists {
+			check.Status, check.Message = "error", firstNonEmpty(failure, "Agent 未返回该条检查结果")
+		}
+		if check.Status != "pass" && check.Status != "fail" {
+			check.Status = "error"
+			check.Message = firstNonEmpty(check.Message, "检查未产生有效结论")
+		}
+		// 空断言不是完整的通过证据，不能据此自动关闭安全问题。
+		if check.Status == "pass" {
+			actual, _ := check.Actual.(map[string]any)
+			details, _ := actual["details"].([]any)
+			if len(details) == 0 {
+				check.Status, check.Message = "error", "检查未返回有效断言，无法验证通过"
+			}
+			for _, raw := range details {
+				detail, ok := raw.(map[string]any)
+				if !ok || detail["successful"] != true {
+					check.Status, check.Message = "error", "检查通过状态与断言证据不一致"
+					break
+				}
+			}
+		}
+		var config map[string]any
+		if err := json.Unmarshal(item.Config, &config); err != nil {
+			return nil, err
+		}
+		results = append(results, scanResultRow{
+			baselineID: item.BaselineID, ruleKey: issueRuleKey(item.ID), ruleVersion: ruleVersion,
+			itemID: item.ID, itemName: item.Name, chapter: item.Category, severity: item.Severity,
+			status: check.Status, message: check.Message, expected: check.Expected, actual: check.Actual,
+			remediation: stringFrom(config["remediation"]),
+		})
+	}
+	return results, nil
+}
+
 // flushResults 逐条落基线条目结果。
 //
 // 原实现按 100 行/批拼一条多行 INSERT：占位符个数随入参变化，是 sqlc 表达不了、只能内联的形状
 // （SQL_DESIGN §1），而拼出来的文本用 `?` 占位符——PG 变体（pgx）不接受 `?`，那条路径在 PG 上
 // 根本跑不通。这里改成走 sqlc 的单行 INSERT：目标是每主机几十到几百条，摊在按主机并发、
 // 单机耗时以远端命令执行为主的扫描里可以忽略；真要回到批量插入，就按方言各写一份。
-func flushResults(ctx context.Context, executor db.DBTX, scanID, hostID int64, results []scanResultRow) {
+func flushResults(ctx context.Context, executor db.DBTX, scanID, hostID int64, results []scanResultRow) error {
 	queries := db.New(executor)
 	for _, item := range results {
 		if err := queries.CreateBaselineScanResults(ctx, db.CreateBaselineScanResultsParams{
@@ -521,10 +578,12 @@ func flushResults(ctx context.Context, executor db.DBTX, scanID, hostID int64, r
 			ExpectedValue: jsonBytes(item.expected), ActualValue: jsonBytes(item.actual),
 			Message:     item.message,
 			Remediation: sql.NullString{String: item.remediation, Valid: item.remediation != ""},
+			RuleVersion: sql.NullString{String: item.ruleVersion, Valid: item.ruleVersion != ""},
 		}); err != nil {
-			return
+			return err
 		}
 	}
+	return nil
 }
 
 // decimalString 把数值写成 decimal(5,2) 列能接受的文本：sqlc 两侧都把该列生成为 string
@@ -682,36 +741,35 @@ func (handler *Handler) GetScan(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
-	var scope scanScope
-	scopeSource := "snapshot"
 	if header.ScopeSnapshotPresent != 0 {
-		scope, err = decodeScanScope(header.ScopeSnapshot)
-	} else {
-		// 仅无快照的历史记录按当前关联展示，响应明确标注来源，不回写伪历史。
-		scopeSource = "current_assets"
-		hostIDs := make([]int64, 0, len(targetRows))
-		for _, row := range targetRows {
-			hostIDs = append(hostIDs, row.HostID)
+		scope, err := decodeScanScope(header.ScopeSnapshot)
+		if err != nil {
+			response.Error(context, err)
+			return
 		}
-		scope, err = loadScanScope(context, queries, header.ProjectID, header.EnvironmentID, header.ProjectName, header.EnvironmentName, hostIDs)
+		scan["project_name"] = scope.ProjectName
 	}
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	scan["project_name"] = scope.ProjectName
-	scan["environments"], scan["environment_source"] = scope.Environments, scopeSource
-	for _, environment := range scope.Environments {
-		if header.EnvironmentID.Valid && environment.ID == header.EnvironmentID.Int64 {
-			scan["environment_name"] = environment.Name
-		}
-	}
+	// 环境列表示主机当前所属环境，不是服务环境或扫描范围快照；两张表共用本次查询结果。
+	hostEnvironments := make(map[int64][]scanEnvironment, len(targetRows))
+	environments := make(map[int64]scanEnvironment)
 	targets := make([]gin.H, 0, len(targetRows))
 	for _, row := range targetRows {
-		targets = append(targets, gin.H{"host_id": row.HostID, "environments": scope.Hosts[row.HostID], "host_name": row.HostName, "host_ip": row.HostIp, "status": row.Status,
+		hostEnvironments[row.HostID] = []scanEnvironment{}
+		if row.EnvironmentID.Valid {
+			environment := scanEnvironment{ID: row.EnvironmentID.Int64, Name: row.EnvironmentName}
+			hostEnvironments[row.HostID] = []scanEnvironment{environment}
+			environments[environment.ID] = environment
+		}
+		targets = append(targets, gin.H{"host_id": row.HostID, "environments": hostEnvironments[row.HostID], "host_name": row.HostName, "host_ip": row.HostIp, "status": row.Status,
 			"passed_items": row.PassedItems, "failed_items": row.FailedItems,
 			"compliance_rate": decimalValue(row.ComplianceRate), "error_message": row.ErrorMessage})
 	}
+	currentEnvironments := make([]scanEnvironment, 0, len(environments))
+	for _, environment := range environments {
+		currentEnvironments = append(currentEnvironments, environment)
+	}
+	sort.Slice(currentEnvironments, func(i, j int) bool { return currentEnvironments[i].ID < currentEnvironments[j].ID })
+	scan["environments"], scan["environment_source"] = currentEnvironments, "current_assets"
 
 	itemRows, err := queries.ListBaselineScanResults(context, scanID)
 	if err != nil {
@@ -721,7 +779,7 @@ func (handler *Handler) GetScan(context *gin.Context) {
 	items := make([]gin.H, 0, len(itemRows))
 	for _, row := range itemRows {
 		items = append(items, gin.H{"host_id": row.HostID, "host_name": row.HostName, "host_ip": row.HostIp,
-			"environments": scope.Hosts[row.HostID],
+			"environments": hostEnvironments[row.HostID],
 			"item_name":    row.ItemName, "chapter": row.Chapter, "severity": row.Severity, "status": row.Status,
 			"expected": row.ExpectedValue, "actual": row.ActualValue, "message": row.Message,
 			"remediation": row.Remediation})

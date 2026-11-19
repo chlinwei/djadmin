@@ -252,7 +252,82 @@ func TestHostScanRejectsProjectParameters(t *testing.T) {
 	}
 }
 
-func TestGetScanLegacyScopeIsExplicitlyCurrent(t *testing.T) {
+func TestGetScanUsesCurrentHostEnvironment(t *testing.T) {
+	for _, mountType := range []string{"host", "project", "environment"} {
+		for _, snapshotPresent := range []int{0, 1} {
+			t.Run(fmt.Sprintf("%s/snapshot=%d", mountType, snapshotPresent), func(t *testing.T) {
+				pool, mock, err := sqlmock.New()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer pool.Close()
+				var projectID, selectedEnvironment any
+				if mountType != "host" {
+					projectID = int64(3)
+				}
+				if mountType == "environment" {
+					selectedEnvironment = int64(9)
+				}
+				mock.ExpectQuery("FROM security_scan s JOIN baseline b").WithArgs(int64(28)).
+					WillReturnRows(sqlmock.NewRows([]string{"id", "scan_type", "baseline", "baseline_id", "mount_type", "status",
+						"summary", "requested_username", "start_time", "end_time", "project_id", "environment_id", "project_name", "environment_name", "scope_snapshot", "scope_snapshot_present"}).
+						AddRow(28, "baseline", "baseline", 7, mountType, "failed", []byte(`{}`), "admin", nil, nil, projectID, selectedEnvironment, "pvg4", "",
+							[]byte(`{"project_name":"snapshot-project","environments":[{"id":9,"name":"old-service-environment"}],"hosts":{"10":[{"id":9,"name":"old-service-environment"}]}}`), snapshotPresent))
+				mock.ExpectQuery(regexp.QuoteMeta("FROM security_scan_target t LEFT JOIN assets_host h ON h.id = t.host_id LEFT JOIN assets_business_environment e ON e.id = h.environment_id")).
+					WithArgs(int64(28)).
+					WillReturnRows(sqlmock.NewRows([]string{"host_id", "host_name", "host_ip", "status", "passed_items", "failed_items", "compliance_rate", "error_message", "environment_id", "environment_name"}).
+						AddRow(10, "host", "10.0.0.1", "failed", 1, 1, "50.00", "", 2, "prod").
+						AddRow(11, "unassigned", "10.0.0.2", "failed", 1, 1, "50.00", "", nil, "").
+						AddRow(12, "test-host", "10.0.0.3", "failed", 1, 1, "50.00", "", 1, "test").
+						AddRow(13, "other-prod-host", "10.0.0.4", "failed", 1, 1, "50.00", "", 2, "prod"))
+				mock.ExpectQuery("FROM baseline_scan_result r").WithArgs(int64(28)).
+					WillReturnRows(sqlmock.NewRows([]string{"host_id", "host_name", "host_ip", "item_name", "chapter", "severity",
+						"status", "expected_value", "actual_value", "message", "remediation"}).
+						AddRow(10, "host", "10.0.0.1", "check", "", "low", "fail", []byte(`null`), []byte(`null`), "", "").
+						AddRow(11, "unassigned", "10.0.0.2", "check", "", "low", "fail", []byte(`null`), []byte(`null`), "", "").
+						AddRow(12, "test-host", "10.0.0.3", "check", "", "low", "fail", []byte(`null`), []byte(`null`), "", "").
+						AddRow(13, "other-prod-host", "10.0.0.4", "check", "", "low", "fail", []byte(`null`), []byte(`null`), "", ""))
+				ctx, recorder := ginTestContext("GET", "/sys/security/scans/28/", nil)
+				ctx.Params = gin.Params{{Key: "id", Value: "28"}}
+				(&Handler{db: pool}).GetScan(ctx)
+				data := decodeResponse(t, recorder)["data"].(map[string]any)
+				scan := data["scan"].(map[string]any)
+				if scan["environment_source"] != "current_assets" {
+					t.Fatalf("environment source: %v", scan)
+				}
+				environments := scan["environments"].([]any)
+				if len(environments) != 2 || environments[0].(map[string]any)["name"] != "test" ||
+					environments[1].(map[string]any)["name"] != "prod" {
+					t.Fatalf("current environments must be sorted and deduplicated: %v", environments)
+				}
+				for _, key := range []string{"targets", "items"} {
+					for i, raw := range data[key].([]any) {
+						row := raw.(map[string]any)
+						current := row["environments"].([]any)
+						if i == 1 {
+							if len(current) != 0 {
+								t.Fatalf("%s unassigned host: %v", key, row)
+							}
+							continue
+						}
+						wantID := float64(2)
+						if i == 2 {
+							wantID = 1
+						}
+						if len(current) != 1 || current[0].(map[string]any)["id"] != wantID {
+							t.Fatalf("%s must use the single current host environment: %v", key, row)
+						}
+					}
+				}
+				if err := mock.ExpectationsWereMet(); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
+}
+
+func TestGetScanReportsCurrentEnvironmentQueryFailure(t *testing.T) {
 	pool, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -262,29 +337,12 @@ func TestGetScanLegacyScopeIsExplicitlyCurrent(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "scan_type", "baseline", "baseline_id", "mount_type", "status",
 			"summary", "requested_username", "start_time", "end_time", "project_id", "environment_id", "project_name", "environment_name", "scope_snapshot", "scope_snapshot_present"}).
 			AddRow(28, "baseline", "baseline", 7, "project", "failed", []byte(`{}`), "admin", nil, nil, 3, nil, "pvg4", "", []byte(`null`), 0))
-	mock.ExpectQuery("FROM security_scan_target").WithArgs(int64(28)).
-		WillReturnRows(sqlmock.NewRows([]string{"host_id", "host_name", "host_ip", "status", "passed_items", "failed_items", "compliance_rate", "error_message"}).
-			AddRow(10, "host", "10.0.0.1", "failed", 1, 1, "50.00", ""))
-	mock.ExpectQuery("SELECT DISTINCT d.host_id, s.environment_id").WithArgs(int64(3), nil, nil).
-		WillReturnRows(sqlmock.NewRows([]string{"host_id", "environment_id", "environment_name"}).
-			AddRow(10, 1, "test").AddRow(10, 2, "prod").AddRow(99, 3, "not-scanned"))
-	mock.ExpectQuery("FROM baseline_scan_result r").WithArgs(int64(28)).
-		WillReturnRows(sqlmock.NewRows([]string{"host_id", "host_name", "host_ip", "item_name", "chapter", "severity",
-			"status", "expected_value", "actual_value", "message", "remediation"}).
-			AddRow(10, "host", "10.0.0.1", "check", "", "low", "fail", []byte(`null`), []byte(`null`), "", ""))
+	mock.ExpectQuery("FROM security_scan_target t").WithArgs(int64(28)).WillReturnError(sql.ErrConnDone)
 	ctx, recorder := ginTestContext("GET", "/sys/security/scans/28/", nil)
 	ctx.Params = gin.Params{{Key: "id", Value: "28"}}
 	(&Handler{db: pool}).GetScan(ctx)
-	data := decodeResponse(t, recorder)["data"].(map[string]any)
-	scan := data["scan"].(map[string]any)
-	if scan["project_name"] != "pvg4" || scan["environment_source"] != "current_assets" || len(scan["environments"].([]any)) != 2 {
-		t.Fatalf("legacy scope: %v", scan)
-	}
-	for _, key := range []string{"targets", "items"} {
-		row := data[key].([]any)[0].(map[string]any)
-		if len(row["environments"].([]any)) != 2 {
-			t.Fatalf("%s environments: %v", key, row)
-		}
+	if decodeResponse(t, recorder)["code"] != float64(600) {
+		t.Fatalf("query failure must not return an empty environment as success: %s", recorder.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

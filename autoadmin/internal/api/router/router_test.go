@@ -45,7 +45,12 @@ func TestReadOnlyRoutesUseGET(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{
+		"/sys/security/issues/",
+		"/sys/security/issues/groups/",
+		"/sys/security/issues/:id/",
+		"/sys/security/issues/:id/history/",
 		"/sys/security/baseline/scan-hosts/",
+		"/sys/security/scans/:id/",
 		"/sys/automation/inventories/:id/precheck-limit/",
 		"/sys/automation/tasks/:id/precheck/",
 		"/monitor/targets/:id/check-service-status/",
@@ -84,6 +89,11 @@ func TestObservationQueriesDoNotKeepPOSTRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{
+		"/sys/security/issues/",
+		"/sys/security/issues/groups/",
+		"/sys/security/issues/1/",
+		"/sys/security/issues/1/history/",
+		"/sys/security/scans/1/",
 		"/assets/hosts/1/refresh-info/",
 		"/assets/hosts/refresh-info/",
 		"/assets/application-services/1/refresh-runtime-status/",

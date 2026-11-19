@@ -116,6 +116,7 @@ flowchart LR
 | 调度 | `system:scheduler:view` | Cron、启停及全局调度开关用 `system:scheduler:update` | 立即运行用 `system:scheduler:execute` |
 | 系统参数 | `sys:config:list`（含按 key 读取） | 更新、按 key 更新、恢复默认均用 `sys:config:update` | 不因已登录而允许修改全局参数 |
 | 基线与扫描记录 | `baseline:view` | 标准、类目、策略写入用 `baseline:manage` | 发起/取消扫描用 `baseline:scan` |
+| 安全问题台账 | `security:issues:view` | 首版无人工写入入口 | 自动随新扫描归并；不因拥有此查看权限获得扫描权限 |
 | 监控与日志配置资源 | `monitor:view` | 新增 `monitor:create`、修改/上传/同步 `monitor:update`、删除 `monitor:delete` | 测试通知、连接探测、安装重试、取消、启停用 `monitor:execute` |
 | 监控目标 | `monitor:view` | 编辑用 `monitor:update` | 新建同时需 `monitor:create` + `monitor:execute`；删除同时需 `monitor:delete` + `monitor:execute` |
 | 日志采集 | `monitor:view` + `monitor:log_collect:view` | 纳管还需 `monitor:log_collect:create` + `monitor:log_collect:execute` | 安装、重试、取消、启停、配置下发用 `monitor:log_collect:execute`；删除另需 `monitor:log_collect:delete` |

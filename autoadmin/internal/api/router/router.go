@@ -349,6 +349,12 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	securityScans.GET("/", middleware.RequirePermission("baseline:view"), baselineHandler.ListScans)
 	securityScans.GET("/:id/", middleware.RequirePermission("baseline:view"), baselineHandler.GetScan)
 	securityScans.POST("/:id/cancel/", middleware.RequirePermission("baseline:scan"), baselineHandler.CancelScan)
+	// 台账是独立的只读能力；基线查看权限不自动获得跨扫描安全问题访问权。
+	securityIssues := engine.Group("/sys/security/issues", middleware.Authenticate(tokens), middleware.RequirePermission("security:issues:view"))
+	securityIssues.GET("/", baselineHandler.ListIssues)
+	securityIssues.GET("/groups/", baselineHandler.ListIssueGroups)
+	securityIssues.GET("/:id/", baselineHandler.GetIssue)
+	securityIssues.GET("/:id/history/", baselineHandler.ListIssueHistory)
 
 	templates := engine.Group("/assets/application-deployment-templates", middleware.Authenticate(tokens))
 	templates.GET("/", middleware.RequirePermission("assets:applications:view"), assetsHandler.ListDeploymentTemplates)

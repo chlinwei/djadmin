@@ -291,15 +291,17 @@
             <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;添加采集命令
           </a-button>
         </div>
-        <div v-for="(input, inputIndex) in itemEditForm.input_commands" :key="inputIndex" class="input-grid">
+        <div v-for="(input, inputIndex) in itemEditForm.input_commands" :key="inputIndex" class="input-grid command-grid">
           <a-input v-model:value="input.key" placeholder="key，如 es_limits" />
-          <a-input v-model:value="input.exec" placeholder="命令，如 cat /proc/1/limits" />
           <a-select v-model:value="input.parse" :options="opaParseOptions" :getPopupContainer="getPopupContainer" />
           <a-tooltip title="删除" placement="top">
             <a-button class="delBtn" size="small" type="primary" danger @click="itemEditForm.input_commands.splice(inputIndex, 1)">
               <FontAwesomeIcon :icon="['fas', 'trash-can']" />
             </a-button>
           </a-tooltip>
+          <a-textarea v-model:value="input.exec" :auto-size="{ minRows: 3, maxRows: 10 }"
+            class="opa-policy-editor command-editor" aria-label="采集命令" spellcheck="false"
+            placeholder="命令，如 cat /proc/1/limits" />
         </div>
         <div class="check-heading">
           <span>文件采集（{{ itemEditForm.input_files.length }}）</span>
@@ -321,7 +323,8 @@
         <a-form-item label="Rego 策略" required>
           <a-textarea v-model:value="itemEditForm.policy" :rows="10" spellcheck="false" class="opa-policy-editor" />
           <div class="field-hint">
-            必须以 <code>package baseline</code> 开头，产出 <code>assertions contains &lt;元素&gt; if {{ '{' }} ... {{ '}' }}</code> 全量断言清单（OPA v1 语法；pass/fail 都展示，空集即通过）。
+            必须以 <code>package baseline</code> 开头，产出 <code>assertions contains &lt;元素&gt; if {{ '{' }} ... {{ '}' }}</code> 全量断言清单（OPA v1 语法；pass/fail 都展示，基线空断言视为无法验证）。
+            用规则表达布尔条件时应声明 <code>default 条件规则名 := false</code>，避免不符合时断言消失。
             元素形如 {'{'}name, pass, expected, actual{'}'}，expected/actual 进报告对应列。
             策略里引用的 <code>input.key</code> 必须与上方采集 key 一致，引用了未采集的字段保存时会直接报错。
           </div>
@@ -955,6 +958,10 @@ defineOptions({ name: 'ViewSecurityBaseline' })
 
 <style scoped>
 .policy-detail-text,
+.policy-detail-code,
+.opa-policy-editor {
+  font-variant-ligatures: none;
+}
 .policy-detail-code {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -970,6 +977,8 @@ defineOptions({ name: 'ViewSecurityBaseline' })
 /* 条目编辑器：与巡检组检查项编辑器保持一致的布局语义（fronted/src/views/inspection/index.vue）。 */
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .input-grid { display: grid; grid-template-columns: minmax(150px, 200px) 1fr minmax(110px, 150px) auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+.command-grid { grid-template-columns: minmax(0, 1fr) minmax(110px, 150px) auto; }
+.command-editor { grid-column: 1 / -1; }
 .check-heading { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 12px; font-weight: 600; }
 .field-hint { color: #66727d; font-size: 12px; }
 .variable-hint { margin-bottom: 12px; }

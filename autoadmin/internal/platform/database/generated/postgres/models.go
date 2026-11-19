@@ -688,6 +688,7 @@ type BaselineScanResult struct {
 	ScanID        int64           `json:"scan_id"`
 	HostID        int64           `json:"host_id"`
 	ItemID        int64           `json:"item_id"`
+	RuleVersion   sql.NullString  `json:"rule_version"`
 	ItemName      string          `json:"item_name"`
 	Chapter       string          `json:"chapter"`
 	Severity      string          `json:"severity"`
@@ -1162,6 +1163,46 @@ type SchedulerScheduledtasklog struct {
 	DurationSeconds sql.NullFloat64 `json:"duration_seconds"`
 	TaskID          int64           `json:"task_id"`
 	Output          sql.NullString  `json:"output"`
+}
+
+type SecurityIssue struct {
+	ID                 int64        `json:"id"`
+	HostID             int64        `json:"host_id"`
+	HostName           string       `json:"host_name"`
+	HostIp             string       `json:"host_ip"`
+	BaselineID         int64        `json:"baseline_id"`
+	ItemID             int64        `json:"item_id"`
+	RuleKey            string       `json:"rule_key"`
+	LastRuleVersion    string       `json:"last_rule_version"`
+	FailureRuleVersion string       `json:"failure_rule_version"`
+	ClosureReason      string       `json:"closure_reason"`
+	Title              string       `json:"title"`
+	Severity           string       `json:"severity"`
+	Chapter            string       `json:"chapter"`
+	Status             string       `json:"status"`
+	LastResult         string       `json:"last_result"`
+	FirstSeen          time.Time    `json:"first_seen"`
+	LastSeen           time.Time    `json:"last_seen"`
+	LastChecked        time.Time    `json:"last_checked"`
+	LatestScanID       int64        `json:"latest_scan_id"`
+	OccurrenceCount    int64        `json:"occurrence_count"`
+	ReopenCount        int64        `json:"reopen_count"`
+	ClosedAt           sql.NullTime `json:"closed_at"`
+}
+
+type SecurityIssueHistory struct {
+	ID            int64           `json:"id"`
+	IssueID       int64           `json:"issue_id"`
+	ScanID        int64           `json:"scan_id"`
+	RuleVersion   string          `json:"rule_version"`
+	CheckedAt     time.Time       `json:"checked_at"`
+	Result        string          `json:"result"`
+	Transition    string          `json:"transition"`
+	Applied       bool            `json:"applied"`
+	ExpectedValue json.RawMessage `json:"expected_value"`
+	ActualValue   json.RawMessage `json:"actual_value"`
+	Message       string          `json:"message"`
+	Remediation   string          `json:"remediation"`
 }
 
 type SecurityScan struct {

@@ -314,11 +314,13 @@ func TestFlushResultsInsertShape(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		mock.ExpectExec(regexp.QuoteMeta("INSERT INTO baseline_scan_result")).
 			WithArgs(int64(5), int64(9), int64(i+1), fmt.Sprintf("item-%d", i+1), "身份鉴别", "high", "pass",
-				[]byte("null"), []byte(`"x"`), "ok", nil).
+				[]byte("null"), []byte(`"x"`), "ok", nil, nil).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 	}
 
-	flushResults(context.Background(), database, 5, 9, results)
+	if err := flushResults(context.Background(), database, 5, 9, results); err != nil {
+		t.Fatal(err)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("database expectations: %v", err)
 	}
@@ -336,7 +338,9 @@ func TestFlushResultsStopsOnError(t *testing.T) {
 		WillReturnError(fmt.Errorf("boom"))
 
 	results := []scanResultRow{{itemID: 1, status: "pass"}, {itemID: 2, status: "pass"}}
-	flushResults(context.Background(), database, 5, 9, results)
+	if err := flushResults(context.Background(), database, 5, 9, results); err == nil {
+		t.Fatal("expected write error")
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("database expectations: %v", err)
 	}
@@ -704,8 +708,8 @@ func TestGetScanMapsHeaderTargetsAndItems(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("FROM security_scan_target")).
 		WithArgs(int64(5)).
 		WillReturnRows(sqlmock.NewRows([]string{"host_id", "host_name", "host_ip", "status", "passed_items", "failed_items",
-			"compliance_rate", "error_message"}).
-			AddRow(3, "node-1", "10.0.0.5", "failed", 2, 1, "66.67", ""))
+			"compliance_rate", "error_message", "environment_id", "environment_name"}).
+			AddRow(3, "node-1", "10.0.0.5", "failed", 2, 1, "66.67", "", 4, "当前环境"))
 	mock.ExpectQuery(regexp.QuoteMeta("FROM baseline_scan_result r")).
 		WithArgs(int64(5)).
 		WillReturnRows(sqlmock.NewRows([]string{"host_id", "host_name", "host_ip", "item_name", "chapter", "severity",
@@ -727,16 +731,16 @@ func TestGetScanMapsHeaderTargetsAndItems(t *testing.T) {
 		t.Fatalf("end_time = %v, want nil", scan["end_time"])
 	}
 	if scan["project_id"] != float64(2) || scan["environment_id"] != float64(3) ||
-		scan["project_name"] != "核心项目" || scan["environment_source"] != "snapshot" {
+		scan["project_name"] != "核心项目" || scan["environment_source"] != "current_assets" {
 		t.Fatalf("scan scope = %v", scan)
 	}
 	if scan["summary"].(map[string]any)["total"] != float64(1) {
 		t.Fatalf("summary = %v", scan["summary"])
 	}
 	target := data["targets"].([]any)[0].(map[string]any)
-	if scan["environments"].([]any)[0].(map[string]any)["name"] != "生产" ||
-		target["environments"].([]any)[0].(map[string]any)["id"] != float64(3) {
-		t.Fatalf("snapshot environments not retained: %v / %v", scan, target)
+	if scan["environments"].([]any)[0].(map[string]any)["name"] != "当前环境" ||
+		target["environments"].([]any)[0].(map[string]any)["id"] != float64(4) {
+		t.Fatalf("current host environment not returned: %v / %v", scan, target)
 	}
 	// decimal(5,2) 列在两侧产物里都是 string，响应必须还原成数值（前端按百分比展示）。
 	if target["compliance_rate"] != 66.67 {

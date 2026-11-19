@@ -151,6 +151,12 @@ type Querier interface {
 	// 不再硬编码排除 cleanup_alert_histories：那条过滤曾把它从列表里藏起来，后果是"历史上从来没被
 	// 清理过"这件事没人看得见（2026-09-19 才发现）。要隐藏某个任务请在业务上退役它（删行 + 写文档）。
 	CountScheduledTasks(ctx context.Context, arg CountScheduledTasksParams) (int64, error)
+	CountSecurityIssueGroups(ctx context.Context, arg CountSecurityIssueGroupsParams) (int64, error)
+	CountSecurityIssueHistory(ctx context.Context, issueID int64) (int64, error)
+	// A persistent failure is a milestone only if it ends a run of failures.
+	// Compute this before pagination, ignoring unrelated observations within the run.
+	CountSecurityIssueMilestones(ctx context.Context, issueID int64) (int64, error)
+	CountSecurityIssues(ctx context.Context, arg CountSecurityIssuesParams) (int64, error)
 	CountServiceDependencies(ctx context.Context, arg CountServiceDependenciesParams) (int64, error)
 	CountServiceDependenciesByType(ctx context.Context, id int64) (int64, error)
 	CountServiceDependenciesForService(ctx context.Context, arg CountServiceDependenciesForServiceParams) (int64, error)
@@ -260,6 +266,8 @@ type Querier interface {
 	CreateRole(ctx context.Context, arg CreateRoleParams) (sql.Result, error)
 	CreateScheduledTaskLog(ctx context.Context, arg CreateScheduledTaskLogParams) error
 	CreateSchedulerExecution(ctx context.Context, arg CreateSchedulerExecutionParams) error
+	CreateSecurityIssue(ctx context.Context, arg CreateSecurityIssueParams) (int64, error)
+	CreateSecurityIssueHistory(ctx context.Context, arg CreateSecurityIssueHistoryParams) error
 	CreateServiceDeletionTombstone(ctx context.Context, arg CreateServiceDeletionTombstoneParams) error
 	CreateServiceDependency(ctx context.Context, arg CreateServiceDependencyParams) (int64, error)
 	CreateServiceDependencyType(ctx context.Context, arg CreateServiceDependencyTypeParams) (int64, error)
@@ -413,6 +421,7 @@ type Querier interface {
 	// status 由调用方给（失败 'failed' / 超时 'timeout'），其余列语义相同。
 	FailAgentJob(ctx context.Context, arg FailAgentJobParams) error
 	FailAgentJobHostLog(ctx context.Context, arg FailAgentJobHostLogParams) error
+	FailSecurityIssuePersistence(ctx context.Context, id int64) error
 	// 同一批主机上"仍在跑"的 Agent 安装任务：先把失联超过 30 秒的标记失败，再拦截活跃的。
 	FailStaleAgentInstallJobs(ctx context.Context, arg FailStaleAgentInstallJobsParams) error
 	// 失联作业置失败。带 status='running' 守卫：正常收尾（finishJob）可能同时在写，
@@ -549,6 +558,8 @@ type Querier interface {
 	// create_time 用于取消时算时长（该流程的历史行 start_time 为 NULL，只有 create_time
 	// 是派发时刻）。
 	GetLatestLogTargetInstallHistory(ctx context.Context, logCollectionTargetID sql.NullInt64) (GetLatestLogTargetInstallHistoryRow, error)
+	// 没有问题记录的通过结果也必须参与时序判断，防止较早失败迟到时把已通过的主机标为未解决。
+	GetLatestSecurityRuleObservation(ctx context.Context, arg GetLatestSecurityRuleObservationParams) (GetLatestSecurityRuleObservationRow, error)
 	GetLatestTargetInstallHistory(ctx context.Context, targetID sql.NullInt64) (GetLatestTargetInstallHistoryRow, error)
 	GetLogBatchJob(ctx context.Context, id int64) (GetLogBatchJobRow, error)
 	GetLogCollectionFilterRule(ctx context.Context, id int64) (MonitorLogCollectionFilterRule, error)
@@ -598,6 +609,11 @@ type Querier interface {
 	GetScanStatusForUpdate(ctx context.Context, id int64) (GetScanStatusForUpdateRow, error)
 	GetScheduledTask(ctx context.Context, id int64) (GetScheduledTaskRow, error)
 	GetScheduledTaskLog(ctx context.Context, id int64) (GetScheduledTaskLogRow, error)
+	GetSecurityIssue(ctx context.Context, id int64) (GetSecurityIssueRow, error)
+	// 已持有主机排他锁；不用不存在行的间隙锁，避免多主机首次建问题互相阻塞。
+	GetSecurityIssueByIdentity(ctx context.Context, arg GetSecurityIssueByIdentityParams) (SecurityIssue, error)
+	// 共享父行锁允许不同主机并发提交，并与取消的排他锁互斥。
+	GetSecurityIssueScanForShare(ctx context.Context, id int64) (GetSecurityIssueScanForShareRow, error)
 	GetServiceDeletionBusinessSystem(ctx context.Context, id int64) (int64, error)
 	GetServiceDeletionTombstone(ctx context.Context, serviceID int64) (AssetsServiceDeletion, error)
 	GetServiceDependency(ctx context.Context, id int64) (GetServiceDependencyRow, error)
@@ -674,7 +690,7 @@ type Querier interface {
 	// 两方言都认（FIELD 未命中返回 0，所以 ELSE 分支排在最前）。
 	// expected_value/actual_value 可空，NULL 无法 Scan 进 json.RawMessage，统一回填 JSON null 字面量。
 	ListBaselineScanResults(ctx context.Context, scanID int64) ([]ListBaselineScanResultsRow, error)
-	// 与扫描主机解析采用相同的服务/成员启用条件；一台主机可以归属多个环境。
+	// 扫描创建时保存服务范围上下文；详情中的主机环境由 ListScanTargets 读取当前资产归属。
 	ListBaselineScopeEnvironments(ctx context.Context, arg ListBaselineScopeEnvironmentsParams) ([]ListBaselineScopeEnvironmentsRow, error)
 	ListBaselines(ctx context.Context, arg ListBaselinesParams) ([]ListBaselinesRow, error)
 	ListBusinessEnvironments(ctx context.Context, arg ListBusinessEnvironmentsParams) ([]AssetsBusinessEnvironment, error)
@@ -841,6 +857,12 @@ type Querier interface {
 	ListScheduledTaskLogs(ctx context.Context, arg ListScheduledTaskLogsParams) ([]ListScheduledTaskLogsRow, error)
 	ListScheduledTasks(ctx context.Context, arg ListScheduledTasksParams) ([]ListScheduledTasksRow, error)
 	ListSchedulerTaskIDs(ctx context.Context) ([]int64, error)
+	// 环境候选取全部台账主机，不受分页或当前筛选影响；仅需安全问题查看权限。
+	ListSecurityIssueEnvironments(ctx context.Context) ([]ListSecurityIssueEnvironmentsRow, error)
+	ListSecurityIssueGroups(ctx context.Context, arg ListSecurityIssueGroupsParams) ([]ListSecurityIssueGroupsRow, error)
+	ListSecurityIssueHistory(ctx context.Context, arg ListSecurityIssueHistoryParams) ([]SecurityIssueHistory, error)
+	ListSecurityIssueMilestones(ctx context.Context, arg ListSecurityIssueMilestonesParams) ([]SecurityIssueHistory, error)
+	ListSecurityIssues(ctx context.Context, arg ListSecurityIssuesParams) ([]ListSecurityIssuesRow, error)
 	// 逻辑服务**当前生效**的档位集合（服务 × 档位对，可能多条）。
 	//
 	// 用途：判定一条已有的 data stream 是不是"改档位后留下的历史流"——流的档位不在该服务的生效集合里
@@ -961,6 +983,7 @@ type Querier interface {
 	LockProjectEnabled(ctx context.Context, id int64) (bool, error)
 	LockSchedulerConfig(ctx context.Context) (SysConfig, error)
 	LockSchedulerTask(ctx context.Context, id int64) (SchedulerScheduledtask, error)
+	LockSecurityIssueHost(ctx context.Context, id int64) (int64, error)
 	LockServiceDependency(ctx context.Context, id int64) (AssetsServiceDependency, error)
 	LockServiceDependencyDeletionTombstone(ctx context.Context, serviceID int64) (AssetsServiceDeletion, error)
 	LockServiceDependencyType(ctx context.Context, id int64) (AssetsServiceDependencyType, error)
@@ -1029,6 +1052,7 @@ type Querier interface {
 	SearchConfigs(ctx context.Context, arg SearchConfigsParams) ([]SysConfig, error)
 	SearchRoles(ctx context.Context, arg SearchRolesParams) ([]SysRole, error)
 	SearchUsers(ctx context.Context, arg SearchUsersParams) ([]SysUser, error)
+	SecurityIssueHistoryExists(ctx context.Context, arg SecurityIssueHistoryExistsParams) (int64, error)
 	// 列表里的启用开关只提交 enabled，其余字段保持原值（走这一条，不当成整表单提交）。
 	SetAutomationTaskEnabled(ctx context.Context, arg SetAutomationTaskEnabledParams) error
 	// 仅改状态 + 报错文案（失败/跳过两类终态），不动计数列。
@@ -1107,6 +1131,9 @@ type Querier interface {
 	UpdateProjectEnabled(ctx context.Context, arg UpdateProjectEnabledParams) error
 	UpdateRole(ctx context.Context, arg UpdateRoleParams) error
 	UpdateScheduledTask(ctx context.Context, arg UpdateScheduledTaskParams) error
+	UpdateSecurityIssue(ctx context.Context, arg UpdateSecurityIssueParams) error
+	// 迟到失败仅补全发现时间，不覆盖较新的检查结论。
+	UpdateSecurityIssueDiscoveryTimes(ctx context.Context, arg UpdateSecurityIssueDiscoveryTimesParams) error
 	UpdateServiceDependency(ctx context.Context, arg UpdateServiceDependencyParams) error
 	UpdateServiceDependencyType(ctx context.Context, arg UpdateServiceDependencyTypeParams) error
 	UpdateServiceDependencyTypeEnabled(ctx context.Context, arg UpdateServiceDependencyTypeEnabledParams) error

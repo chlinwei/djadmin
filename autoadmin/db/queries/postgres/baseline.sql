@@ -145,8 +145,8 @@ WHERE id = $6;
 UPDATE security_scan_target SET status = $1, error_message = $2 WHERE id = $3;
 
 -- name: CreateBaselineScanResults :exec
-INSERT INTO baseline_scan_result(scan_id, host_id, item_id, item_name, chapter, severity, status, expected_value, actual_value, message, remediation)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
+INSERT INTO baseline_scan_result(scan_id, host_id, item_id, item_name, chapter, severity, status, expected_value, actual_value, message, remediation, rule_version)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, sqlc.narg(rule_version));
 
 -- name: FinishBaselineScan :exec
 UPDATE security_scan SET status = $1, summary = $2, end_time = $3, update_time = $4 WHERE id = $5;
@@ -178,10 +178,14 @@ LEFT JOIN assets_business_environment e ON e.id = s.environment_id
 WHERE s.id = sqlc.arg(id);
 
 -- name: ListScanTargets :many
-SELECT host_id, host_name, host_ip, status, passed_items, failed_items, compliance_rate, error_message
-FROM security_scan_target WHERE scan_id = sqlc.arg(scan_id) ORDER BY id;
+SELECT t.host_id, t.host_name, t.host_ip, t.status, t.passed_items, t.failed_items, t.compliance_rate, t.error_message,
+       h.environment_id, COALESCE(e.name, '') AS environment_name
+FROM security_scan_target t
+LEFT JOIN assets_host h ON h.id = t.host_id
+LEFT JOIN assets_business_environment e ON e.id = h.environment_id
+WHERE t.scan_id = sqlc.arg(scan_id) ORDER BY t.id;
 
--- 与扫描主机解析采用相同的服务/成员启用条件；一台主机可以归属多个环境。
+-- 扫描创建时保存服务范围上下文；详情中的主机环境由 ListScanTargets 读取当前资产归属。
 -- name: ListBaselineScopeEnvironments :many
 SELECT DISTINCT d.host_id, s.environment_id, COALESCE(e.name, '') AS environment_name
 FROM assets_business_system b

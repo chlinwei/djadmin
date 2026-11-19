@@ -36,7 +36,7 @@
             <a-descriptions-item label="基线">{{ scan.baseline }}</a-descriptions-item>
             <a-descriptions-item label="扫描方式">{{ scan.mount_type === 'host' ? '按主机' : '按项目' }}</a-descriptions-item>
             <a-descriptions-item label="项目">{{ scan.mount_type === 'host' ? '不限定项目' : scan.project_name || (scan.project_id ? `项目 #${scan.project_id}（已删除或不可用）` : '-') }}</a-descriptions-item>
-            <a-descriptions-item label="环境">{{ scan.mount_type === 'host' ? '不限定环境' : environmentSummary }}</a-descriptions-item>
+            <a-descriptions-item label="主机环境">{{ environmentSummary }}</a-descriptions-item>
             <a-descriptions-item label="发起人">{{ scan.requested_username || '-' }}</a-descriptions-item>
             <a-descriptions-item label="开始时间">{{ scan.start_time || '-' }}</a-descriptions-item>
             <a-descriptions-item label="结束时间">{{ scan.end_time || '-' }}</a-descriptions-item>
@@ -47,7 +47,7 @@
           <a-alert
             v-if="scan.environment_source === 'current_assets'"
             type="info" show-icon
-            message="此记录未保存范围快照，项目名称和环境归属按当前资产关联展示，非扫描时快照。"
+            message="环境按主机当前所属环境展示和筛选，非扫描时快照；主机环境变更后刷新即可更新，不改变扫描结果。"
           />
           <h4 class="section-title">主机符合率</h4>
           <div class="toolbar">
@@ -73,6 +73,13 @@
           <h4 class="section-title">条目明细</h4>
           <div class="toolbar">
             <a-space wrap>
+              <a-select
+                v-model:value="environmentFilter"
+                class="filter-item" placeholder="全部环境" allow-clear
+                show-search option-filter-prop="label"
+                :options="environmentOptions"
+                :getPopupContainer="getPopupContainer"
+              />
               <a-input-search
                 v-model:value="itemSearchText"
                 class="filter-item"
@@ -110,48 +117,70 @@
               <a-radio-group v-model:value="statusFilter" button-style="solid">
                 <a-radio-button value="all">全部（{{ environmentItems.length }}）</a-radio-button>
                 <a-radio-button value="fail">不符合（{{ failedCount }}）</a-radio-button>
-                <a-radio-button value="pass">通过（{{ environmentItems.length - failedCount }}）</a-radio-button>
+                <a-radio-button value="pass">通过（{{ passedCount }}）</a-radio-button>
+                <a-radio-button value="error">执行异常（{{ errorCount }}）</a-radio-button>
               </a-radio-group>
             </a-space>
           </div>
-          <a-table row-key="idx" :columns="visibleItemColumns" :data-source="filteredItems" :pagination="itemPagination" :scroll="{ x: statusFilter === 'pass' ? 1400 : 1800 }" size="small" :locale="tableLocale" @change="handleItemTableChange">
+          <p class="detail-hint">展开条目可查看完整检查断言、修复建议和原始证据。</p>
+          <a-table row-key="idx" table-layout="fixed" :columns="visibleItemColumns" :data-source="filteredItems" :pagination="itemPagination" :scroll="{ x: itemTableWidth }" size="small" :locale="tableLocale" @change="handleItemTableChange">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'severity'">
                 <a-tag :color="record.severity === 'high' ? 'red' : record.severity === 'medium' ? 'orange' : 'default'">{{ severityLabel(record.severity) }}</a-tag>
               </template>
               <template v-else-if="column.key === 'status'">
-                <a-tag :color="record.status === 'pass' ? 'green' : 'red'">{{ record.status === 'pass' ? '通过' : '不符合' }}</a-tag>
+                <a-tag :color="record.status === 'pass' ? 'green' : record.status === 'error' ? 'orange' : 'red'">{{ record.status === 'pass' ? '通过' : record.status === 'error' ? '执行异常' : '不符合' }}</a-tag>
               </template>
-              <template v-else-if="column.key === 'expected'">
-                <template v-if="assertionsOf(record).length">
-                  <div v-for="(assertion, i) in assertionsOf(record)" :key="i" class="assertion-line">
-                    <span class="assertion-name">{{ assertion.title }}</span>
-                    <span class="assertion-value">应为 {{ assertion.expected }}</span>
-                  </div>
-                </template>
-                <a-tooltip v-else placement="topLeft" :title="formatExpected(record.expected)">
-                  <div class="cell-pre">{{ formatExpected(record.expected) }}</div>
-                </a-tooltip>
-              </template>
-              <template v-else-if="column.key === 'actual'">
-                <template v-if="assertionsOf(record).length">
-                  <div v-for="(assertion, i) in assertionsOf(record)" :key="i" class="assertion-line">
-                    <span class="assertion-name">{{ assertion.title }}</span>
-                    <span class="assertion-value" :class="assertion.successful ? 'is-pass' : 'is-fail'">
-                      {{ assertion.successful ? '✓' : '✗' }} 实际 {{ assertion.actual }}
-                    </span>
-                  </div>
-                </template>
-                <a-popover v-else placement="topLeft" trigger="click">
-                  <template #content><pre class="actual-json">{{ JSON.stringify(record.actual, null, 2) }}</pre></template>
-                  <div class="cell-pre">{{ formatActual(record.actual) }}</div>
-                </a-popover>
+              <template v-else-if="column.key === 'message'">
+                <div class="cell-pre">{{ resultSummary(record) }}</div>
               </template>
               <template v-else-if="column.key === 'remediation'">
                 <span v-if="record.status === 'pass'" class="remediation-none">—</span>
                 <div v-else-if="record.remediation" class="cell-pre">{{ record.remediation }}</div>
                 <span v-else class="remediation-none">未填写</span>
               </template>
+            </template>
+            <template #expandedRowRender="{ record }">
+              <div class="result-detail">
+                <a-descriptions bordered :column="1" size="small">
+                  <a-descriptions-item label="条目">{{ record.item_name }}</a-descriptions-item>
+                  <a-descriptions-item label="消息"><div class="detail-text">{{ record.message || '—' }}</div></a-descriptions-item>
+                  <a-descriptions-item v-if="record.status !== 'pass'" label="修复建议">
+                    <div class="detail-text">{{ record.remediation || '未填写' }}</div>
+                  </a-descriptions-item>
+                </a-descriptions>
+                <a-alert v-if="record.status === 'error'" class="evidence-section" type="warning" show-icon
+                  message="执行异常，无法得出合规结论。原始证据仅供排障，不作为检查通过的依据。" />
+                <template v-else-if="assertionsOf(record).length">
+                  <h4 class="evidence-section">检查断言</h4>
+                  <a-table row-key="idx" table-layout="fixed" :columns="assertionColumns" :data-source="assertionsOf(record)"
+                    :pagination="false" :scroll="{ x: 1000 }" size="small">
+                    <template #bodyCell="{ column, record: assertion }">
+                      <template v-if="column.key === 'expected' || column.key === 'actual'">
+                        <pre class="evidence-value">{{ formatEvidence(assertion[column.key]) }}</pre>
+                      </template>
+                      <template v-else-if="column.key === 'result'">
+                        <a-tag :color="assertion.successful ? 'green' : 'red'">{{ assertion.successful ? '通过' : '不符合' }}</a-tag>
+                        <div v-if="assertion.message" class="detail-text">{{ assertion.message }}</div>
+                      </template>
+                    </template>
+                  </a-table>
+                </template>
+                <a-collapse class="evidence-section" ghost>
+                  <a-collapse-panel key="evidence" header="原始证据">
+                    <div class="evidence-grid">
+                      <section>
+                        <h4>预期证据</h4>
+                        <pre class="evidence-value">{{ formatEvidence(record.expected) }}</pre>
+                      </section>
+                      <section>
+                        <h4>实际证据</h4>
+                        <pre class="evidence-value">{{ formatEvidence(record.actual) }}</pre>
+                      </section>
+                    </div>
+                  </a-collapse-panel>
+                </a-collapse>
+              </div>
             </template>
           </a-table>
         </template>
@@ -168,6 +197,7 @@ import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import requestUtil from '@/util/request'
 import { createPagination, tableLocale } from '@/util/tableStyle'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
+import { baselineAssertions, formatEvidence } from '@/util/baselineEvidence'
 
 const route = useRoute()
 const router = useRouter()
@@ -187,7 +217,7 @@ const chapterFilter = ref(undefined)
 const severityFilter = ref(undefined)
 const environmentFilter = ref(undefined)
 const environmentLabel = (environment) => environment.name || `环境 #${environment.id}（已删除或不可用）`
-const environmentText = (row) => row.environments?.length ? row.environments.map(environmentLabel).join('、') : '未记录环境'
+const environmentText = (row) => row.environments?.length ? row.environments.map(environmentLabel).join('、') : '未设置环境'
 const environmentColumn = { title: '环境', key: 'environments', width: 160, customRender: ({ record }) => environmentText(record) }
 
 const targetColumns = [
@@ -204,53 +234,38 @@ const itemColumns = [
   { title: 'IP', dataIndex: 'host_ip', key: 'host_ip', width: 120 },
   environmentColumn,
   { title: '章节', dataIndex: 'chapter', key: 'chapter', width: 100 },
-  { title: '条目', dataIndex: 'item_name', key: 'item_name', width: 180 },
+  { title: '条目', dataIndex: 'item_name', key: 'item_name', width: 220, ellipsis: true },
   { title: '级别', key: 'severity', width: 70 },
-  { title: '结果', key: 'status', width: 80 },
-  { title: '预期', key: 'expected', width: 200 },
-  { title: '实际', key: 'actual', width: 200 },
-  { title: '消息', dataIndex: 'message', key: 'message', ellipsis: true },
+  { title: '结果', key: 'status', width: 100 },
+  { title: '检查摘要', key: 'message', width: 320 },
   { title: '修复建议', key: 'remediation', width: 240 },
 ]
 const visibleItemColumns = computed(() => statusFilter.value === 'pass'
   ? itemColumns.filter((column) => column.key !== 'message' && column.key !== 'remediation')
   : itemColumns)
+// 横向滚动宽度包含展开列，避免窗口变窄时挤压证据摘要。
+const itemTableWidth = computed(() => visibleItemColumns.value.reduce((width, column) => width + column.width, 48))
+const assertionColumns = [
+  { title: '检查项', dataIndex: 'title', key: 'title', width: 260 },
+  { title: '预期', key: 'expected', width: 220 },
+  { title: '实际', key: 'actual', width: 380 },
+  { title: '结论', key: 'result', width: 140 },
+]
 
-// 预期展示 Rego 策略摘要；实际展示违规数与违规项摘要，悬浮可看完整 JSON。
-// 断言级结构化结果（agent OPA 检查的 actual.details）：逐条展示「应为 X / 实际 Y」。
-// 历史数据或非 OPA 结果没有 details 时，回退到策略源码/JSON 摘要展示。
-const assertionsOf = (record) => {
-  const details = record?.actual?.details
-  if (!Array.isArray(details)) return []
-  return details.filter((detail) => detail && detail.property === 'assertion')
-    .map((detail) => ({
-      title: detail.title || detail.name || '',
-      expected: detail.expected,
-      actual: detail.actual,
-      successful: !!detail.successful,
-      message: detail.message || '',
-    }))
-}
-const formatExpected = (value) => {
-  if (!value) return '-'
-  if (typeof value === 'object' && value.policy) return String(value.policy)
-  return JSON.stringify(value)
-}
-const formatActual = (value) => {
-  if (!value) return '-'
-  if (typeof value === 'object') {
-    const parts = []
-    if (value.violation_count !== undefined) parts.push(`违规 ${value.violation_count} 项`)
-    const violations = value.violations || []
-    violations.slice(0, 3).forEach((violation) => parts.push(`· ${violation?.msg || violation?.item?.message || JSON.stringify(violation?.item?.actual ?? violation?.item ?? violation)}`))
-    if (violations.length > 3) parts.push(`…等 ${violations.length} 项`)
-    if (!parts.length) parts.push(JSON.stringify(value))
-    return parts.join('\n')
+const assertionsOf = (record) => baselineAssertions(record?.actual)
+const resultSummary = (record) => {
+  // 异常的部分断言不能构成有效合规结论。
+  if (record.status === 'error') return record.message || '检查异常，无法得出合规结论'
+  const assertions = assertionsOf(record)
+  if (assertions.length) {
+    const failed = assertions.filter((assertion) => !assertion.successful)
+    if (!failed.length) return `共 ${assertions.length} 项检查，全部通过`
+    return `共 ${assertions.length} 项检查，${failed.length} 项不符合：${failed.slice(0, 2).map((assertion) => assertion.title).join('；')}${failed.length > 2 ? '…' : ''}`
   }
-  return String(value)
+  return record.message || '展开查看检查证据'
 }
 
-const statusLabel = (status) => ({ pending: '等待中', running: '扫描中', success: '完成', failed: '存在不符合', skipped: '已跳过', canceled: '已取消' }[status] || status)
+const statusLabel = (status) => ({ pending: '等待中', running: '扫描中', success: '完成', failed: '检查未全部通过', skipped: '已跳过', canceled: '已取消' }[status] || status)
 const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red', skipped: 'default', canceled: 'orange' }[status] || 'default')
 
 const canceling = ref(false)
@@ -274,15 +289,14 @@ const summaryText = computed(() => {
 const environmentSummary = computed(() => {
   const names = (scan.value?.environments || []).map(environmentLabel)
   if (names.length) return names.join('、')
-  if (scan.value?.environment_id) return environmentLabel({ id: scan.value.environment_id, name: scan.value.environment_name })
-  return '未记录环境'
+  return '未设置环境'
 })
 const environmentOptions = computed(() => {
   const options = (scan.value?.environments || []).map((environment) => ({ label: environmentLabel(environment), value: environment.id }))
-  if (targets.value.some((target) => !target.environments?.length)) options.push({ label: '未记录环境', value: 'unknown' })
+  if (targets.value.some((target) => !target.environments?.length)) options.push({ label: '未设置环境', value: 'unknown' })
   return options
 })
-// 主机可同时属于多个环境；按环境筛选不复制主机或结果，只检查其归属集合。
+// 接口保留环境数组结构，每台主机最多一个当前环境；未设置环境可单独筛选。
 const matchesEnvironment = (row) => {
   if (environmentFilter.value == null) return true
   if (environmentFilter.value === 'unknown') return !row.environments?.length
@@ -290,7 +304,9 @@ const matchesEnvironment = (row) => {
 }
 const filteredTargets = computed(() => targets.value.filter(matchesEnvironment))
 const environmentItems = computed(() => items.value.filter(matchesEnvironment))
-const failedCount = computed(() => environmentItems.value.filter((item) => item.status !== 'pass').length)
+const failedCount = computed(() => environmentItems.value.filter((item) => item.status === 'fail').length)
+const passedCount = computed(() => environmentItems.value.filter((item) => item.status === 'pass').length)
+const errorCount = computed(() => environmentItems.value.filter((item) => item.status === 'error').length)
 const hostOptions = computed(() => {
   const seen = new Map()
   filteredTargets.value.forEach((target) => seen.set(target.host_id, { label: `${target.host_name} / ${target.host_ip}`, value: target.host_id }))
@@ -376,21 +392,32 @@ defineOptions({ name: 'ViewSecurityBaselineScanDetail' })
   margin-bottom: 12px;
 }
 .filter-item { width: 180px; }
+.detail-hint { color: #66727d; margin-bottom: 8px; }
 .cell-pre {
   white-space: pre-wrap;
-  word-break: break-all;
-  font-family: "JetBrains Mono", "Cascadia Code", monospace;
+  overflow-wrap: anywhere;
   font-size: 12px;
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.actual-json { max-width: 480px; max-height: 320px; overflow: auto; font-size: 12px; margin: 0; }
-.assertion-line { display: flex; align-items: baseline; gap: 8px; line-height: 1.7; }
-.assertion-name { color: #66727d; }
-.assertion-value { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px; word-break: break-all; }
-.assertion-value.is-pass { color: #389e0d; }
-.assertion-value.is-fail { color: #cf1322; font-weight: 600; }
+.result-detail { padding: 8px; min-width: 0; }
+.detail-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.evidence-section { margin-top: 16px; }
+.evidence-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.evidence-grid section { min-width: 0; }
+.evidence-value {
+  margin: 0;
+  max-height: 280px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: "JetBrains Mono", "Cascadia Code", monospace;
+  font-size: 12px;
+}
 .remediation-none { color: #bfbfbf; }
+@media (max-width: 768px) {
+  .evidence-grid { grid-template-columns: minmax(0, 1fr); }
+}
 </style>

@@ -59,6 +59,22 @@ export const staticRouterMap = [
                 component: () => import('../views/sys/usergroups/index.vue'),
             },
             {
+                path: '/sys/security/issues',
+                name: '安全问题',
+                component: () => import('../views/security/issues/index.vue'),
+            },
+            {
+                path: '/sys/security/issues/:id',
+                name: '安全问题详情',
+                component: () => import('../views/security/issues/detail.vue'),
+            },
+            {
+                path: '/sys/security/issues/:id/history',
+                name: '安全问题检查记录',
+                component: () => import('../views/security/issues/detail.vue'),
+                props: { fullHistory: true },
+            },
+            {
                 path: '/sys/security/baseline',
                 name: '基线扫描',
                 component: () => import('../views/security/baseline/index.vue'),

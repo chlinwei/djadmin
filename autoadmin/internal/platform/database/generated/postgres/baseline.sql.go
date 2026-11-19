@@ -277,8 +277,8 @@ func (q *Queries) CreateBaselineScan(ctx context.Context, arg CreateBaselineScan
 }
 
 const createBaselineScanResults = `-- name: CreateBaselineScanResults :exec
-INSERT INTO baseline_scan_result(scan_id, host_id, item_id, item_name, chapter, severity, status, expected_value, actual_value, message, remediation)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+INSERT INTO baseline_scan_result(scan_id, host_id, item_id, item_name, chapter, severity, status, expected_value, actual_value, message, remediation, rule_version)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 `
 
 type CreateBaselineScanResultsParams struct {
@@ -293,6 +293,7 @@ type CreateBaselineScanResultsParams struct {
 	ActualValue   json.RawMessage `json:"actual_value"`
 	Message       string          `json:"message"`
 	Remediation   sql.NullString  `json:"remediation"`
+	RuleVersion   sql.NullString  `json:"rule_version"`
 }
 
 func (q *Queries) CreateBaselineScanResults(ctx context.Context, arg CreateBaselineScanResultsParams) error {
@@ -308,6 +309,7 @@ func (q *Queries) CreateBaselineScanResults(ctx context.Context, arg CreateBasel
 		arg.ActualValue,
 		arg.Message,
 		arg.Remediation,
+		arg.RuleVersion,
 	)
 	return err
 }
@@ -953,7 +955,7 @@ type ListBaselineScopeEnvironmentsRow struct {
 	EnvironmentName string        `json:"environment_name"`
 }
 
-// 与扫描主机解析采用相同的服务/成员启用条件；一台主机可以归属多个环境。
+// 扫描创建时保存服务范围上下文；详情中的主机环境由 ListScanTargets 读取当前资产归属。
 func (q *Queries) ListBaselineScopeEnvironments(ctx context.Context, arg ListBaselineScopeEnvironmentsParams) ([]ListBaselineScopeEnvironmentsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listBaselineScopeEnvironments, arg.ProjectID, arg.EnvironmentID)
 	if err != nil {
@@ -1039,19 +1041,25 @@ func (q *Queries) ListBaselines(ctx context.Context, arg ListBaselinesParams) ([
 }
 
 const listScanTargets = `-- name: ListScanTargets :many
-SELECT host_id, host_name, host_ip, status, passed_items, failed_items, compliance_rate, error_message
-FROM security_scan_target WHERE scan_id = $1 ORDER BY id
+SELECT t.host_id, t.host_name, t.host_ip, t.status, t.passed_items, t.failed_items, t.compliance_rate, t.error_message,
+       h.environment_id, COALESCE(e.name, '') AS environment_name
+FROM security_scan_target t
+LEFT JOIN assets_host h ON h.id = t.host_id
+LEFT JOIN assets_business_environment e ON e.id = h.environment_id
+WHERE t.scan_id = $1 ORDER BY t.id
 `
 
 type ListScanTargetsRow struct {
-	HostID         int64  `json:"host_id"`
-	HostName       string `json:"host_name"`
-	HostIp         string `json:"host_ip"`
-	Status         string `json:"status"`
-	PassedItems    int32  `json:"passed_items"`
-	FailedItems    int32  `json:"failed_items"`
-	ComplianceRate string `json:"compliance_rate"`
-	ErrorMessage   string `json:"error_message"`
+	HostID          int64         `json:"host_id"`
+	HostName        string        `json:"host_name"`
+	HostIp          string        `json:"host_ip"`
+	Status          string        `json:"status"`
+	PassedItems     int32         `json:"passed_items"`
+	FailedItems     int32         `json:"failed_items"`
+	ComplianceRate  string        `json:"compliance_rate"`
+	ErrorMessage    string        `json:"error_message"`
+	EnvironmentID   sql.NullInt64 `json:"environment_id"`
+	EnvironmentName string        `json:"environment_name"`
 }
 
 func (q *Queries) ListScanTargets(ctx context.Context, scanID int64) ([]ListScanTargetsRow, error) {
@@ -1072,6 +1080,8 @@ func (q *Queries) ListScanTargets(ctx context.Context, scanID int64) ([]ListScan
 			&i.FailedItems,
 			&i.ComplianceRate,
 			&i.ErrorMessage,
+			&i.EnvironmentID,
+			&i.EnvironmentName,
 		); err != nil {
 			return nil, err
 		}

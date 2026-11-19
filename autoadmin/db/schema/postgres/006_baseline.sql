@@ -89,6 +89,7 @@ CREATE TABLE baseline_scan_result (
   scan_id bigint NOT NULL,
   host_id bigint NOT NULL,
   item_id bigint NOT NULL,
+  rule_version varchar(64) DEFAULT NULL,
   item_name varchar(255) NOT NULL,
   chapter varchar(64) NOT NULL,
   severity varchar(16) NOT NULL,
@@ -102,3 +103,4 @@ CREATE TABLE baseline_scan_result (
 );
 
 CREATE INDEX baseline_scan_result_scan_fk ON baseline_scan_result (scan_id);
+CREATE INDEX baseline_result_rule ON baseline_scan_result (host_id, item_id, scan_id);

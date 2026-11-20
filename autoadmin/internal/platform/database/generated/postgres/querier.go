@@ -34,8 +34,10 @@ type Querier interface {
 	CancelPendingSchedulerExecutions(ctx context.Context, arg CancelPendingSchedulerExecutionsParams) error
 	CancelRunningInspectionTargets(ctx context.Context, arg CancelRunningInspectionTargetsParams) (int64, error)
 	ClaimAutomationJob(ctx context.Context, arg ClaimAutomationJobParams) (int64, error)
+	ClaimBaselineDispatchTarget(ctx context.Context, id int64) (int64, error)
 	ClaimBaselineScan(ctx context.Context, arg ClaimBaselineScanParams) (int64, error)
 	ClaimDueInspectionTask(ctx context.Context, arg ClaimDueInspectionTaskParams) (int64, error)
+	ClaimInspectionDispatchTarget(ctx context.Context, arg ClaimInspectionDispatchTargetParams) (int64, error)
 	// 首次认领（pending → running）：拿到 0 行说明作业已被别的分片认领或已结束，直接 ack。
 	//
 	// 只认 pending、且**不用 "status IN (pending,running)"**：MySQL 的 UPDATE 默认返回"实际改变的行数"
@@ -676,6 +678,8 @@ type Querier interface {
 	GetWebSSHSessionContent(ctx context.Context, id int64) (GetWebSSHSessionContentRow, error)
 	// 作业实时输出块（运行期间才存在，结束时由执行方删除）：
 	InsertAutomationJobLogChunk(ctx context.Context, arg InsertAutomationJobLogChunkParams) error
+	InterruptBaselineDispatchTargets(ctx context.Context, arg InterruptBaselineDispatchTargetsParams) error
+	InterruptInspectionDispatchTargets(ctx context.Context, arg InterruptInspectionDispatchTargetsParams) error
 	ListAPITokens(ctx context.Context) ([]ListAPITokensRow, error)
 	// 机器令牌校验：过期判定改成应用层传时间（原实现用 UTC_TIMESTAMP(6)）。
 	ListActiveAgentTokens(ctx context.Context, now sql.NullTime) ([]ListActiveAgentTokensRow, error)
@@ -722,6 +726,7 @@ type Querier interface {
 	// 移动时锁定基线策略，按当前顺序在应用层定位同类目相邻项。
 	ListBaselineItemOrderForUpdate(ctx context.Context, baselineID int64) ([]ListBaselineItemOrderForUpdateRow, error)
 	ListBaselineItems(ctx context.Context, baselineID int64) ([]ListBaselineItemsRow, error)
+	ListBaselineOutcomeCounts(ctx context.Context, scanIds []int64) ([]ListBaselineOutcomeCountsRow, error)
 	// 明细排序：原来用 FIELD(status,'fail','pass')（MySQL 专有），改成等价的 CASE 表达式，
 	// 两方言都认（FIELD 未命中返回 0，所以 ELSE 分支排在最前）。
 	// expected_value/actual_value 可空，NULL 无法 Scan 进 json.RawMessage，统一回填 JSON null 字面量。
@@ -886,6 +891,8 @@ type Querier interface {
 	// business_system_names/business_system_ids 用 '||' 聚合（项目名/系统名可能含逗号），Go 侧拆分为数组。
 	ListProjects(ctx context.Context, arg ListProjectsParams) ([]ListProjectsRow, error)
 	ListPrometheusServiceDiscoveryTargets(ctx context.Context) ([]ListPrometheusServiceDiscoveryTargetsRow, error)
+	ListRecoverableBaselineDispatches(ctx context.Context) ([]ListRecoverableBaselineDispatchesRow, error)
+	ListRecoverableInspectionDispatches(ctx context.Context) ([]ListRecoverableInspectionDispatchesRow, error)
 	// 流名匹配用的档位码全集（不过滤 enabled，理由见 ListServiceStreamDims 的说明）。
 	ListRetentionTierCodes(ctx context.Context) ([]string, error)
 	ListRoleCodesByUserID(ctx context.Context, userID int32) ([]sql.NullString, error)
@@ -1095,8 +1102,10 @@ type Querier interface {
 	RequestLogFormatTarget(ctx context.Context, arg RequestLogFormatTargetParams) error
 	// 失联对账把停摆的作业放回 pending，重新投递后再由 ClaimLogBatchJob 认领。
 	RequeueLogBatchJob(ctx context.Context, arg RequeueLogBatchJobParams) (int64, error)
+	ResetBaselineDispatch(ctx context.Context, id int64) error
 	ResetChangedLogFormatTarget(ctx context.Context, arg ResetChangedLogFormatTargetParams) error
 	ResetConfigValue(ctx context.Context, arg ResetConfigValueParams) error
+	ResetInspectionDispatch(ctx context.Context, id int64) error
 	// 续跑前把"上一轮留下的 running"落回 pending：这些项的执行者已经不在了。
 	ResetStaleLogBatchJobItems(ctx context.Context, arg ResetStaleLogBatchJobItemsParams) (int64, error)
 	ResetTargetInstallRetry(ctx context.Context, arg ResetTargetInstallRetryParams) error
@@ -1127,6 +1136,8 @@ type Querier interface {
 	SharedLogSourceServiceOptions(ctx context.Context) ([]SharedLogSourceServiceOptionsRow, error)
 	SharedLogSourceTierOptions(ctx context.Context) ([]SharedLogSourceTierOptionsRow, error)
 	SkipInspectionTarget(ctx context.Context, arg SkipInspectionTargetParams) error
+	StoreBaselineDispatch(ctx context.Context, arg StoreBaselineDispatchParams) error
+	StoreInspectionDispatch(ctx context.Context, arg StoreInspectionDispatchParams) error
 	TouchInspectionTaskLastRun(ctx context.Context, arg TouchInspectionTaskLastRunParams) error
 	TouchSharedLogSource(ctx context.Context, id int64) error
 	TryLockSchedulerTask(ctx context.Context, id int64) (SchedulerScheduledtask, error)

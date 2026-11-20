@@ -72,6 +72,7 @@ CREATE TABLE inspection_execution (
   group_snapshot jsonb NOT NULL,
   service_snapshot jsonb NOT NULL,
   target_snapshot jsonb NOT NULL,
+  dispatch_snapshot jsonb DEFAULT NULL,
   summary jsonb NOT NULL,
   requested_user_id integer DEFAULT NULL,
   requested_username varchar(100) NOT NULL,

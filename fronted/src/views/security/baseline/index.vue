@@ -172,11 +172,10 @@
         >
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'status'">
-              <a-tag :color="statusColor(record.status)">{{ statusLabel(record.status) }}</a-tag>
+              <a-tag :color="statusColor(record.outcome)">{{ statusLabel(record.outcome) }}</a-tag>
             </template>
             <template v-else-if="column.key === 'summary'">
-              <span v-if="record.summary?.total">{{ record.summary.success }} 成功 / {{ record.summary.failed }} 失败 / {{ record.summary.skipped ?? 0 }} 跳过</span>
-              <span v-else>-</span>
+              <span>{{ formatBaselineOutcomeSummary(record.outcome_summary) }}</span>
             </template>
             <template v-else-if="column.key === 'start_time'">
               {{ formatTime(record.start_time) }}
@@ -378,6 +377,7 @@ import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import requestUtil from '@/util/request'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { formatTimeWithTimezone } from '@/util/timezone'
+import { formatBaselineOutcomeSummary, statusColor, statusLabel } from '@/util/baselineOutcome'
 import { fetchAllPages } from '@/util/fetchAllPages'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { getProjectList, getBusinessEnvironmentList, getApplicationServiceList } from '@/api/assets/application'
@@ -536,8 +536,6 @@ async function loadScanHosts() {
   }
 }
 
-const statusLabel = (status) => ({ pending: '等待中', running: '扫描中', success: '完成', failed: '存在不符合', skipped: '已跳过', canceled: '已取消' }[status] || status)
-const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red', skipped: 'default', canceled: 'orange' }[status] || 'default')
 
 const handleCancelScan = async (record) => {
   if (!checkPermission('baseline:scan')) return

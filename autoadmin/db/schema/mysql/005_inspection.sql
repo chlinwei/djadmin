@@ -76,6 +76,7 @@ CREATE TABLE `inspection_execution` (
   `group_snapshot` json NOT NULL,
   `service_snapshot` json NOT NULL,
   `target_snapshot` json NOT NULL,
+  `dispatch_snapshot` json DEFAULT NULL,
   `summary` json NOT NULL,
   `requested_user_id` int DEFAULT NULL,
   `requested_username` varchar(100) NOT NULL,

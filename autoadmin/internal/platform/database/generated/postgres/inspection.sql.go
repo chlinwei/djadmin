@@ -80,7 +80,7 @@ func (q *Queries) CancelRunningInspectionTargets(ctx context.Context, arg Cancel
 const claimDueInspectionTask = `-- name: ClaimDueInspectionTask :execrows
 UPDATE inspection_task
 SET next_run_time = $1, update_time = $2
-WHERE id = $3 AND next_run_time <= $4
+WHERE id = $3 AND enabled = TRUE AND next_run_time = $4
 `
 
 type ClaimDueInspectionTaskParams struct {
@@ -97,6 +97,26 @@ func (q *Queries) ClaimDueInspectionTask(ctx context.Context, arg ClaimDueInspec
 		arg.ID,
 		arg.Now,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const claimInspectionDispatchTarget = `-- name: ClaimInspectionDispatchTarget :execrows
+UPDATE inspection_target_execution
+SET status = 'running', start_time = $1, update_time = $2
+WHERE id = $3 AND status = 'pending'
+`
+
+type ClaimInspectionDispatchTargetParams struct {
+	StartTime  sql.NullTime `json:"start_time"`
+	UpdateTime time.Time    `json:"update_time"`
+	ID         int64        `json:"id"`
+}
+
+func (q *Queries) ClaimInspectionDispatchTarget(ctx context.Context, arg ClaimInspectionDispatchTargetParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, claimInspectionDispatchTarget, arg.StartTime, arg.UpdateTime, arg.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -625,7 +645,7 @@ const finishInspectionExecution = `-- name: FinishInspectionExecution :execrows
 UPDATE inspection_execution
 SET status = $1, summary = $2, end_time = $3,
     update_time = $4
-WHERE id = $5
+WHERE id = $5 AND status = 'running'
 `
 
 type FinishInspectionExecutionParams struct {
@@ -654,7 +674,7 @@ const finishInspectionTarget = `-- name: FinishInspectionTarget :exec
 UPDATE inspection_target_execution
 SET status = $1, passed = $2, error_message = $3,
     raw_result = $4, end_time = $5, update_time = $6
-WHERE id = $7
+WHERE id = $7 AND status = 'running'
 `
 
 type FinishInspectionTargetParams struct {
@@ -1013,9 +1033,34 @@ func (q *Queries) GetProjectNameByID(ctx context.Context, id int64) (string, err
 	return name, err
 }
 
+const interruptInspectionDispatchTargets = `-- name: InterruptInspectionDispatchTargets :exec
+UPDATE inspection_target_execution
+SET status = 'failed', error_message = $1, end_time = $2, update_time = $3
+WHERE execution_id = $4 AND (status = 'running' OR (status = 'pending' AND $5 = TRUE))
+`
+
+type InterruptInspectionDispatchTargetsParams struct {
+	ErrorMessage    string       `json:"error_message"`
+	EndTime         sql.NullTime `json:"end_time"`
+	UpdateTime      time.Time    `json:"update_time"`
+	ExecutionID     int64        `json:"execution_id"`
+	MissingSnapshot interface{}  `json:"missing_snapshot"`
+}
+
+func (q *Queries) InterruptInspectionDispatchTargets(ctx context.Context, arg InterruptInspectionDispatchTargetsParams) error {
+	_, err := q.db.ExecContext(ctx, interruptInspectionDispatchTargets,
+		arg.ErrorMessage,
+		arg.EndTime,
+		arg.UpdateTime,
+		arg.ExecutionID,
+		arg.MissingSnapshot,
+	)
+	return err
+}
+
 const listDueInspectionTasks = `-- name: ListDueInspectionTasks :many
 
-SELECT id, cron_expression
+SELECT id, cron_expression, next_run_time
 FROM inspection_task
 WHERE enabled = TRUE AND cron_expression <> '' AND next_run_time IS NOT NULL
   AND next_run_time <= $1
@@ -1023,8 +1068,9 @@ ORDER BY id
 `
 
 type ListDueInspectionTasksRow struct {
-	ID             int64  `json:"id"`
-	CronExpression string `json:"cron_expression"`
+	ID             int64        `json:"id"`
+	CronExpression string       `json:"cron_expression"`
+	NextRunTime    sql.NullTime `json:"next_run_time"`
 }
 
 // ---- P2-2：巡检包内联 SQL 的收纳处（调度 / 保留期清理 / 组与任务写路径 / 执行运行期）----
@@ -1043,7 +1089,7 @@ func (q *Queries) ListDueInspectionTasks(ctx context.Context, now sql.NullTime) 
 	items := []ListDueInspectionTasksRow{}
 	for rows.Next() {
 		var i ListDueInspectionTasksRow
-		if err := rows.Scan(&i.ID, &i.CronExpression); err != nil {
+		if err := rows.Scan(&i.ID, &i.CronExpression, &i.NextRunTime); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1984,6 +2030,39 @@ func (q *Queries) ListMountServiceInstances(ctx context.Context, serviceID int64
 	return items, nil
 }
 
+const listRecoverableInspectionDispatches = `-- name: ListRecoverableInspectionDispatches :many
+SELECT id, COALESCE(dispatch_snapshot, '{}') AS dispatch_snapshot
+FROM inspection_execution WHERE status IN ('pending', 'running') ORDER BY id
+`
+
+type ListRecoverableInspectionDispatchesRow struct {
+	ID               int64           `json:"id"`
+	DispatchSnapshot json.RawMessage `json:"dispatch_snapshot"`
+}
+
+func (q *Queries) ListRecoverableInspectionDispatches(ctx context.Context) ([]ListRecoverableInspectionDispatchesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listRecoverableInspectionDispatches)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRecoverableInspectionDispatchesRow{}
+	for rows.Next() {
+		var i ListRecoverableInspectionDispatchesRow
+		if err := rows.Scan(&i.ID, &i.DispatchSnapshot); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markInspectionExecutionRunning = `-- name: MarkInspectionExecutionRunning :execrows
 UPDATE inspection_execution
 SET status = 'running', start_time = $1, update_time = $2
@@ -2021,11 +2100,20 @@ func (q *Queries) MarkInspectionTargetRunning(ctx context.Context, arg MarkInspe
 	return err
 }
 
+const resetInspectionDispatch = `-- name: ResetInspectionDispatch :exec
+UPDATE inspection_execution SET status = 'pending' WHERE id = $1 AND status = 'running'
+`
+
+func (q *Queries) ResetInspectionDispatch(ctx context.Context, id int64) error {
+	_, err := q.db.ExecContext(ctx, resetInspectionDispatch, id)
+	return err
+}
+
 const skipInspectionTarget = `-- name: SkipInspectionTarget :exec
 UPDATE inspection_target_execution
 SET status = 'skipped', passed = FALSE, error_message = $1,
     end_time = $2, update_time = $3
-WHERE id = $4
+WHERE id = $4 AND status = 'running'
 `
 
 type SkipInspectionTargetParams struct {
@@ -2042,6 +2130,20 @@ func (q *Queries) SkipInspectionTarget(ctx context.Context, arg SkipInspectionTa
 		arg.UpdateTime,
 		arg.ID,
 	)
+	return err
+}
+
+const storeInspectionDispatch = `-- name: StoreInspectionDispatch :exec
+UPDATE inspection_execution SET dispatch_snapshot = $1 WHERE id = $2
+`
+
+type StoreInspectionDispatchParams struct {
+	DispatchSnapshot json.RawMessage `json:"dispatch_snapshot"`
+	ID               int64           `json:"id"`
+}
+
+func (q *Queries) StoreInspectionDispatch(ctx context.Context, arg StoreInspectionDispatchParams) error {
+	_, err := q.db.ExecContext(ctx, storeInspectionDispatch, arg.DispatchSnapshot, arg.ID)
 	return err
 }
 

@@ -127,6 +127,23 @@ RETURNING id;
 UPDATE security_scan SET status = 'running', start_time = $1, update_time = $2
 WHERE id = $3 AND status = 'pending';
 
+-- name: StoreBaselineDispatch :exec
+UPDATE security_scan SET dispatch_snapshot = sqlc.narg(dispatch_snapshot) WHERE id = sqlc.arg(id);
+
+-- name: ListRecoverableBaselineDispatches :many
+SELECT id, COALESCE(dispatch_snapshot, '{}') AS dispatch_snapshot
+FROM security_scan WHERE scan_type = 'baseline' AND status IN ('pending', 'running') ORDER BY id;
+
+-- name: ClaimBaselineDispatchTarget :execrows
+UPDATE security_scan_target SET status = 'running' WHERE id = sqlc.arg(id) AND status = 'pending';
+
+-- name: InterruptBaselineDispatchTargets :exec
+UPDATE security_scan_target SET status = 'interrupted', error_message = sqlc.arg(error_message)
+WHERE scan_id = sqlc.arg(scan_id) AND (status = 'running' OR (status = 'pending' AND sqlc.arg(missing_snapshot) = TRUE));
+
+-- name: ResetBaselineDispatch :exec
+UPDATE security_scan SET status = 'pending' WHERE id = sqlc.arg(id) AND status = 'running';
+
 -- name: CreateBaselineScanTargets :exec
 INSERT INTO security_scan_target(scan_id, host_id, host_name, host_ip, instance_name_snapshot, status, error_message)
 VALUES ($1, $2, $3, $4, $5, 'pending', '');
@@ -149,7 +166,7 @@ INSERT INTO baseline_scan_result(scan_id, host_id, item_id, item_name, chapter, 
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, sqlc.narg(rule_version));
 
 -- name: FinishBaselineScan :exec
-UPDATE security_scan SET status = $1, summary = $2, end_time = $3, update_time = $4 WHERE id = $5;
+UPDATE security_scan SET status = $1, summary = $2, end_time = $3, update_time = $4 WHERE id = $5 AND status = 'running';
 
 -- ---- 扫描记录列表 / 详情 / 取消 ----
 
@@ -163,6 +180,13 @@ FROM security_scan s JOIN baseline b ON b.id = s.baseline_id
 WHERE s.scan_type = sqlc.arg(scan_type)
 ORDER BY s.id DESC
 LIMIT $1 OFFSET $2;
+
+-- name: ListBaselineOutcomeCounts :many
+SELECT scan_id, status, CASE WHEN error_message <> '' OR failed_items = 0 THEN 1 ELSE 0 END AS unverified,
+       COUNT(*) AS target_count
+FROM security_scan_target
+WHERE scan_id = ANY(sqlc.arg(scan_ids)::bigint[])
+GROUP BY scan_id, status, CASE WHEN error_message <> '' OR failed_items = 0 THEN 1 ELSE 0 END;
 
 -- 扫描头（不含目标与明细）。原来用 JSON_OBJECT 在库里拼响应体，PG 没有该函数，
 -- 改为取出各列、由应用层组装 JSON（见 docs/architecture/SQL_DESIGN.md §4.2）。
@@ -220,7 +244,7 @@ ORDER BY t.id, CASE r.status WHEN 'fail' THEN 1 WHEN 'pass' THEN 2 ELSE 0 END, r
 -- COUNT(CASE WHEN ... THEN 1 END) 两方言都是 bigint，且零行时为 0（SUM 会返回 NULL）。
 -- name: CountScanTargetsByStatus :one
 SELECT COUNT(CASE WHEN status = 'success' THEN 1 END) AS success,
-       COUNT(CASE WHEN status = 'failed' THEN 1 END) AS failed,
+       COUNT(CASE WHEN status IN ('failed', 'interrupted') THEN 1 END) AS failed,
        COUNT(CASE WHEN status = 'skipped' THEN 1 END) AS skipped
 FROM security_scan_target WHERE scan_id = sqlc.arg(scan_id);
 

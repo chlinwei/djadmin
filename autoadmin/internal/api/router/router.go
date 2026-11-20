@@ -47,7 +47,7 @@ type LogBatchOptions struct {
 
 // New 只返回 HTTP 引擎（历史签名，供不消费队列的调用方使用）。
 func New(database *sql.DB, tokens *identity.TokenManager, allowedOrigins []string, batchPublisher LogBatchPublisher, credentialEncryptionKey, djangoSecret string) (*gin.Engine, error) {
-	engine, _, err := NewWithGateway(database, tokens, allowedOrigins, batchPublisher, credentialEncryptionKey, djangoSecret, nil, LogBatchOptions{})
+	engine, _, _, err := NewWithGateway(database, tokens, allowedOrigins, batchPublisher, credentialEncryptionKey, djangoSecret, nil, LogBatchOptions{})
 	return engine, err
 }
 
@@ -56,7 +56,7 @@ func New(database *sql.DB, tokens *identity.TokenManager, allowedOrigins []strin
 // 第二个返回值是「日志采集批量作业」的消费者：这类作业要通过 agent gRPC 会话执行，
 // 会话只存在于跑 api 角色的进程里，所以必须由 api 角色消费（见 rabbitmq.LogCollectRoute）。
 // batchOptions 的零值字段用 logcollect 的缺省规模（0 视为未配置）。
-func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrigins []string, batchPublisher LogBatchPublisher, credentialEncryptionKey, djangoSecret string, gateway *agent.Gateway, batchOptions LogBatchOptions) (*gin.Engine, rabbitmq.Consumer, error) {
+func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrigins []string, batchPublisher LogBatchPublisher, credentialEncryptionKey, djangoSecret string, gateway *agent.Gateway, batchOptions LogBatchOptions) (*gin.Engine, rabbitmq.Consumer, *AgentJobs, error) {
 	engine := gin.New()
 	// Ant Design uploads add X-Requested-With automatically; allow it in preflight without changing origins or permissions.
 	engine.Use(cors.New(cors.Config{
@@ -77,7 +77,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 
 	mediaRoot, err := filepath.Abs("media")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	identityRepository := identity.NewRepository(database)
 	identityHandler := identity.NewHandler(identity.NewService(identityRepository, tokens))
@@ -229,7 +229,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 
 	assetsService, err := assets.NewService(assets.NewRepository(database), credentialEncryptionKey, djangoSecret)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	assetsHandler := assets.NewHandler(assetsService, gateway, "")
 	assets.SetDeploymentGateway(gateway)
@@ -417,7 +417,6 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	inspectionHandler := inspection.NewHandler(database, gateway)
 	// Cron-configured inspection tasks are dispatched from the API process because
 	// executions go through the in-process Agent gateway.
-	inspectionHandler.StartScheduler()
 	inspectionGroups := engine.Group("/sys/inspection/groups", middleware.Authenticate(tokens))
 	inspectionGroups.GET("/", middleware.RequirePermission("inspection:view"), inspectionHandler.ListGroups)
 	inspectionGroups.GET("/:id/", middleware.RequirePermission("inspection:view"), inspectionHandler.GetGroup)
@@ -442,11 +441,11 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	// Django 后端已废弃（源码已移出版本库），包存储随之从 MEDIA_ROOT 迁出。
 	secretEncryptor, err := assets.NewSecretEncryptor(credentialEncryptionKey, djangoSecret)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	packageRoot, err := filepath.Abs("media")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	monitorHandler := monitor.NewHandler(database, gateway, playbookHandler, secretEncryptor, packageRoot)
 	// 目标安装选包缺少主机架构时，允许 monitor 主动调 assets 补采一次资产信息。
@@ -632,7 +631,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	for _, prefix := range []string{"/sys", "/sys/scheduler", "/sys/automation", "/sys/inspection", "/sys/audit", "/assets", "/monitor", "/api/agent"} {
 		engine.Group(prefix)
 	}
-	return engine, batchRunner, nil
+	return engine, batchRunner, &AgentJobs{baseline: baselineHandler, inspection: inspectionHandler}, nil
 }
 
 func readiness(database *sql.DB) gin.HandlerFunc {

@@ -23,16 +23,21 @@ const (
 // StartScheduler launches the background loop that fires cron-configured
 // inspection tasks and prunes expired execution history. It must run in the API
 // process because executions dispatch through the in-process Agent gateway.
-func (handler *Handler) StartScheduler() {
-	go handler.runScheduler()
+func (handler *Handler) StartScheduler(ctx context.Context) {
+	go handler.runScheduler(ctx)
 }
 
-func (handler *Handler) runScheduler() {
+func (handler *Handler) runScheduler(ctx context.Context) {
 	ticker := time.NewTicker(schedulerTickInterval)
 	defer ticker.Stop()
 	lastCleanup := time.Now().Add(-cleanupInterval + 5*time.Minute)
-	for range ticker.C {
-		handler.dispatchDueTasks()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		handler.dispatchDueTasks(ctx)
 		if time.Since(lastCleanup) >= cleanupInterval {
 			lastCleanup = time.Now()
 			handler.cleanupExpiredExecutions()
@@ -40,47 +45,35 @@ func (handler *Handler) runScheduler() {
 	}
 }
 
-// dispatchDueTasks claims every due task atomically (next_run_time moved forward
-// in the same UPDATE) before dispatching, so multiple API replicas or overlapping
-// ticks cannot double-fire the same schedule.
-func (handler *Handler) dispatchDueTasks() {
-	type dueTask struct {
-		id             int64
-		cronExpression string
-	}
+// dispatchDueTasks advances each schedule in the same transaction that records
+// the run, so a failed insert or a restart cannot consume the trigger.
+func (handler *Handler) dispatchDueTasks(ctx context.Context) {
 	now := time.Now().UTC()
-	rows, err := db.New(handler.db).ListDueInspectionTasks(context.Background(), sql.NullTime{Time: now, Valid: true})
+	rows, err := db.New(handler.db).ListDueInspectionTasks(ctx, sql.NullTime{Time: now, Valid: true})
 	if err != nil {
 		slog.Error("list due inspection tasks", "error", err)
 		return
 	}
-	dueTasks := make([]dueTask, 0, len(rows))
 	for _, row := range rows {
-		dueTasks = append(dueTasks, dueTask{id: row.ID, cronExpression: row.CronExpression})
-	}
-	for _, task := range dueTasks {
-		schedule, parseErr := cron.ParseStandard(task.cronExpression)
+		schedule, parseErr := cron.ParseStandard(row.CronExpression)
 		if parseErr != nil {
-			slog.Warn("skip inspection task with invalid cron", "task_id", task.id, "cron", task.cronExpression)
+			slog.Warn("skip inspection task with invalid cron", "task_id", row.ID, "cron", row.CronExpression)
 			continue
 		}
 		now := time.Now().UTC()
 		next := schedule.Next(now)
-		claimed, claimErr := db.New(handler.db).ClaimDueInspectionTask(context.Background(), db.ClaimDueInspectionTaskParams{
+		claim := db.ClaimDueInspectionTaskParams{
 			NextRunTime: sql.NullTime{Time: next, Valid: true}, UpdateTime: now,
-			ID: task.id, Now: sql.NullTime{Time: now, Valid: true},
-		})
-		if claimErr != nil || claimed == 0 {
-			continue
+			ID: row.ID, Now: row.NextRunTime,
 		}
-		executionID, message, runErr := handler.startRun(context.Background(), task.id, "scheduled", 0, "scheduler")
+		executionID, message, runErr := handler.startRunWithClaim(ctx, row.ID, "scheduled", 0, "scheduler", &claim)
 		switch {
 		case runErr != nil:
-			slog.Error("dispatch scheduled inspection", "task_id", task.id, "error", runErr)
+			slog.Error("dispatch scheduled inspection", "task_id", row.ID, "error", runErr)
 		case message != "":
-			slog.Warn("scheduled inspection rejected", "task_id", task.id, "reason", message)
-		default:
-			slog.Info("scheduled inspection dispatched", "task_id", task.id, "execution_id", executionID)
+			slog.Warn("scheduled inspection rejected", "task_id", row.ID, "reason", message)
+		case executionID != 0:
+			slog.Info("scheduled inspection dispatched", "task_id", row.ID, "execution_id", executionID)
 		}
 	}
 }

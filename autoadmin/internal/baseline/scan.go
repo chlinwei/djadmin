@@ -256,11 +256,22 @@ func (handler *Handler) StartScan(context *gin.Context) {
 			return
 		}
 	}
-	if err = tx.Commit(); err != nil {
+	itemRows, err := scopeQueries.ListBaselineItems(context, baselineID)
+	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	itemRows, err := queries.ListBaselineItems(context, baselineID)
+	payload := baselineDispatch{Items: itemRows, Hosts: make([]dispatchHost, len(hosts))}
+	for index, host := range hosts {
+		payload.Hosts[index] = dispatchHost{Host: host, InstanceName: host.InstanceName}
+	}
+	raw, err := json.Marshal(payload)
+	if err == nil {
+		err = scopeQueries.StoreBaselineDispatch(context, db.StoreBaselineDispatchParams{ID: scanID, DispatchSnapshot: raw})
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
 	if err != nil {
 		response.Error(context, err)
 		return
@@ -274,9 +285,14 @@ func (handler *Handler) runScan(scanID int64, items []db.ListBaselineItemsRow, h
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 	now := time.Now().UTC()
-	if _, err := db.New(handler.db).ClaimBaselineScan(ctx, db.ClaimBaselineScanParams{
+	claimed, err := db.New(handler.db).ClaimBaselineScan(ctx, db.ClaimBaselineScanParams{
 		StartTime: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: scanID,
-	}); err != nil {
+	})
+	if err != nil {
+		log.Printf("[BASELINE] scan=%d claim: %v", scanID, err)
+		return
+	}
+	if claimed == 0 {
 		return
 	}
 	var waitGroup sync.WaitGroup
@@ -300,7 +316,13 @@ func (handler *Handler) runScan(scanID int64, items []db.ListBaselineItemsRow, h
 	if handler.isCanceled(scanID) {
 		return // 终态已由 CancelScan 落库（canceled），不聚合覆盖
 	}
-	handler.finishScan(ctx, scanID, len(hosts))
+	finishCtx, finishCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer finishCancel()
+	if err := handler.interruptDispatch(finishCtx, scanID, true, false); err != nil {
+		log.Printf("[BASELINE] scan=%d reconcile unfinished targets: %v", scanID, err)
+		return
+	}
+	handler.finishScan(finishCtx, scanID, len(hosts))
 }
 
 // runScanHost 对单台主机执行全部基线条目（编译为一次 OPA 检查下发）。
@@ -311,6 +333,14 @@ func (handler *Handler) runScanHost(ctx context.Context, scanID int64, items []d
 		return
 	}
 	targetRowID := targetRow.ID
+	claimed, err := queries.ClaimBaselineDispatchTarget(ctx, targetRowID)
+	if err != nil {
+		log.Printf("[BASELINE] scan=%d target=%d claim: %v", scanID, targetRowID, err)
+		return
+	}
+	if claimed == 0 {
+		return
+	}
 	save := func(status, message string, results []scanResultRow) {
 		// 远端超时不应取消结果持久化；事务可安全重试，最终失败必须在扫描中显式呈现。
 		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
@@ -417,8 +447,14 @@ func (handler *Handler) runScanHost(ctx context.Context, scanID int64, items []d
 
 // finishScan 聚合全部目标结果并关闭扫描。
 func (handler *Handler) finishScan(ctx context.Context, scanID int64, totalHosts int) {
-	// 聚合失败不能把扫描卡在 running：拿不到计数就按 0 处理（与原实现一致，那里也忽略了 scan 错误）。
-	counts, _ := db.New(handler.db).CountScanTargetsByStatus(ctx, scanID)
+	counts, err := db.New(handler.db).CountScanTargetsByStatus(ctx, scanID)
+	if err != nil {
+		log.Printf("[BASELINE] scan=%d count targets: %v", scanID, err)
+		return
+	}
+	if totalHosts == 0 {
+		totalHosts = int(counts.Success + counts.Failed + counts.Skipped)
+	}
 	status := "success"
 	if counts.Failed > 0 {
 		status = "failed"
@@ -429,9 +465,11 @@ func (handler *Handler) finishScan(ctx context.Context, scanID int64, totalHosts
 	}
 	summary := jsonBytes(gin.H{"total": totalHosts, "success": counts.Success, "failed": counts.Failed, "skipped": counts.Skipped})
 	now := time.Now().UTC()
-	db.New(handler.db).FinishBaselineScan(ctx, db.FinishBaselineScanParams{
+	if err := db.New(handler.db).FinishBaselineScan(ctx, db.FinishBaselineScanParams{
 		Status: status, Summary: summary, EndTime: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: scanID,
-	})
+	}); err != nil {
+		log.Printf("[BASELINE] scan=%d finish: %v", scanID, err)
+	}
 }
 
 // CancelScan 取消进行中的扫描（对齐巡检 CancelExecution）：
@@ -693,12 +731,18 @@ func (handler *Handler) ListScans(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
+	outcomes, err := listBaselineOutcomeSummaries(context, queries, scanRows)
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
 	items := make([]gin.H, 0, len(scanRows))
 	for _, row := range scanRows {
 		var summaryDecoded any
 		_ = json.Unmarshal(row.Summary, &summaryDecoded)
 		items = append(items, gin.H{"id": row.ID, "scan_type": row.ScanType, "baseline": row.Baseline, "mount_type": row.MountType,
 			"status": row.Status, "summary": summaryDecoded, "requested_username": row.RequestedUsername,
+			"outcome": outcomes[row.ID].status(row.Status), "outcome_summary": outcomes[row.ID],
 			"start_time": nullTimeString(row.StartTime), "end_time": nullTimeString(row.EndTime), "create_time": row.CreateTime})
 	}
 	response.Success(context, gin.H{"count": total, "results": items})
@@ -753,6 +797,7 @@ func (handler *Handler) GetScan(context *gin.Context) {
 	hostEnvironments := make(map[int64][]scanEnvironment, len(targetRows))
 	environments := make(map[int64]scanEnvironment)
 	targets := make([]gin.H, 0, len(targetRows))
+	outcomeSummary := make(baselineOutcomeSummary)
 	for _, row := range targetRows {
 		hostEnvironments[row.HostID] = []scanEnvironment{}
 		if row.EnvironmentID.Valid {
@@ -760,10 +805,13 @@ func (handler *Handler) GetScan(context *gin.Context) {
 			hostEnvironments[row.HostID] = []scanEnvironment{environment}
 			environments[environment.ID] = environment
 		}
-		targets = append(targets, gin.H{"host_id": row.HostID, "environments": hostEnvironments[row.HostID], "host_name": row.HostName, "host_ip": row.HostIp, "status": row.Status,
+		outcome := baselineTargetOutcome(row.Status, row.ErrorMessage != "" || row.FailedItems == 0)
+		outcomeSummary.add(outcome, 1)
+		targets = append(targets, gin.H{"host_id": row.HostID, "environments": hostEnvironments[row.HostID], "host_name": row.HostName, "host_ip": row.HostIp, "status": row.Status, "outcome": outcome,
 			"passed_items": row.PassedItems, "failed_items": row.FailedItems,
 			"compliance_rate": decimalValue(row.ComplianceRate), "error_message": row.ErrorMessage})
 	}
+	scan["outcome"], scan["outcome_summary"] = outcomeSummary.status(header.Status), outcomeSummary
 	currentEnvironments := make([]scanEnvironment, 0, len(environments))
 	for _, environment := range environments {
 		currentEnvironments = append(currentEnvironments, environment)

@@ -154,7 +154,7 @@ func TestActionPermissionsReachHandlersWithoutAdmin(t *testing.T) {
 			}
 			defer database.Close()
 			tokens := identity.NewTokenManager("action-test", time.Hour)
-			engine, _, err := NewWithGateway(database, tokens, []string{"*"}, nil, "", "action-test", agent.NewGateway(nil, nil), LogBatchOptions{})
+			engine, _, _, err := NewWithGateway(database, tokens, []string{"*"}, nil, "", "action-test", agent.NewGateway(nil, nil), LogBatchOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}

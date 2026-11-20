@@ -19,6 +19,7 @@ type Server struct {
 	// queueConsumer 是本进程要消费的作业队列（日志采集批量动作，见 rabbitmq.LogCollectRoute）。
 	// 为 nil 表示这个进程只提供 HTTP 路由、不消费队列。
 	queueConsumer rabbitmq.Consumer
+	agentJobs     *router.AgentJobs
 }
 
 func NewServer(address string, database *sql.DB, tokens *identity.TokenManager, allowedOrigins []string, batchPublisher router.LogBatchPublisher, credentialEncryptionKey, djangoSecret string) (*Server, error) {
@@ -26,7 +27,7 @@ func NewServer(address string, database *sql.DB, tokens *identity.TokenManager, 
 }
 
 func NewServerWithGateway(address string, database *sql.DB, tokens *identity.TokenManager, allowedOrigins []string, batchPublisher router.LogBatchPublisher, credentialEncryptionKey, djangoSecret string, gateway *agent.Gateway, batchOptions router.LogBatchOptions) (*Server, error) {
-	handler, consumer, err := router.NewWithGateway(database, tokens, allowedOrigins, batchPublisher, credentialEncryptionKey, djangoSecret, gateway, batchOptions)
+	handler, consumer, jobs, err := router.NewWithGateway(database, tokens, allowedOrigins, batchPublisher, credentialEncryptionKey, djangoSecret, gateway, batchOptions)
 	if err != nil {
 		return nil, fmt.Errorf("configure API router: %w", err)
 	}
@@ -37,7 +38,12 @@ func NewServerWithGateway(address string, database *sql.DB, tokens *identity.Tok
 			ReadHeaderTimeout: 5 * time.Second,
 		},
 		queueConsumer: consumer,
+		agentJobs:     jobs,
 	}, nil
+}
+
+func (server *Server) StartAgentJobs(ctx context.Context) error {
+	return server.agentJobs.Start(ctx)
 }
 
 func (server *Server) Run() error {

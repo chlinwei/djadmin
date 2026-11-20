@@ -4,10 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"regexp"
 	"testing"
+	"time"
 
 	"database/sql/driver"
+
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
@@ -38,9 +42,8 @@ func TestCreateExecutionInsertShape(t *testing.T) {
 	}
 	targets := []runTarget{{Name: "target-1", HostInstanceName: "host-01"}}
 
-	mock.ExpectBegin()
 	// status/summary 恒为字面量（'pending' / '{}'），trigger_type 才是参数——占位符错位的回归锚点。
-	// mountTargetName：服务名 + 业务链路（Begin 后、快照构建时查库）
+	// mountTargetName：服务名 + 业务链路（进入写事务前构建快照）
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT name FROM assets_application_service WHERE id`)).
 		WithArgs(int64(9)).
 		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("artemis"))
@@ -48,6 +51,7 @@ func TestCreateExecutionInsertShape(t *testing.T) {
 		WithArgs(int64(9)).
 		WillReturnRows(sqlmock.NewRows([]string{"service_id", "business_system_id", "business_system_name", "business_system_owner", "project_id", "project_name", "project_owner", "environment_id", "environment_name"}).
 			AddRow(9, 7, "cdm", "", 1, "kul", "", 1, "test"))
+	mock.ExpectBegin()
 	expectCreateReturnsID(mock, "INSERT INTO inspection_execution(", []driver.Value{
 		int64(5), "manual", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 		int64(7), "ops", sqlmock.AnyArg(), sqlmock.AnyArg(),
@@ -55,12 +59,14 @@ func TestCreateExecutionInsertShape(t *testing.T) {
 	expectCreateReturnsID(mock, "INSERT INTO inspection_target_execution(", []driver.Value{
 		int64(201), nil, int64(0), "target-1", int64(0), "", "host-01", sqlmock.AnyArg(), sqlmock.AnyArg(),
 	}, 301)
+	mock.ExpectExec("UPDATE inspection_execution SET dispatch_snapshot").WithArgs(sqlmock.AnyArg(), int64(201)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE inspection_task SET last_run_time")).
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), int64(5)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	executionID, err := (&Handler{db: database}).createExecution(context.Background(), task, targets, "manual", 7, "ops")
+	executionID, err := (&Handler{db: database}).createExecution(context.Background(), task, targets, "manual", 7, "ops", nil)
 	if err != nil {
 		t.Fatalf("createExecution: %v", err)
 	}
@@ -80,9 +86,79 @@ func TestCreateExecutionRejectsEmptyGroups(t *testing.T) {
 	defer database.Close()
 
 	// task.Groups 为空说明 prepareRunTask 没装载任何组——这不该走到落库。
-	_, err = (&Handler{db: database}).createExecution(context.Background(), runTask{ID: 5}, []runTarget{{Name: "t"}}, "manual", 0, "")
+	_, err = (&Handler{db: database}).createExecution(context.Background(), runTask{ID: 5}, []runTarget{{Name: "t"}}, "manual", 0, "", nil)
 	if err == nil {
 		t.Fatal("createExecution with no groups should fail")
+	}
+}
+
+func TestScheduledInspectionRollsBackWhenExecutionInsertFails(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	due := time.Date(2026, 11, 20, 2, 0, 0, 0, time.UTC)
+	next := due.Add(time.Minute)
+	claim := &db.ClaimDueInspectionTaskParams{
+		ID: 5, Now: sql.NullTime{Time: due, Valid: true},
+		NextRunTime: sql.NullTime{Time: next, Valid: true}, UpdateTime: due,
+	}
+	injected := errors.New("injected insert failure")
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE inspection_task SET next_run_time").
+		WithArgs(next, due, int64(5), due).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	expectCreateFailure(mock, "INSERT INTO inspection_execution(", injected)
+	mock.ExpectRollback()
+
+	handler := &Handler{db: database}
+	id, err := handler.createExecution(context.Background(), runTask{ID: 5}, nil, "scheduled", 0, "scheduler", claim)
+	if id != 0 || !errors.Is(err, injected) {
+		t.Fatalf("execution = %d, err = %v; want rolled-back insert", id, err)
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE inspection_task SET next_run_time").
+		WithArgs(next, due, int64(5), due).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectRollback()
+	id, err = handler.createExecution(context.Background(), runTask{ID: 5}, nil, "scheduled", 0, "scheduler", claim)
+	if id != 0 || err != nil {
+		t.Fatalf("duplicate claim: execution = %d, err = %v", id, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInspectionStartupPreservesUndispatchedTargets(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	mock.ExpectQuery("FROM inspection_execution WHERE status IN").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "dispatch_snapshot"}).
+			AddRow(19, []byte(`{"Task":{"ID":4},"Targets":[{"ID":27,"HostInstanceName":"vm-1"}]}`)))
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE inspection_execution SET status = 'pending' WHERE").
+		WithArgs(int64(19)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE inspection_target_execution SET status = 'failed'.*status = 'running'").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(19), false).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	handler := &Handler{db: database}
+	if _, err := handler.RecoverDispatches(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// A terminal target cannot be re-sent; no operational Agent gateway is present.
+	mock.ExpectExec("UPDATE inspection_target_execution SET status = 'running'.*status = 'pending'").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), int64(27)).WillReturnResult(sqlmock.NewResult(0, 0))
+	handler.executeTarget(19, runTask{ID: 4}, runTarget{ID: 27})
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 

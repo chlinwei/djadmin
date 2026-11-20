@@ -153,6 +153,9 @@ func runAPI(configuration config.Config) error {
 		return err
 	}
 	errChannel := make(chan error, 1)
+	if err := server.StartAgentJobs(ctx); err != nil {
+		return err
+	}
 	go func() { errChannel <- server.Run() }()
 	// 日志采集批量动作的队列由 api 角色消费：这些作业要通过 agent gRPC 会话在主机上执行，
 	// 而会话表在本进程（见 rabbitmq.LogCollectRoute）。定时清理不走队列。

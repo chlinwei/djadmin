@@ -277,7 +277,7 @@ Rego 策略（提示与巡检一致：`input.key` 必须与采集 key 一致，�
 
 1. **发起**（`StartScan`）：校验基线启用、条目非空 → `resolveHosts` 复用 inspection 域的
    `ListMountProjectHosts` / `ListMountProjectEnvironmentHosts`（项目或项目×环境实例主机
-   去重）→ 事务写 `security_scan` + 每主机 `security_scan_target`（error_message 显式 ''）
+   去重）→ 事务写 `security_scan`、每主机 `security_scan_target` 和下发快照
    → 异步 `runScan`；
 2. **执行**（`runScan`）：20 并发逐主机；每主机把全部条目编译为**一次 OPA 检查下发**
    （单次 check_plan 下发，10 分钟超时，条目 key `baseline:{scan}:{index}`）；
@@ -293,8 +293,17 @@ Rego 策略（提示与巡检一致：`input.key` 必须与采集 key 一致，�
    `canceled:true`，未开始的 target 同步置 canceled；内存镜像（sync.Map）让扫描
    goroutine 跳过剩余主机、丢弃已下发言语为在响应、不聚合覆盖终态。Agent 协议无
    cancel 帧，已下发到主机上的执行无法远程终止（与 automation CancelJob 同限制）。
+6. **重启恢复**：单实例 API 在启动时先对账，等待 Agent 重连后用下发快照继续 `pending` 目标；
+   已完成结果保留，`running` 目标标记 `interrupted`（「结果未确认」），不自动重发，也不更新安全问题台账。
+   无快照的旧未完成扫描不能恢复，未完成目标同样标记中断。部署时先应用 `000068_agent_job_recovery`，
+   新旧 API 实例不得重叠运行。
 
 ## 结果语义
+
+- 列表与详情的 GET 响应用 `outcome_summary` 分开统计通过、存在不符合、执行异常和跳过；中断单独标注，
+  在汇总中归入执行异常。旧记录同样按存储的目标状态、有效不符合条目数及是否有执行错误分类，
+  不解析备注文案。进度字段 `status` 与原 `summary` 保持原有语义。
+- 只有有效合规结论才显示主机条目计数和符合率；中断、执行异常（含仅部分验证）及未执行目标显示 `—`。
 
 - 条目：bound_scope 断言集合为空 → **pass**；非空 → **fail**（violation 即"不符合"）；
 - 主机符合率 = passed / (passed+failed) × 100；

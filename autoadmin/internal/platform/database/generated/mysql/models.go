@@ -722,6 +722,7 @@ type InspectionExecution struct {
 	GroupSnapshot     json.RawMessage `json:"group_snapshot"`
 	ServiceSnapshot   json.RawMessage `json:"service_snapshot"`
 	TargetSnapshot    json.RawMessage `json:"target_snapshot"`
+	DispatchSnapshot  json.RawMessage `json:"dispatch_snapshot"`
 	Summary           json.RawMessage `json:"summary"`
 	RequestedUserID   sql.NullInt32   `json:"requested_user_id"`
 	RequestedUsername string          `json:"requested_username"`
@@ -1215,6 +1216,7 @@ type SecurityScan struct {
 	ProjectID         sql.NullInt64   `json:"project_id"`
 	EnvironmentID     sql.NullInt64   `json:"environment_id"`
 	ScopeSnapshot     json.RawMessage `json:"scope_snapshot"`
+	DispatchSnapshot  json.RawMessage `json:"dispatch_snapshot"`
 	Status            string          `json:"status"`
 	Summary           json.RawMessage `json:"summary"`
 	RequestedUsername string          `json:"requested_username"`

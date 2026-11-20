@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -104,6 +105,10 @@ func (handler *Handler) RunTask(context *gin.Context) {
 // startRun prepares and dispatches one execution. message is a user-facing
 // business rejection (empty when the run was accepted); err is an infrastructure failure.
 func (handler *Handler) startRun(ctx context.Context, taskID int64, triggerType string, userID int32, username string) (int64, string, error) {
+	return handler.startRunWithClaim(ctx, taskID, triggerType, userID, username, nil)
+}
+
+func (handler *Handler) startRunWithClaim(ctx context.Context, taskID int64, triggerType string, userID int32, username string, claim *db.ClaimDueInspectionTaskParams) (int64, string, error) {
 	task, message, err := handler.prepareRunTask(ctx, taskID)
 	if err != nil || message != "" {
 		return 0, message, err
@@ -119,11 +124,13 @@ func (handler *Handler) startRun(ctx context.Context, taskID int64, triggerType 
 	for _, binding := range task.Bindings {
 		task.MountSummaries = append(task.MountSummaries, binding.mountSummary())
 	}
-	executionID, err := handler.createExecution(ctx, task, targets, triggerType, userID, username)
+	executionID, err := handler.createExecution(ctx, task, targets, triggerType, userID, username, claim)
 	if err != nil {
 		return 0, "", err
 	}
-	go handler.execute(executionID, task, targets)
+	if executionID != 0 {
+		go handler.execute(executionID, task, targets)
+	}
 	return executionID, "", nil
 }
 
@@ -189,13 +196,8 @@ func groupsFromBindings(bindings []mountBinding) []runGroup {
 	return groups
 }
 
-func (handler *Handler) createExecution(ctx context.Context, task runTask, targets []runTarget, triggerType string, userID int32, username string) (int64, error) {
+func (handler *Handler) createExecution(ctx context.Context, task runTask, targets []runTarget, triggerType string, userID int32, username string, claim *db.ClaimDueInspectionTaskParams) (int64, error) {
 	businessByHostForTargets := map[int64]gin.H{}
-	tx, err := handler.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
 	targetName := handler.mountTargetName(ctx, task.Bindings)
 	taskSnapshot := jsonBytes(gin.H{"id": task.ID, "name": task.Name, "concurrency": task.Concurrency, "timeout_seconds": task.Timeout, "groups": groupsFromBindings(task.Bindings)})
 	groupSnapshots := make([]gin.H, 0, len(task.Bindings))
@@ -231,7 +233,19 @@ func (handler *Handler) createExecution(ctx context.Context, task runTask, targe
 		}
 		targetSnapshot = append(targetSnapshot, item)
 	}
+	tx, err := handler.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
 	queries := db.New(tx)
+	if claim != nil {
+		// Commit schedule advancement only with the execution and its target rows.
+		claimed, err := queries.ClaimDueInspectionTask(ctx, *claim)
+		if err != nil || claimed == 0 {
+			return 0, err
+		}
+	}
 	now := time.Now().UTC()
 	executionID, err := queries.CreateInspectionExecution(ctx, db.CreateInspectionExecutionParams{
 		TaskID:            sql.NullInt64{Int64: task.ID, Valid: true},
@@ -265,6 +279,13 @@ func (handler *Handler) createExecution(ctx context.Context, task runTask, targe
 		}
 		targets[index].ID = targetID
 	}
+	payload, err := json.Marshal(inspectionDispatch{Task: task, Targets: targets})
+	if err != nil {
+		return 0, fmt.Errorf("encode inspection dispatch: %w", err)
+	}
+	if err := queries.StoreInspectionDispatch(ctx, db.StoreInspectionDispatchParams{ID: executionID, DispatchSnapshot: payload}); err != nil {
+		return 0, err
+	}
 	if err = queries.TouchInspectionTaskLastRun(ctx, db.TouchInspectionTaskLastRunParams{
 		LastRunTime: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: task.ID,
 	}); err != nil {
@@ -279,7 +300,11 @@ func (handler *Handler) execute(executionID int64, task runTask, targets []runTa
 	claimed, claimErr := queries.MarkInspectionExecutionRunning(ctx, db.MarkInspectionExecutionRunningParams{
 		StartTime: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: executionID,
 	})
-	if claimErr != nil || claimed == 0 {
+	if claimErr != nil {
+		slog.Error("claim inspection execution", "execution_id", executionID, "error", claimErr)
+		return
+	}
+	if claimed == 0 {
 		return
 	}
 	limit := task.Concurrency
@@ -302,9 +327,25 @@ func (handler *Handler) execute(executionID int64, task runTask, targets []runTa
 		}(target)
 	}
 	group.Wait()
-	// 统计失败不影响执行记录收尾（与迁移前一致：查询出错时各计数保持 0）。
-	outcomes, _ := queries.CountInspectionTargetOutcomes(ctx, executionID)
-	warnings, _ := queries.CountInspectionWarningResults(ctx, executionID)
+	if err := handler.interruptDispatch(ctx, executionID, true, false); err != nil {
+		slog.Error("reconcile unfinished inspection targets", "execution_id", executionID, "error", err)
+		return
+	}
+	handler.finishExecution(ctx, executionID)
+}
+
+func (handler *Handler) finishExecution(ctx context.Context, executionID int64) {
+	queries := db.New(handler.db)
+	outcomes, err := queries.CountInspectionTargetOutcomes(ctx, executionID)
+	if err != nil {
+		slog.Error("count inspection outcomes", "execution_id", executionID, "error", err)
+		return
+	}
+	warnings, err := queries.CountInspectionWarningResults(ctx, executionID)
+	if err != nil {
+		slog.Error("count inspection warnings", "execution_id", executionID, "error", err)
+		return
+	}
 	status := "success"
 	switch {
 	case outcomes.Failed > 0:
@@ -320,13 +361,15 @@ func (handler *Handler) execute(executionID int64, task runTask, targets []runTa
 	if handler.isCanceled(executionID) {
 		status = "canceled"
 	}
-	summary := jsonBytes(gin.H{"total": len(targets), "success": outcomes.Success, "failed": outcomes.Failed,
+	summary := jsonBytes(gin.H{"total": outcomes.Success + outcomes.Failed + outcomes.Canceled + outcomes.Skipped, "success": outcomes.Success, "failed": outcomes.Failed,
 		"canceled": outcomes.Canceled, "skipped": outcomes.Skipped, "warning": warnings})
-	now = time.Now().UTC()
-	_, _ = queries.FinishInspectionExecution(ctx, db.FinishInspectionExecutionParams{
+	now := time.Now().UTC()
+	if _, err := queries.FinishInspectionExecution(ctx, db.FinishInspectionExecutionParams{
 		Status: status, Summary: summary, EndTime: sql.NullTime{Time: now, Valid: true},
 		UpdateTime: now, ID: executionID,
-	})
+	}); err != nil {
+		slog.Error("finish inspection execution", "execution_id", executionID, "error", err)
+	}
 }
 
 // mountTargetName 把首个挂载点绑定转成人类可读的目标名，如
@@ -442,9 +485,16 @@ func (handler *Handler) executeTarget(executionID int64, task runTask, target ru
 	}
 	ctx, queries := context.Background(), db.New(handler.db)
 	now := func() time.Time { return time.Now().UTC() }
-	_ = queries.MarkInspectionTargetRunning(ctx, db.MarkInspectionTargetRunningParams{
+	claimed, err := queries.ClaimInspectionDispatchTarget(ctx, db.ClaimInspectionDispatchTargetParams{
 		StartTime: sql.NullTime{Time: now(), Valid: true}, UpdateTime: now(), ID: target.ID,
 	})
+	if err != nil {
+		slog.Error("claim inspection target", "target_id", target.ID, "error", err)
+		return
+	}
+	if claimed == 0 {
+		return
+	}
 	results := make([]checkResult, 0)
 	agentChecks, checks, missingParams := buildCheckPlan(task, target, executionID)
 	errorMessage := ""

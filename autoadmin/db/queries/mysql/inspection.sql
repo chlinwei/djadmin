@@ -214,7 +214,7 @@ FROM inspection_result WHERE target_id = sqlc.arg(target_id) ORDER BY id;
 --     `COALESCE(?, col)`——后者在两侧对可空布尔/JSON 的推导不同，会把签名分歧带进门面。
 
 -- name: ListDueInspectionTasks :many
-SELECT id, cron_expression
+SELECT id, cron_expression, next_run_time
 FROM inspection_task
 WHERE enabled = TRUE AND cron_expression <> '' AND next_run_time IS NOT NULL
   AND next_run_time <= sqlc.arg(now)
@@ -223,7 +223,7 @@ ORDER BY id;
 -- name: ClaimDueInspectionTask :execrows
 UPDATE inspection_task
 SET next_run_time = sqlc.arg(next_run_time), update_time = sqlc.arg(update_time)
-WHERE id = sqlc.arg(id) AND next_run_time <= sqlc.arg(now);
+WHERE id = sqlc.arg(id) AND enabled = TRUE AND next_run_time = sqlc.arg(now);
 
 -- 保留期清理：原实现是 MySQL 的多表 DELETE（`DELETE r FROM ... JOIN ...`），PG 不认这个语法，
 -- 改成 `WHERE ... IN (子查询)` —— 两方言都接受（子查询查的是别的表，MySQL 的限制不触发）。
@@ -395,7 +395,7 @@ WHERE t.execution_id = sqlc.arg(execution_id) AND r.severity = 'warning' AND r.s
 UPDATE inspection_execution
 SET status = sqlc.arg(status), summary = sqlc.arg(summary), end_time = sqlc.arg(end_time),
     update_time = sqlc.arg(update_time)
-WHERE id = sqlc.arg(id);
+WHERE id = sqlc.arg(id) AND status = 'running';
 
 -- name: GetApplicationServiceName :one
 SELECT name FROM assets_application_service WHERE id = sqlc.arg(id) LIMIT 1;
@@ -411,11 +411,31 @@ UPDATE inspection_target_execution
 SET status = 'running', start_time = sqlc.arg(start_time), update_time = sqlc.arg(update_time)
 WHERE id = sqlc.arg(id);
 
+-- name: ClaimInspectionDispatchTarget :execrows
+UPDATE inspection_target_execution
+SET status = 'running', start_time = sqlc.arg(start_time), update_time = sqlc.arg(update_time)
+WHERE id = sqlc.arg(id) AND status = 'pending';
+
+-- name: StoreInspectionDispatch :exec
+UPDATE inspection_execution SET dispatch_snapshot = sqlc.narg(dispatch_snapshot) WHERE id = sqlc.arg(id);
+
+-- name: ListRecoverableInspectionDispatches :many
+SELECT id, COALESCE(dispatch_snapshot, '{}') AS dispatch_snapshot
+FROM inspection_execution WHERE status IN ('pending', 'running') ORDER BY id;
+
+-- name: InterruptInspectionDispatchTargets :exec
+UPDATE inspection_target_execution
+SET status = 'failed', error_message = sqlc.arg(error_message), end_time = sqlc.arg(end_time), update_time = sqlc.arg(update_time)
+WHERE execution_id = sqlc.arg(execution_id) AND (status = 'running' OR (status = 'pending' AND sqlc.arg(missing_snapshot) = TRUE));
+
+-- name: ResetInspectionDispatch :exec
+UPDATE inspection_execution SET status = 'pending' WHERE id = sqlc.arg(id) AND status = 'running';
+
 -- name: SkipInspectionTarget :exec
 UPDATE inspection_target_execution
 SET status = 'skipped', passed = FALSE, error_message = sqlc.arg(error_message),
     end_time = sqlc.arg(end_time), update_time = sqlc.arg(update_time)
-WHERE id = sqlc.arg(id);
+WHERE id = sqlc.arg(id) AND status = 'running';
 
 -- name: CancelInspectionTarget :exec
 UPDATE inspection_target_execution
@@ -426,7 +446,7 @@ WHERE id = sqlc.arg(id);
 UPDATE inspection_target_execution
 SET status = sqlc.arg(status), passed = sqlc.narg(passed), error_message = sqlc.arg(error_message),
     raw_result = sqlc.arg(raw_result), end_time = sqlc.arg(end_time), update_time = sqlc.arg(update_time)
-WHERE id = sqlc.arg(id);
+WHERE id = sqlc.arg(id) AND status = 'running';
 
 -- 检查结果落库：原实现按 100 行/批拼多行 INSERT（占位符个数随入参变化，且用 `?`，
 -- PG 变体跑不通），改为逐条 sqlc INSERT —— 与 baseline 的 flushResults 同一取舍（见 SQL_DESIGN §6.3）。

@@ -168,25 +168,25 @@ func TestSmokeInspectionQueriesAgainstRealDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("列到期任务：%v", err)
 	}
-	found := false
+	var scheduledAt sql.NullTime
 	for _, row := range due {
 		if row.ID == taskID {
-			found = true
+			scheduledAt = row.NextRunTime
 		}
 	}
-	if !found {
+	if !scheduledAt.Valid {
 		t.Fatalf("到期任务列表里没有刚把 next_run_time 设成过去的任务（共 %d 条）", len(due))
 	}
 	next := sql.NullTime{Time: time.Now().UTC().Add(time.Hour), Valid: true}
 	if claimed, err := queries.ClaimDueInspectionTask(ctx, db.ClaimDueInspectionTaskParams{
 		NextRunTime: next, UpdateTime: time.Now().UTC(), ID: taskID,
-		Now: sql.NullTime{Time: time.Now().UTC(), Valid: true},
+		Now: scheduledAt,
 	}); err != nil || claimed != 1 {
 		t.Fatalf("认领到期任务：claimed=%d err=%v", claimed, err)
 	}
 	if claimed, err := queries.ClaimDueInspectionTask(ctx, db.ClaimDueInspectionTaskParams{
 		NextRunTime: next, UpdateTime: time.Now().UTC(), ID: taskID,
-		Now: sql.NullTime{Time: time.Now().UTC(), Valid: true},
+		Now: scheduledAt,
 	}); err != nil || claimed != 0 {
 		t.Fatalf("重复认领应返回 0：claimed=%d err=%v", claimed, err)
 	}

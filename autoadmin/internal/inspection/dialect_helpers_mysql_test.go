@@ -25,6 +25,10 @@ func expectCreateReturnsID(mock sqlmock.Sqlmock, fragment string, args []driver.
 	mock.ExpectExec(regexp.QuoteMeta(fragment)).WithArgs(args...).WillReturnResult(sqlmock.NewResult(id, 1))
 }
 
+func expectCreateFailure(mock sqlmock.Sqlmock, fragment string, err error) {
+	mock.ExpectExec(regexp.QuoteMeta(fragment)).WillReturnError(err)
+}
+
 // openSmokeDatabase 连真库（冒烟用例用）：默认构建连 MySQL。
 func openSmokeDatabase(ctx context.Context, dsn string) (*sql.DB, error) {
 	return database.Open(ctx, database.Configuration{

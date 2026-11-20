@@ -9,7 +9,7 @@
           </a-button>
           <span class="detail-title">扫描详情</span>
           <a-tag v-if="scan?.id" color="blue">ID: {{ scan.id }}</a-tag>
-          <a-tag v-if="scan?.status" :color="statusColor(scan.status)">{{ statusLabel(scan.status) }}</a-tag>
+          <a-tag v-if="scan?.outcome" :color="statusColor(scan.outcome)">{{ statusLabel(scan.outcome) }}</a-tag>
         </a-space>
       </template>
       <template #extra>
@@ -41,7 +41,7 @@
             <a-descriptions-item label="开始时间">{{ scan.start_time || '-' }}</a-descriptions-item>
             <a-descriptions-item label="结束时间">{{ scan.end_time || '-' }}</a-descriptions-item>
             <a-descriptions-item label="主机汇总">{{ summaryText }}</a-descriptions-item>
-            <a-descriptions-item label="状态"><a-tag :color="statusColor(scan.status)">{{ statusLabel(scan.status) }}</a-tag></a-descriptions-item>
+            <a-descriptions-item label="状态"><a-tag :color="statusColor(scan.outcome)">{{ statusLabel(scan.outcome) }}</a-tag></a-descriptions-item>
           </a-descriptions>
 
           <a-alert
@@ -62,10 +62,11 @@
           <a-table row-key="host_id" :columns="targetColumns" :data-source="filteredTargets" :pagination="targetPagination" :scroll="{ x: 1100 }" size="small" :locale="tableLocale" @change="handleTargetTableChange">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'status'">
-                <a-tag :color="statusColor(record.status)">{{ statusLabel(record.status) }}</a-tag>
+                <a-tag :color="statusColor(record.outcome)">{{ statusLabel(record.outcome) }}</a-tag>
               </template>
               <template v-else-if="column.key === 'compliance_rate'">
-                <a-progress :percent="Number(record.compliance_rate)" size="small" :status="Number(record.compliance_rate) === 100 ? 'success' : 'exception'" />
+                <a-progress v-if="hasBaselineMetrics(record.outcome)" :percent="Number(record.compliance_rate)" size="small" :status="Number(record.compliance_rate) === 100 ? 'success' : 'exception'" />
+                <span v-else>—</span>
               </template>
             </template>
           </a-table>
@@ -198,6 +199,7 @@ import requestUtil from '@/util/request'
 import { createPagination, tableLocale } from '@/util/tableStyle'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { baselineAssertions, formatEvidence } from '@/util/baselineEvidence'
+import { formatBaselineOutcomeSummary, hasBaselineMetrics, statusColor, statusLabel } from '@/util/baselineOutcome'
 
 const route = useRoute()
 const router = useRouter()
@@ -224,8 +226,8 @@ const targetColumns = [
   { title: '主机', dataIndex: 'host_name', key: 'host_name' },
   { title: 'IP', dataIndex: 'host_ip', key: 'host_ip', width: 140 },
   environmentColumn,
-  { title: '状态', key: 'status', width: 100 },
-  { title: '通过 / 不符合', key: 'items', width: 130, customRender: ({ record }) => `${record.passed_items} / ${record.failed_items}` },
+  { title: '状态', key: 'status', width: 174 },
+  { title: '通过 / 不符合', key: 'items', width: 130, customRender: ({ record }) => hasBaselineMetrics(record.outcome) ? `${record.passed_items} / ${record.failed_items}` : '—' },
   { title: '符合率', key: 'compliance_rate', width: 180 },
   { title: '备注', dataIndex: 'error_message', key: 'error_message' },
 ]
@@ -265,9 +267,6 @@ const resultSummary = (record) => {
   return record.message || '展开查看检查证据'
 }
 
-const statusLabel = (status) => ({ pending: '等待中', running: '扫描中', success: '完成', failed: '检查未全部通过', skipped: '已跳过', canceled: '已取消' }[status] || status)
-const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red', skipped: 'default', canceled: 'orange' }[status] || 'default')
-
 const canceling = ref(false)
 const handleCancel = async () => {
   canceling.value = true
@@ -281,11 +280,7 @@ const handleCancel = async () => {
 }
 const severityLabel = (severity) => ({ high: '高', medium: '中', low: '低' }[severity] || severity)
 
-const summaryText = computed(() => {
-  const summary = scan.value?.summary
-  if (!summary?.total) return '-'
-  return `${summary.total} 台：${summary.success} 成功 / ${summary.failed} 失败 / ${summary.skipped ?? 0} 跳过`
-})
+const summaryText = computed(() => formatBaselineOutcomeSummary(scan.value?.outcome_summary))
 const environmentSummary = computed(() => {
   const names = (scan.value?.environments || []).map(environmentLabel)
   if (names.length) return names.join('、')

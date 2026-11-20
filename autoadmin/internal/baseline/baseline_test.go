@@ -667,7 +667,10 @@ func TestListScansMapsRows(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("FROM security_scan s JOIN baseline b")).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "scan_type", "baseline", "mount_type", "status", "summary",
 			"requested_username", "start_time", "end_time", "create_time"}).
-			AddRow(7, "baseline", "等保2.0", "project", "success", []byte(`{"total":2,"success":2}`), "admin", nil, nil, testTime()))
+			AddRow(7, "baseline", "等保2.0", "project", "failed", []byte(`{"total":2,"failed":2}`), "admin", nil, nil, testTime()))
+	mock.ExpectQuery("FROM security_scan_target WHERE scan_id").
+		WillReturnRows(sqlmock.NewRows([]string{"scan_id", "status", "unverified", "target_count"}).
+			AddRow(7, "failed", 0, 1).AddRow(7, "interrupted", 1, 1))
 
 	handler := &Handler{db: database}
 	context, recorder := ginTestContext("GET", "/sys/security/scans/?type=baseline", nil)
@@ -678,11 +681,15 @@ func TestListScansMapsRows(t *testing.T) {
 		t.Fatalf("count = %v, want 3", count)
 	}
 	row := data["results"].([]any)[0].(map[string]any)
-	if row["baseline"] != "等保2.0" || row["status"] != "success" {
+	if row["baseline"] != "等保2.0" || row["status"] != "failed" || row["outcome"] != "mixed" {
 		t.Fatalf("row = %v", row)
 	}
-	if row["summary"].(map[string]any)["success"] != float64(2) {
+	if row["summary"].(map[string]any)["failed"] != float64(2) {
 		t.Fatalf("summary = %v", row["summary"])
+	}
+	outcomes := row["outcome_summary"].(map[string]any)
+	if outcomes["noncompliant"] != float64(1) || outcomes["execution_error"] != float64(1) {
+		t.Fatalf("outcome summary = %v", outcomes)
 	}
 	if row["start_time"] != nil {
 		t.Fatalf("start_time = %v, want nil（NULL 时间必须落 null 而不是零值时间）", row["start_time"])
@@ -709,7 +716,9 @@ func TestGetScanMapsHeaderTargetsAndItems(t *testing.T) {
 		WithArgs(int64(5)).
 		WillReturnRows(sqlmock.NewRows([]string{"host_id", "host_name", "host_ip", "status", "passed_items", "failed_items",
 			"compliance_rate", "error_message", "environment_id", "environment_name"}).
-			AddRow(3, "node-1", "10.0.0.5", "failed", 2, 1, "66.67", "", 4, "当前环境"))
+			AddRow(3, "node-1", "10.0.0.5", "failed", 2, 1, "66.67", "", 4, "当前环境").
+			AddRow(4, "node-2", "10.0.0.6", "failed", 0, 0, "0.00", "基线扫描中断，结果未确认", nil, "").
+			AddRow(5, "node-3", "10.0.0.7", "interrupted", 0, 0, "0.00", "基线扫描中断，结果未确认", nil, ""))
 	mock.ExpectQuery(regexp.QuoteMeta("FROM baseline_scan_result r")).
 		WithArgs(int64(5)).
 		WillReturnRows(sqlmock.NewRows([]string{"host_id", "host_name", "host_ip", "item_name", "chapter", "severity",
@@ -738,6 +747,12 @@ func TestGetScanMapsHeaderTargetsAndItems(t *testing.T) {
 		t.Fatalf("summary = %v", scan["summary"])
 	}
 	target := data["targets"].([]any)[0].(map[string]any)
+	outcomes := scan["outcome_summary"].(map[string]any)
+	if scan["outcome"] != "mixed" || outcomes["noncompliant"] != float64(1) || outcomes["execution_error"] != float64(2) ||
+		target["outcome"] != "noncompliant" || data["targets"].([]any)[1].(map[string]any)["outcome"] != "execution_error" ||
+		data["targets"].([]any)[2].(map[string]any)["outcome"] != "interrupted" {
+		t.Fatalf("outcome mismatch: %v / %v", scan, data["targets"])
+	}
 	if scan["environments"].([]any)[0].(map[string]any)["name"] != "当前环境" ||
 		target["environments"].([]any)[0].(map[string]any)["id"] != float64(4) {
 		t.Fatalf("current host environment not returned: %v / %v", scan, target)

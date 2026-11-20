@@ -10,6 +10,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 const cancelBaselineScan = `-- name: CancelBaselineScan :execrows
@@ -45,6 +47,18 @@ WHERE scan_id = $1 AND status IN ('pending', 'running')
 func (q *Queries) CancelBaselineScanTargets(ctx context.Context, scanID int64) error {
 	_, err := q.db.ExecContext(ctx, cancelBaselineScanTargets, scanID)
 	return err
+}
+
+const claimBaselineDispatchTarget = `-- name: ClaimBaselineDispatchTarget :execrows
+UPDATE security_scan_target SET status = 'running' WHERE id = $1 AND status = 'pending'
+`
+
+func (q *Queries) ClaimBaselineDispatchTarget(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, claimBaselineDispatchTarget, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const claimBaselineScan = `-- name: ClaimBaselineScan :execrows
@@ -119,7 +133,7 @@ func (q *Queries) CountBaselines(ctx context.Context, pattern sql.NullString) (i
 
 const countScanTargetsByStatus = `-- name: CountScanTargetsByStatus :one
 SELECT COUNT(CASE WHEN status = 'success' THEN 1 END) AS success,
-       COUNT(CASE WHEN status = 'failed' THEN 1 END) AS failed,
+       COUNT(CASE WHEN status IN ('failed', 'interrupted') THEN 1 END) AS failed,
        COUNT(CASE WHEN status = 'skipped' THEN 1 END) AS skipped
 FROM security_scan_target WHERE scan_id = $1
 `
@@ -422,7 +436,7 @@ func (q *Queries) DeleteBaselineScans(ctx context.Context, baselineID int64) err
 }
 
 const finishBaselineScan = `-- name: FinishBaselineScan :exec
-UPDATE security_scan SET status = $1, summary = $2, end_time = $3, update_time = $4 WHERE id = $5
+UPDATE security_scan SET status = $1, summary = $2, end_time = $3, update_time = $4 WHERE id = $5 AND status = 'running'
 `
 
 type FinishBaselineScanParams struct {
@@ -697,6 +711,22 @@ func (q *Queries) GetScanStatusForUpdate(ctx context.Context, id int64) (GetScan
 	return i, err
 }
 
+const interruptBaselineDispatchTargets = `-- name: InterruptBaselineDispatchTargets :exec
+UPDATE security_scan_target SET status = 'interrupted', error_message = $1
+WHERE scan_id = $2 AND (status = 'running' OR (status = 'pending' AND $3 = TRUE))
+`
+
+type InterruptBaselineDispatchTargetsParams struct {
+	ErrorMessage    string      `json:"error_message"`
+	ScanID          int64       `json:"scan_id"`
+	MissingSnapshot interface{} `json:"missing_snapshot"`
+}
+
+func (q *Queries) InterruptBaselineDispatchTargets(ctx context.Context, arg InterruptBaselineDispatchTargetsParams) error {
+	_, err := q.db.ExecContext(ctx, interruptBaselineDispatchTargets, arg.ErrorMessage, arg.ScanID, arg.MissingSnapshot)
+	return err
+}
+
 const listBaselineCategories = `-- name: ListBaselineCategories :many
 
 SELECT id, baseline_id, sort, name FROM baseline_category
@@ -855,6 +885,49 @@ func (q *Queries) ListBaselineItems(ctx context.Context, baselineID int64) ([]Li
 			&i.Description,
 			&i.Config,
 			&i.Severity,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBaselineOutcomeCounts = `-- name: ListBaselineOutcomeCounts :many
+SELECT scan_id, status, CASE WHEN error_message <> '' OR failed_items = 0 THEN 1 ELSE 0 END AS unverified,
+       COUNT(*) AS target_count
+FROM security_scan_target
+WHERE scan_id = ANY($1::bigint[])
+GROUP BY scan_id, status, CASE WHEN error_message <> '' OR failed_items = 0 THEN 1 ELSE 0 END
+`
+
+type ListBaselineOutcomeCountsRow struct {
+	ScanID      int64  `json:"scan_id"`
+	Status      string `json:"status"`
+	Unverified  int32  `json:"unverified"`
+	TargetCount int64  `json:"target_count"`
+}
+
+func (q *Queries) ListBaselineOutcomeCounts(ctx context.Context, scanIds []int64) ([]ListBaselineOutcomeCountsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listBaselineOutcomeCounts, pq.Array(scanIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBaselineOutcomeCountsRow{}
+	for rows.Next() {
+		var i ListBaselineOutcomeCountsRow
+		if err := rows.Scan(
+			&i.ScanID,
+			&i.Status,
+			&i.Unverified,
+			&i.TargetCount,
 		); err != nil {
 			return nil, err
 		}
@@ -1040,6 +1113,39 @@ func (q *Queries) ListBaselines(ctx context.Context, arg ListBaselinesParams) ([
 	return items, nil
 }
 
+const listRecoverableBaselineDispatches = `-- name: ListRecoverableBaselineDispatches :many
+SELECT id, COALESCE(dispatch_snapshot, '{}') AS dispatch_snapshot
+FROM security_scan WHERE scan_type = 'baseline' AND status IN ('pending', 'running') ORDER BY id
+`
+
+type ListRecoverableBaselineDispatchesRow struct {
+	ID               int64           `json:"id"`
+	DispatchSnapshot json.RawMessage `json:"dispatch_snapshot"`
+}
+
+func (q *Queries) ListRecoverableBaselineDispatches(ctx context.Context) ([]ListRecoverableBaselineDispatchesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listRecoverableBaselineDispatches)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRecoverableBaselineDispatchesRow{}
+	for rows.Next() {
+		var i ListRecoverableBaselineDispatchesRow
+		if err := rows.Scan(&i.ID, &i.DispatchSnapshot); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listScanTargets = `-- name: ListScanTargets :many
 SELECT t.host_id, t.host_name, t.host_ip, t.status, t.passed_items, t.failed_items, t.compliance_rate, t.error_message,
        h.environment_id, COALESCE(e.name, '') AS environment_name
@@ -1198,6 +1304,15 @@ func (q *Queries) RenameBaselineCategory(ctx context.Context, arg RenameBaseline
 	return result.RowsAffected()
 }
 
+const resetBaselineDispatch = `-- name: ResetBaselineDispatch :exec
+UPDATE security_scan SET status = 'pending' WHERE id = $1 AND status = 'running'
+`
+
+func (q *Queries) ResetBaselineDispatch(ctx context.Context, id int64) error {
+	_, err := q.db.ExecContext(ctx, resetBaselineDispatch, id)
+	return err
+}
+
 const setBaselineScanTargetStatus = `-- name: SetBaselineScanTargetStatus :exec
 UPDATE security_scan_target SET status = $1, error_message = $2 WHERE id = $3
 `
@@ -1211,6 +1326,20 @@ type SetBaselineScanTargetStatusParams struct {
 // 仅改状态 + 报错文案（失败/跳过两类终态），不动计数列。
 func (q *Queries) SetBaselineScanTargetStatus(ctx context.Context, arg SetBaselineScanTargetStatusParams) error {
 	_, err := q.db.ExecContext(ctx, setBaselineScanTargetStatus, arg.Status, arg.ErrorMessage, arg.ID)
+	return err
+}
+
+const storeBaselineDispatch = `-- name: StoreBaselineDispatch :exec
+UPDATE security_scan SET dispatch_snapshot = $1 WHERE id = $2
+`
+
+type StoreBaselineDispatchParams struct {
+	DispatchSnapshot json.RawMessage `json:"dispatch_snapshot"`
+	ID               int64           `json:"id"`
+}
+
+func (q *Queries) StoreBaselineDispatch(ctx context.Context, arg StoreBaselineDispatchParams) error {
+	_, err := q.db.ExecContext(ctx, storeBaselineDispatch, arg.DispatchSnapshot, arg.ID)
 	return err
 }
 

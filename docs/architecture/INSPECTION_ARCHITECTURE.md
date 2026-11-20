@@ -287,18 +287,17 @@ POST /sys/inspection/executions/{id}/cancel/   事务置 canceled 并 markCancel
 
 ### 定时调度（最终逻辑）
 
-- 调度器**运行在 API 进程内**（`router.go` 创建 `inspectionHandler` 后调用
-  `StartScheduler()`，见 `internal/inspection/scheduler.go`）——巡检执行依赖进程内
-  Agent gateway 下发 gRPC，不能放进独立的 `scheduler`/`worker` 进程。
+- API 角色启动时先对账未完成的执行，再留出 30 秒供 Agent 重连并恢复执行，
+  然后启动定时巡检循环。当前部署仅支持一个托管 Agent 会话的 API 实例，发布不能重叠运行。
 - 每 30s 扫描一次：`SELECT ... FROM inspection_task WHERE enabled=TRUE AND
   cron_expression<>'' AND next_run_time<=UTC_TIMESTAMP(6)`。
-- **原子认领**：对每个到期任务执行 `UPDATE inspection_task SET next_run_time=<下一周期>
-  WHERE id=? AND next_run_time<=UTC_TIMESTAMP(6)`，`RowsAffected==1` 才触发，多副本部署
-  或 tick 重叠不会重复触发。cron 计算与时区均用 UTC（与 `tasks.go` 保存逻辑一致）。
-- 触发路径与手动完全一致：`startRun(ctx, taskID, "scheduled", 0, "scheduler")`，
-  execution 的 `trigger_type='scheduled'`，`requested_username='scheduler'`。
-- 失败语义：调度触发被业务拒绝（任务/组禁用等）记 Warn 日志；基础设施错误记 Error，
-  不重试（等下一个 cron 周期）。
+- **原子触发**：仅当任务仍启用且 `next_run_time` 等于读到的触发时刻时推进计划；
+  计划推进、执行记录、目标和下发快照在同一事务提交。并发或重复领取同一时刻只允许一次；
+  创建失败时回滚，下一轮检查仍可处理该时刻。cron 计算使用 UTC。
+- 手动与定时共用相同的执行链。调度被业务拒绝（例如没有目标）时记录原因，计划不会被静默推进。
+- **重启恢复**：按提交时保存的快照只继续 `pending` 目标，已完成结果保留；
+  `running` 目标可能已收到请求，标记失败并说明「结果未确认」，不自动重发。没有下发快照的
+  旧未完成执行不能恢复，未完成目标同样标记失败。不将执行中断当成检查不符合。
 
 ### 并发与取消（最终逻辑）
 

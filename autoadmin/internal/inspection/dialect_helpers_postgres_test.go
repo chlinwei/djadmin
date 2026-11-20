@@ -25,6 +25,10 @@ func expectCreateReturnsID(mock sqlmock.Sqlmock, fragment string, args []driver.
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(id))
 }
 
+func expectCreateFailure(mock sqlmock.Sqlmock, fragment string, err error) {
+	mock.ExpectQuery(regexp.QuoteMeta(fragment)).WillReturnError(err)
+}
+
 // openSmokeDatabase 连真库（冒烟用例用）：-tags postgres 连 PostgreSQL。
 func openSmokeDatabase(ctx context.Context, dsn string) (*sql.DB, error) {
 	return database.Open(ctx, database.Configuration{

@@ -435,6 +435,17 @@ func (q *Queries) GetUserByUsername(ctx context.Context, username string) (SysUs
 	return i, err
 }
 
+const getUserTimezone = `-- name: GetUserTimezone :one
+SELECT timezone FROM sys_user WHERE id = $1 LIMIT 1
+`
+
+func (q *Queries) GetUserTimezone(ctx context.Context, id int32) (string, error) {
+	row := q.db.QueryRowContext(ctx, getUserTimezone, id)
+	var timezone string
+	err := row.Scan(&timezone)
+	return timezone, err
+}
+
 const listAPITokens = `-- name: ListAPITokens :many
 SELECT t.id, t.api_id, t.bind_mode, t.name, t.is_active, t.expires_at,
        t.last_used_at, t.created_by_id, u.username AS created_by_username,

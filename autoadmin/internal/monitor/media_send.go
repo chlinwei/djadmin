@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"html"
 	"mime"
 	"net"
 	"net/smtp"
@@ -25,6 +26,7 @@ type alertMediaTestInput struct {
 	Recipients any    `json:"recipients"`
 	Subject    string `json:"subject"`
 	Message    string `json:"message"`
+	Event      string `json:"event"`
 }
 
 // parseAlertMediaTestRecipients 对齐 Django：接受数组或逗号/分号分隔字符串。
@@ -80,18 +82,35 @@ func (handler *Handler) TestAlertMedia(context *gin.Context) {
 		response.BusinessError(context, 400, "请至少填写一个收件人", nil)
 		return
 	}
-	if strings.TrimSpace(input.Subject) == "" {
-		response.BusinessError(context, 400, "请填写主题", nil)
-		return
-	}
-	if strings.TrimSpace(input.Message) == "" {
-		response.BusinessError(context, 400, "请填写消息", nil)
-		return
-	}
-
 	var config map[string]any
-	_ = json.Unmarshal(row.Config, &config)
-	if success, errorMessage := handler.sendSMTPMedia(config, input.Subject, input.Message, recipients); !success {
+	if err := json.Unmarshal(row.Config, &config); err != nil {
+		response.Error(context, err)
+		return
+	}
+	send := handler.sendSMTPMedia
+	if input.Event != "" {
+		target, err := sampleAlertMailTarget(input.Event)
+		if err != nil {
+			response.BusinessError(context, 400, err.Error(), nil)
+			return
+		}
+		location, err := handler.currentAlertMailLocation(context)
+		if err != nil {
+			response.Error(context, err)
+			return
+		}
+		mail, err := renderConfiguredAlertMail(config, target, location)
+		if err != nil {
+			response.BusinessError(context, 400, err.Error(), nil)
+			return
+		}
+		input.Subject, input.Message = mail.Subject, mail.Body
+		send = handler.smtpSend
+	} else if strings.TrimSpace(input.Subject) == "" || strings.TrimSpace(input.Message) == "" || strings.ContainsAny(input.Subject, "\r\n") {
+		response.BusinessError(context, 400, "请填写单行主题及消息", nil)
+		return
+	}
+	if success, errorMessage := send(config, input.Subject, input.Message, recipients); !success {
 		response.BusinessError(context, 400, fmt.Sprintf("测试邮件发送失败：%s", errorMessage), nil)
 		return
 	}
@@ -103,6 +122,10 @@ func (handler *Handler) TestAlertMedia(context *gin.Context) {
 // messageFormat=html 时以 multipart/alternative 同时携带纯文本与 HTML 正文。
 // 返回 (success, error_message)，错误文案以"邮件发送失败: "开头，与 Django 拼接格式一致。
 func (handler *Handler) sendSMTPMedia(config map[string]any, subject, body string, recipients []string) (bool, string) {
+	return handler.sendSMTPMessage(config, subject, body, body, recipients)
+}
+
+func (handler *Handler) sendSMTPMessage(config map[string]any, subject, body, htmlBody string, recipients []string) (bool, string) {
 	config = configOrEmpty(config)
 	host := strings.TrimSpace(stringValue(config["smtpServer"]))
 	port := defaultString(config["smtpPort"], "587")
@@ -170,7 +193,7 @@ func (handler *Handler) sendSMTPMedia(config map[string]any, subject, body strin
 	if err != nil {
 		return false, fmt.Sprintf("邮件发送失败: %v", err)
 	}
-	_, writeErr := writer.Write(buildSMTPMessage(from, recipients, subject, body, messageFormat))
+	_, writeErr := writer.Write(buildSMTPMessage(from, recipients, subject, body, htmlBody, messageFormat))
 	closeErr := writer.Close()
 	quitErr := client.Quit()
 	if writeErr != nil {
@@ -186,7 +209,11 @@ func (handler *Handler) sendSMTPMedia(config map[string]any, subject, body strin
 }
 
 // buildSMTPMessage 组装 RFC 5322 报文；主题按 RFC 2047 编码以支持中文。
-func buildSMTPMessage(from string, recipients []string, subject, body, messageFormat string) []byte {
+func templateHTMLBody(body string) string {
+	return "<pre style=\"white-space:pre-wrap\">" + html.EscapeString(body) + "</pre>"
+}
+
+func buildSMTPMessage(from string, recipients []string, subject, body, htmlBody, messageFormat string) []byte {
 	encodedSubject := mime.QEncoding.Encode("UTF-8", subject)
 	header := &strings.Builder{}
 	header.WriteString("From: " + from + "\r\n")
@@ -202,7 +229,7 @@ func buildSMTPMessage(from string, recipients []string, subject, body, messageFo
 		header.WriteString(body + "\r\n\r\n")
 		header.WriteString("--" + boundary + "\r\n")
 		header.WriteString("Content-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
-		header.WriteString(body + "\r\n\r\n")
+		header.WriteString(htmlBody + "\r\n\r\n")
 		header.WriteString("--" + boundary + "--\r\n")
 		return []byte(header.String())
 	}

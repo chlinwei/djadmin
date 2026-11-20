@@ -672,6 +672,7 @@ type Querier interface {
 	GetUserByID(ctx context.Context, id int32) (SysUser, error)
 	GetUserByUsername(ctx context.Context, username string) (SysUser, error)
 	GetUserGroupName(ctx context.Context, id int64) (string, error)
+	GetUserTimezone(ctx context.Context, id int32) (string, error)
 	// ---- 告警链诊断（user-chain / chain/:historyId）----
 	GetUsernameByID(ctx context.Context, id int32) (string, error)
 	GetWebSSHAuditID(ctx context.Context, id int64) (int64, error)

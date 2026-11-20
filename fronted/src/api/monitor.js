@@ -104,6 +104,10 @@ export function testAlertMedia(id, data) {
   return requestUtil.post(prefix + `media/${id}/test/`, data)
 }
 
+export function previewAlertMediaTemplate(data) {
+  return requestUtil.post(prefix + 'media/template-preview/', data)
+}
+
 // 通知策略树（Grafana notification policy 模型）：根节点内置，子策略按 position 排序。
 export function getNotificationPolicyList() {
   return requestUtil.get(prefix + 'notification-policies/')

@@ -42,8 +42,8 @@ func expectAlertNotificationEventInsert(mock sqlmock.Sqlmock, eventType, dedupli
 // expectAlertNotificationDeliveryCreate 登记"单地址投递的 get-or-create"期望。
 // MySQL 侧是 `:execlastid` + `ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)`：走 Exec，
 // 主键由 LastInsertId 取回（撞唯一键时返回既有行 id）。
-func expectAlertNotificationDeliveryCreate(mock sqlmock.Sqlmock, deliveryID int64) {
+func expectAlertNotificationDeliveryCreate(mock sqlmock.Sqlmock, deliveryID, userID int64, address string) {
 	mock.ExpectExec("INSERT INTO monitor_alert_notification_delivery").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "a@b.com", int64(1), int64(2), int64(5)).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), address, int64(1), int64(2), userID).
 		WillReturnResult(sqlmock.NewResult(deliveryID, 1))
 }

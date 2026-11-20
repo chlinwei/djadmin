@@ -78,6 +78,7 @@ func TestReadonlyCannotMutateAnyBusinessRoute(t *testing.T) {
 		"PATCH /sys/usercenter/alertMediaBindings/:id/":               "current user's notification binding status",
 		"POST /sys/automation/playbooks/validate/":                    "content validation, not remote execution",
 		"POST /monitor/elasticsearch-clusters/:id/pipeline-simulate/": "pipeline simulation without publishing",
+		"POST /monitor/media/template-preview/":                       "pure template rendering without saving or sending",
 		"POST /monitor/alert-webhook/api/v2/alerts":                   "separate machine authentication",
 	}
 	parameters := regexp.MustCompile(`[:*][^/]+`)

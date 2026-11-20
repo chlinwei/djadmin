@@ -3,7 +3,6 @@ package monitor
 import (
 	"database/sql"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -204,8 +203,11 @@ func TestEnqueueWebhookNotificationsCounts(t *testing.T) {
 // eventRow 对应 GetAlertNotificationEventDispatch：事件字段（含 status/attempt_count，
 // 原实现分两条语句读同一行，现在合并为一条）与告警关键字段一次返回。
 func eventRow() *sqlmock.Rows {
-	return sqlmock.NewRows([]string{"event_type", "attempt_count", "status", "id", "alertname", "severity", "instance", "state", "labels"}).
-		AddRow("firing", int64(0), "pending", int64(7), "HighDiskUsage", "warning", "host-1", "firing", []byte(`{"severity":"warning"}`))
+	startedAt := time.Date(2026, 9, 17, 8, 0, 0, 0, time.FixedZone("UTC+8", 8*60*60))
+	return sqlmock.NewRows([]string{"event_type", "attempt_count", "status", "id", "alertname", "severity", "instance", "state", "labels", "annotations", "started_at", "resolved_at", "generator_url"}).
+		AddRow("firing", int64(0), "pending", int64(7), "HighDiskUsage", "warning", "host-1", "resolved",
+			[]byte(`{"severity":"warning","environment":"production"}`), []byte(`{"summary":"磁盘空间不足","description":"可用空间低于 10%"}`),
+			startedAt, startedAt.Add(time.Minute), "https://prometheus.example.com/graph?expr=disk")
 }
 
 func TestSendAlertNotificationEventNoBindings(t *testing.T) {
@@ -220,7 +222,7 @@ func TestSendAlertNotificationEventNoBindings(t *testing.T) {
 	// 该媒介没有任何 enabled 绑定。
 	mock.ExpectQuery("FROM monitor_user_alert_media_binding b JOIN sys_user u").
 		WithArgs(int64(2)).
-		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients"}))
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients", "timezone"}))
 	mock.ExpectExec("SET status='failed'").
 		WithArgs("媒介 \"公司邮箱\" 没有任何用户绑定", sqlmock.AnyArg(), int64(1)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -267,29 +269,48 @@ func TestSendAlertNotificationEventNonEmailMediaOnly(t *testing.T) {
 
 func TestSendAlertNotificationEventDeliverySuccess(t *testing.T) {
 	handler, mock, _ := notificationTestHandler(t)
-	called := 0
+	wantTimes := map[string]string{
+		"a@b.com": "2026-09-17 08:00:00 (UTC+08:00)",
+		"b@b.com": "2026-09-16 20:00:00 (UTC-04:00)",
+		"c@b.com": "2026-09-17T00:00:00Z",
+	}
 	handler.smtpSend = func(config map[string]any, subject, body string, recipients []string) (bool, string) {
-		called++
-		if len(recipients) != 1 || recipients[0] != "a@b.com" {
+		if len(recipients) != 1 || wantTimes[recipients[0]] == "" {
 			t.Fatalf("unexpected recipients: %v", recipients)
 		}
 		if config["smtpServer"] != "smtp.x.com" {
 			t.Fatalf("unexpected config: %v", config)
 		}
+		if subject != "生产 HighDiskUsage：磁盘空间不足" ||
+			body != "Firing @ host-1 (production)\n可用空间低于 10%\n"+wantTimes[recipients[0]]+" → — (—)\nhttps://prometheus.example.com/graph?expr=disk" {
+			t.Fatalf("unexpected rendered alert mail: %q / %q", subject, body)
+		}
+		delete(wantTimes, recipients[0])
 		return true, ""
 	}
 	mock.ExpectQuery("FROM monitor_alert_notification_event e JOIN monitor_alert_history").WillReturnRows(eventRow())
-	expectPolicyMediaHit(mock, "公司邮箱", "email")
+	mock.ExpectQuery("FROM monitor_notification_policy").WillReturnRows(policyTreeRows())
+	mock.ExpectQuery("SELECT id, name, media_type, config FROM monitor_alert_media").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "media_type", "config"}).
+			AddRow(int64(2), "公司邮箱", "email", []byte(`{"smtpServer":"smtp.x.com","message_templates":{"firing":{"subject":"生产 {{alert_name}}：{{summary}}","body":"{{state}} @ {{instance}} ({{labels.environment}})\n{{description}}\n{{started_at}} → {{resolved_at}} ({{duration}})\n{{generator_url}}"},"resolved":{"subject":"恢复"}}}`)))
 	mock.ExpectExec("SET status='sending', attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("FROM monitor_user_alert_media_binding b JOIN sys_user u").
 		WithArgs(int64(2)).
-		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients"}).AddRow(int64(5), "zhang", []byte(`["a@b.com", "a@b.com", " "]`)))
-	// get-or-create delivery：去重后的 a@b.com 一条。
-	expectAlertNotificationDeliveryCreate(mock, 11)
-	mock.ExpectQuery("SELECT status FROM monitor_alert_notification_delivery").
-		WithArgs(int64(11)).
-		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("pending"))
-	mock.ExpectExec("SET status='sending', attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients", "timezone"}).
+			AddRow(int64(5), "zhang", []byte(`["a@b.com", "a@b.com", " "]`), "Asia/Kuala_Lumpur").
+			AddRow(int64(6), "lee", []byte(`["b@b.com"]`), "America/New_York").
+			AddRow(int64(7), "chen", []byte(`["c@b.com"]`), "Local"))
+	for _, delivery := range []struct {
+		id, userID int64
+		address    string
+	}{{11, 5, "a@b.com"}, {12, 6, "b@b.com"}, {13, 7, "c@b.com"}} {
+		expectAlertNotificationDeliveryCreate(mock, delivery.id, delivery.userID, delivery.address)
+		mock.ExpectQuery("SELECT status FROM monitor_alert_notification_delivery").
+			WithArgs(delivery.id).
+			WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("pending"))
+		mock.ExpectExec("SET status='sending', attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec("SET status='success', sent_at").WillReturnResult(sqlmock.NewResult(0, 1))
+	}
 	// 片段不写占位符：两侧是 `?` / `$n`。
 	mock.ExpectExec("SET status='success', sent_at").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), int64(1)).
@@ -302,8 +323,8 @@ func TestSendAlertNotificationEventDeliverySuccess(t *testing.T) {
 	if retryable {
 		t.Fatal("success must not be retryable")
 	}
-	if called != 1 {
-		t.Fatalf("smtp called %d times, want 1", called)
+	if len(wantTimes) != 0 {
+		t.Fatalf("missing deliveries: %v", wantTimes)
 	}
 	if err = mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
@@ -320,8 +341,8 @@ func TestSendAlertNotificationEventDeliveryFailureIsRetryable(t *testing.T) {
 	mock.ExpectExec("SET status='sending', attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("FROM monitor_user_alert_media_binding b JOIN sys_user u").
 		WithArgs(int64(2)).
-		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients"}).AddRow(int64(5), "zhang", []byte(`["a@b.com"]`)))
-	expectAlertNotificationDeliveryCreate(mock, 11)
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients", "timezone"}).AddRow(int64(5), "zhang", []byte(`["a@b.com"]`), "UTC"))
+	expectAlertNotificationDeliveryCreate(mock, 11, 5, "a@b.com")
 	mock.ExpectQuery("SELECT status FROM monitor_alert_notification_delivery").
 		WithArgs(int64(11)).
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("pending"))
@@ -340,29 +361,4 @@ func TestSendAlertNotificationEventDeliveryFailureIsRetryable(t *testing.T) {
 	if err = mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
 	}
-}
-
-// ---- 邮件模板 ----
-
-func TestBuildAlertEmailSubjectAndBody(t *testing.T) {
-	target := alertNotificationTarget{alertname: "HighDiskUsage", severity: "warning", instance: "host-1", state: "firing"}
-	if subject := buildAlertEmailSubject(target); subject != "[Firing] HighDiskUsage - warning" {
-		t.Fatalf("unexpected subject: %q", subject)
-	}
-	if bodyText := buildAlertEmailBody(target); !containsAll(bodyText, []string{"Alert: HighDiskUsage", "State: Firing", "Instance: host-1"}) {
-		t.Fatalf("unexpected body: %q", bodyText)
-	}
-	target.state = "resolved"
-	if subject := buildAlertEmailSubject(target); subject != "[Resolved] HighDiskUsage - warning" {
-		t.Fatalf("unexpected resolved subject: %q", subject)
-	}
-}
-
-func containsAll(haystack string, needles []string) bool {
-	for _, needle := range needles {
-		if !strings.Contains(haystack, needle) {
-			return false
-		}
-	}
-	return true
 }

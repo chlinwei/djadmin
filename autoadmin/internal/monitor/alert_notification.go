@@ -35,12 +35,16 @@ type alertNotificationMedia struct {
 
 // alertNotificationTarget 描述一条待通知的告警：入库行关键字段 + 原始 labels。
 type alertNotificationTarget struct {
-	id        int64
-	alertname string
-	severity  string
-	instance  string
-	state     string
-	labels    map[string]any
+	id           int64
+	alertname    string
+	severity     string
+	instance     string
+	state        string
+	labels       map[string]any
+	annotations  map[string]any
+	startedAt    time.Time
+	resolvedAt   *time.Time
+	generatorURL string
 }
 
 // smtpSender 抽出 SMTP 发信能力（默认 handler.sendSMTPMedia），便于单测注入假实现。
@@ -137,8 +141,9 @@ func (handler *Handler) sendAlertNotificationEvent(eventID int64) (bool, error) 
 	attemptCount := int(dispatch.AttemptCount)
 	target := alertNotificationTarget{
 		id: dispatch.ID, alertname: dispatch.Alertname, severity: dispatch.Severity,
-		instance: dispatch.Instance, state: dispatch.State,
-		labels: unmarshalAlertLabels(dispatch.Labels),
+		instance: dispatch.Instance, state: eventType,
+		labels: unmarshalAlertLabels(dispatch.Labels), annotations: parseAnnotations(dispatch.Annotations),
+		startedAt: dispatch.StartedAt, resolvedAt: nullTimePtr(dispatch.ResolvedAt), generatorURL: dispatch.GeneratorUrl,
 	}
 
 	medias, userGroupIDs, err := handler.matchedPolicyMedias(ctx, target, eventType)
@@ -172,6 +177,7 @@ func (handler *Handler) sendAlertNotificationEvent(eventID int64) (bool, error) 
 			userID     int32
 			username   string
 			recipients []byte
+			timezone   string
 		}
 		// 出口用户组限制：nil=不限组（媒介全部绑定）；否则仅组成员的绑定可收。
 		bindings := make([]bindingRow, 0)
@@ -183,7 +189,7 @@ func (handler *Handler) sendAlertNotificationEvent(eventID int64) (bool, error) 
 				return false, queryErr
 			}
 			for _, row := range rows {
-				bindings = append(bindings, bindingRow{userID: row.UserID, username: row.Username, recipients: row.Recipients})
+				bindings = append(bindings, bindingRow{userID: row.UserID, username: row.Username, recipients: row.Recipients, timezone: row.Timezone})
 			}
 		} else {
 			rows, queryErr := queries.ListAlertMediaBindingsByMedia(ctx, media.id)
@@ -191,7 +197,7 @@ func (handler *Handler) sendAlertNotificationEvent(eventID int64) (bool, error) 
 				return false, queryErr
 			}
 			for _, row := range rows {
-				bindings = append(bindings, bindingRow{userID: row.UserID, username: row.Username, recipients: row.Recipients})
+				bindings = append(bindings, bindingRow{userID: row.UserID, username: row.Username, recipients: row.Recipients, timezone: row.Timezone})
 			}
 		}
 		if len(bindings) == 0 {
@@ -202,6 +208,7 @@ func (handler *Handler) sendAlertNotificationEvent(eventID int64) (bool, error) 
 		var config map[string]any
 		_ = json.Unmarshal(media.config, &config)
 		for _, binding := range bindings {
+			location := alertMailUserLocation(binding.userID, binding.timezone)
 			var recipientsRaw []any
 			_ = json.Unmarshal(binding.recipients, &recipientsRaw)
 			// dict.fromkeys 语义：去重且保持顺序。
@@ -213,7 +220,7 @@ func (handler *Handler) sendAlertNotificationEvent(eventID int64) (bool, error) 
 				}
 				seen[recipient] = true
 				deliveryCount++
-				handler.deliverAlertNotification(eventID, media, int64(binding.userID), binding.username, recipient, config, target, &errors, &retryable)
+				handler.deliverAlertNotification(eventID, media, int64(binding.userID), binding.username, recipient, config, target, location, &errors, &retryable)
 			}
 		}
 	}
@@ -245,7 +252,7 @@ func (handler *Handler) sendAlertNotificationEvent(eventID int64) (bool, error) 
 
 // deliverAlertNotification 投递单个地址：get-or-create delivery（唯一键 event,media,user,address），
 // 已 success 的跳过，否则置 sending、attempt_count+1，逐地址发信并按结果落 success/failed。
-func (handler *Handler) deliverAlertNotification(eventID int64, media alertNotificationMedia, userID int64, username, recipient string, config map[string]any, target alertNotificationTarget, errors *[]string, retryable *bool) {
+func (handler *Handler) deliverAlertNotification(eventID int64, media alertNotificationMedia, userID int64, username, recipient string, config map[string]any, target alertNotificationTarget, location *time.Location, errors *[]string, retryable *bool) {
 	queries := db.New(handler.db)
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -279,7 +286,13 @@ func (handler *Handler) deliverAlertNotification(eventID int64, media alertNotif
 		return
 	}
 
-	success, errorMessage := handler.smtpSend(config, buildAlertEmailSubject(target), buildAlertEmailBody(target), []string{recipient})
+	mail, renderErr := renderConfiguredAlertMail(config, target, location)
+	success, errorMessage := false, ""
+	if renderErr != nil {
+		errorMessage = fmt.Sprintf("消息模板渲染失败：%v", renderErr)
+	} else {
+		success, errorMessage = handler.smtpSend(config, mail.Subject, mail.Body, []string{recipient})
+	}
 	now = time.Now().UTC()
 	if success {
 		_ = queries.MarkAlertNotificationDeliverySuccess(ctx, db.MarkAlertNotificationDeliverySuccessParams{
@@ -291,10 +304,11 @@ func (handler *Handler) deliverAlertNotification(eventID int64, media alertNotif
 		ErrorMessage: errorMessage, UpdateTime: now, ID: deliveryID,
 	})
 	*errors = append(*errors, fmt.Sprintf("%s / %s / %s: %s", username, media.name, recipient, errorMessage))
-	*retryable = true
+	if renderErr == nil {
+		*retryable = true
+	}
 }
 
-// buildAlertEmailSubject / buildAlertEmailBody 对齐 Django _send_email_alert 的邮件模板。
 func buildAlertEmailSubject(target alertNotificationTarget) string {
 	stateLabel := "Firing"
 	if target.state == "resolved" {
@@ -309,25 +323,6 @@ func buildAlertEmailSubject(target alertNotificationTarget) string {
 		alertname = "Unknown Alert"
 	}
 	return fmt.Sprintf("[%s] %s - %s", stateLabel, alertname, severity)
-}
-
-func buildAlertEmailBody(target alertNotificationTarget) string {
-	stateLabel := "Firing"
-	if target.state == "resolved" {
-		stateLabel = "Resolved"
-	}
-	instance := target.instance
-	if instance == "" {
-		instance = "N/A"
-	}
-	labelsJSON, _ := json.Marshal(nonNilMap(target.labels))
-	return fmt.Sprintf(`Alert: %s
-Severity: %s
-State: %s
-Instance: %s
-
-Labels: %s
-`, target.alertname, target.severity, stateLabel, instance, string(labelsJSON))
 }
 
 // unmarshalAlertLabels 把 json 列的 labels 解为 map，坏数据退化为空 map（匹配等于无便捷键外命中）。

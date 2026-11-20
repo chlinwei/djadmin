@@ -42,8 +42,8 @@ func expectAlertNotificationEventInsert(mock sqlmock.Sqlmock, eventType, dedupli
 // expectAlertNotificationDeliveryCreate 见 mysql 版本：PG 侧是
 // `ON CONFLICT (event_id, media_id, user_id, address) DO UPDATE SET id=<表>.id RETURNING id`，
 // 撞唯一键时返回的仍是既有行 id（`:one` 走 QueryRow）。
-func expectAlertNotificationDeliveryCreate(mock sqlmock.Sqlmock, deliveryID int64) {
+func expectAlertNotificationDeliveryCreate(mock sqlmock.Sqlmock, deliveryID, userID int64, address string) {
 	mock.ExpectQuery("INSERT INTO monitor_alert_notification_delivery").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "a@b.com", int64(1), int64(2), int64(5)).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), address, int64(1), int64(2), userID).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(deliveryID))
 }

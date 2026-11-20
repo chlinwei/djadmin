@@ -62,9 +62,9 @@ func NewHandler(db *sql.DB, gateway *agent.Gateway, jobs *automation.Handler, se
 	return handler
 }
 
-// handlerSendSMTP 适配 media_send.go 的 sendSMTPMedia 到通知链路使用的 smtpSender 签名。
+// 告警模板是纯文本；转义后才能安全放入 HTML 部分。
 func (handler *Handler) handlerSendSMTP(config map[string]any, subject, body string, recipients []string) (bool, string) {
-	return handler.sendSMTPMedia(config, subject, body, recipients)
+	return handler.sendSMTPMessage(config, subject, body, templateHTMLBody(body), recipients)
 }
 
 func (handler *Handler) Summary(context *gin.Context) {

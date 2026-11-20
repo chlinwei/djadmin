@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -267,7 +268,13 @@ func TestAlertChainEvaluation(t *testing.T) {
 	mock.ExpectQuery("FROM monitor_notification_policy").
 		WillReturnRows(policyTreeRow(1, 0, "默认策略", "[2]", `[]`).
 			AddRow(int64(2), int64(1), "disk", int32(0), "", []byte(`[{"type":"label","label":"severity","operator":"=","value":"warning"}]`), nil, nil, true, true, time.Now().UTC(), time.Now().UTC()).
-			AddRow(int64(3), int64(1), "cpu", int32(0), "", []byte(`[{"type":"label","label":"severity","operator":"=","value":"critical"}]`), nil, nil, true, true, time.Now().UTC(), time.Now().UTC()))
+			AddRow(int64(3), int64(1), "cpu", int32(0), "", []byte(`[{"type":"label","label":"severity","operator":"=","value":"critical"}]`), nil, nil, true, true, time.Now().UTC(), time.Now().UTC()).
+			AddRow(int64(4), int64(1), "KUL 通知", int32(0), "", []byte(`[{"type":"tree","node_type":"project","id":1}]`), nil, nil, true, true, time.Now().UTC(), time.Now().UTC()).
+			AddRow(int64(5), int64(1), "旧项目通知", int32(0), "", []byte(`[{"type":"tree","node_type":"project","id":2}]`), nil, nil, true, true, time.Now().UTC(), time.Now().UTC()))
+	mock.ExpectQuery("SELECT name FROM assets_project").WithArgs(int64(1)).
+		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("KUL"))
+	mock.ExpectQuery("SELECT name FROM assets_project").WithArgs(int64(2)).
+		WillReturnRows(sqlmock.NewRows([]string{"name"}))
 
 	// 出口媒介 [2] 的绑定与事件/投递记录。
 	mock.ExpectQuery("SELECT id, name, enabled FROM monitor_alert_media").
@@ -323,8 +330,8 @@ func TestAlertChainEvaluation(t *testing.T) {
 	if payload.Alert.Labels["alertname"] != "HighDiskUsage" || payload.Alert.Labels["severity"] != "warning" || payload.Alert.Labels["instance"] != "host-1" {
 		t.Fatalf("labels convenience keys missing: %v", payload.Alert.Labels)
 	}
-	if len(payload.PolicyTree.Levels) != 1 || len(payload.PolicyTree.Levels[0]) != 2 {
-		t.Fatalf("expected 1 level with 2 siblings, got %+v", payload.PolicyTree.Levels)
+	if len(payload.PolicyTree.Levels) != 1 || len(payload.PolicyTree.Levels[0]) != 4 {
+		t.Fatalf("expected 1 level with 4 siblings, got %+v", payload.PolicyTree.Levels)
 	}
 	first, second := payload.PolicyTree.Levels[0][0], payload.PolicyTree.Levels[0][1]
 	if !first.Matched || !first.Selected || first.ID != 2 {
@@ -332,6 +339,15 @@ func TestAlertChainEvaluation(t *testing.T) {
 	}
 	if second.Matched || second.Selected || second.MissReason == "" {
 		t.Fatalf("critical policy should miss, got %+v", second)
+	}
+	for i, want := range []string{"项目「KUL」", "项目不存在（原编号：2）"} {
+		evaluation := payload.PolicyTree.Levels[0][i+2]
+		if evaluation.Matched || evaluation.Selected || evaluation.MissReason != "告警归属服务树未匹配："+want {
+			t.Fatalf("project policy miss = %+v, want %q", evaluation, want)
+		}
+		if !strings.Contains(strings.Join(payload.SummaryIssues, "\n"), evaluation.MissReason) {
+			t.Fatalf("diagnostic banner missing %q in %v", evaluation.MissReason, payload.SummaryIssues)
+		}
 	}
 	if len(payload.PolicyTree.MatchedPathIDs) != 2 || payload.PolicyTree.MatchedPathIDs[1] != 2 {
 		t.Fatalf("unexpected matched path: %+v", payload.PolicyTree.MatchedPathIDs)

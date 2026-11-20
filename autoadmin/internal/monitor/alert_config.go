@@ -74,6 +74,10 @@ func (handler *Handler) saveAlertMedia(context *gin.Context, id int64) {
 		response.BusinessError(context, 400, "valid smtpServer, smtpPort, and email are required", nil)
 		return
 	}
+	if _, err := alertMailTemplates(input.Config); err != nil {
+		response.BusinessError(context, 400, err.Error(), nil)
+		return
+	}
 	if password := stringValue(input.Config["password"]); password == "********" && id > 0 {
 		current, err := db.New(handler.db).GetAlertMediaConfig(context, id)
 		if err == nil {

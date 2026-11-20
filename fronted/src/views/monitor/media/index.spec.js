@@ -3,7 +3,7 @@ import Antd, { message } from 'ant-design-vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import MediaPage from './index.vue'
 import store from '@/store'
-import { getAlertMediaList, updateAlertMedia } from '@/api/monitor'
+import { getAlertMediaList, previewAlertMediaTemplate, testAlertMedia, updateAlertMedia } from '@/api/monitor'
 
 vi.mock('@/store', async () => {
   const { reactive } = await import('vue')
@@ -14,6 +14,7 @@ vi.mock('@/api/monitor', () => ({
   getAlertMediaList: vi.fn(),
   updateAlertMedia: vi.fn(),
   createAlertMedia: vi.fn(),
+  previewAlertMediaTemplate: vi.fn(),
   testAlertMedia: vi.fn(),
   batchDeleteAlertMedias: vi.fn(),
 }))
@@ -53,6 +54,69 @@ async function loadPage() {
 function statusSwitch(id = 7) {
   return wrapper.get(`tr[data-row-key="${id}"] button[role="switch"]`)
 }
+
+describe('邮件消息模板', () => {
+  it('两种邮件都提示环境标签，仅恢复邮件提示恢复时间和持续时长', async () => {
+    await loadPage()
+    wrapper.vm.openEditModal(records[0])
+    wrapper.vm.mediaTab = 'templates'
+    await flushPromises()
+    const dialog = () => document.querySelector('[role="dialog"]')
+    const changeEvent = async (event) => {
+      dialog().querySelector(`input[type="radio"][value="${event}"]`).click()
+      await flushPromises()
+    }
+
+    expect(dialog().textContent).toContain('触发邮件变量')
+    expect(dialog().textContent).toContain('{{started_at}}')
+    expect(dialog().textContent).toContain('{{labels.environment}}')
+    expect(dialog().textContent).not.toContain('{{resolved_at}}')
+    expect(dialog().textContent).not.toContain('{{duration}}')
+    expect(dialog().textContent).toContain('正式邮件按收件用户的个人时区显示时间')
+
+    await changeEvent('resolved')
+    expect(dialog().textContent).toContain('恢复邮件变量')
+    expect(dialog().textContent).toContain('{{started_at}}')
+    expect(dialog().textContent).toContain('{{resolved_at}}')
+    expect(dialog().textContent).toContain('{{labels.environment}}')
+    expect(dialog().textContent).toContain('{{duration}}')
+    expect(dialog().textContent).toContain('样例预览和模板测试使用当前登录用户的时区')
+
+    await changeEvent('firing')
+    expect(dialog().textContent).not.toContain('{{resolved_at}}')
+    expect(dialog().textContent).not.toContain('{{duration}}')
+  })
+
+  it('预览恢复草稿不保存，保存后可按事件测试发信', async () => {
+    store.state.perms.push('monitor:execute')
+    previewAlertMediaTemplate.mockResolvedValue({ data: { code: 200, data: { subject: '恢复 HighLoad5m', body: '示例' } } })
+    testAlertMedia.mockResolvedValue({ data: { code: 200, data: { sent: true } } })
+    await loadPage()
+    wrapper.vm.openEditModal({ ...records[0], config: { ...records[0].config, provider: 'custom', authType: 'none' } })
+    wrapper.vm.mediaTab = 'templates'
+    wrapper.vm.templateEvent = 'resolved'
+    wrapper.vm.createForm.templates.resolved.subject = '恢复 {{alert_name}}'
+    await wrapper.vm.loadTemplatePreview()
+    expect(previewAlertMediaTemplate).toHaveBeenCalledWith({
+      event: 'resolved', template: { subject: '恢复 {{alert_name}}', body: '' },
+    })
+    expect(wrapper.vm.templatePreview.subject).toBe('恢复 HighLoad5m')
+    expect(wrapper.vm.templatePreview.key).toBe(wrapper.vm.templatePreviewKey)
+    expect(updateAlertMedia).not.toHaveBeenCalled()
+    expect(testAlertMedia).not.toHaveBeenCalled()
+    await wrapper.vm.saveMedia()
+    expect(updateAlertMedia).toHaveBeenCalledWith(7, expect.objectContaining({
+      config: expect.objectContaining({
+        message_templates: { firing: { subject: '', body: '' }, resolved: { subject: '恢复 {{alert_name}}', body: '' } },
+      }),
+    }))
+    wrapper.vm.openTestModal(records[0])
+    wrapper.vm.testForm.event = 'resolved'
+    wrapper.vm.testForm.recipients = 'to@example.com'
+    await wrapper.vm.sendTestEmail()
+    expect(testAlertMedia).toHaveBeenCalledWith(7, { event: 'resolved', recipients: ['to@example.com'] })
+  })
+})
 
 describe('媒介列表状态开关', () => {
   it.each([false, true])('当前状态为%s时可直接切换，仅提交enabled并保留SMTP配置', async (enabled) => {

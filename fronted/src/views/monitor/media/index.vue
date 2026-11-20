@@ -70,13 +70,11 @@
       :confirm-loading="createLoading"
       @cancel="closeCreateModal"
     >
-      <div class="media-tabs">
-        <span class="media-tab active">报警媒介类型</span>
-        <span class="media-tab">消息模板</span>
-        <span class="media-tab">选项</span>
-      </div>
-
-      <a-form
+      <a-tabs v-model:activeKey="mediaTab">
+        <a-tab-pane key="settings" tab="报警媒介类型" />
+        <a-tab-pane key="templates" tab="消息模板" />
+      </a-tabs>
+      <a-form v-show="mediaTab === 'settings'"
         class="media-form"
         :model="createForm"
         :label-col="{ span: 5 }"
@@ -146,6 +144,38 @@
         </a-form-item>
       </a-form>
 
+      <a-form v-if="mediaTab === 'templates'" layout="vertical">
+        <a-form-item label="告警事件">
+          <a-radio-group v-model:value="templateEvent">
+            <a-radio-button value="firing">触发</a-radio-button>
+            <a-radio-button value="resolved">恢复</a-radio-button>
+          </a-radio-group>
+        </a-form-item>
+        <a-alert type="info" show-icon message="主题或正文留空时使用系统默认内容。模板按纯文本编辑。" />
+        <a-form-item :label="templateEvent === 'resolved' ? '恢复邮件变量' : '触发邮件变量'">
+          <a-space wrap>
+            <a-tooltip v-for="[name, description] in templateVariables" :key="name" :title="description">
+              <code v-text="`{{${name}}}`" />
+            </a-tooltip>
+          </a-space>
+          <div class="ant-form-item-extra">
+            正式邮件按收件用户的个人时区显示时间；样例预览和模板测试使用当前登录用户的时区。
+            摘要、描述、环境、时间{{ templateEvent === 'resolved' ? '、持续时长' : '' }}或来源链接不可用时显示「—」。
+          </div>
+        </a-form-item>
+        <a-form-item label="主题">
+          <a-input v-model:value="createForm.templates[templateEvent].subject" placeholder="留空使用默认主题" />
+        </a-form-item>
+        <a-form-item label="正文">
+          <a-textarea v-model:value="createForm.templates[templateEvent].body" :rows="6" placeholder="留空使用默认正文" />
+        </a-form-item>
+        <a-button :loading="previewLoading" @click="loadTemplatePreview">样例预览</a-button>
+        <div v-if="templatePreview?.key === templatePreviewKey" class="template-preview">
+          <p><strong>主题：</strong>{{ templatePreview.subject }}</p>
+          <pre>{{ templatePreview.body }}</pre>
+        </div>
+      </a-form>
+
       <div class="modal-actions">
         <a-button @click="closeCreateModal">取消</a-button>
         <a-button v-if="checkPermission(editingId ? 'monitor:update' : 'monitor:create')" type="primary" :loading="createLoading" @click="saveMedia">保存</a-button>
@@ -163,10 +193,17 @@
         <a-form-item label="收件人" required>
           <a-input v-model:value="testForm.recipients" placeholder="多个收件人请使用逗号分隔" />
         </a-form-item>
-        <a-form-item label="主题" required>
+        <a-form-item label="发送内容">
+          <a-radio-group v-model:value="testForm.event">
+            <a-radio value="">自定义内容</a-radio>
+            <a-radio value="firing">已保存的触发模板</a-radio>
+            <a-radio value="resolved">已保存的恢复模板</a-radio>
+          </a-radio-group>
+        </a-form-item>
+        <a-form-item v-if="!testForm.event" label="主题" required>
           <a-input v-model:value="testForm.subject" />
         </a-form-item>
-        <a-form-item label="消息" required>
+        <a-form-item v-if="!testForm.event" label="消息" required>
           <a-textarea v-model:value="testForm.message" :rows="6" />
         </a-form-item>
       </a-form>
@@ -176,13 +213,13 @@
 
 <script setup>
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { checkPermission } from '@/directives/permission/permission'
 import { createPagination, tableLocale } from '@/util/tableStyle'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
-import { batchDeleteAlertMedias, createAlertMedia, getAlertMediaList, testAlertMedia, updateAlertMedia } from '@/api/monitor'
+import { batchDeleteAlertMedias, createAlertMedia, getAlertMediaList, previewAlertMediaTemplate, testAlertMedia, updateAlertMedia } from '@/api/monitor'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
@@ -223,11 +260,68 @@ const editingId = ref(null)
 const rowDeleteLoading = reactive({})
 const rowStatusLoading = reactive({})
 const createForm = ref(createDefaultForm())
+const mediaTab = ref('settings')
+const templateEvent = ref('firing')
+const commonTemplateVariables = [
+  ['alert_name', '告警名称'],
+  ['severity', '告警级别'],
+  ['state', '告警事件状态'],
+  ['instance', '告警实例'],
+  ['labels', '完整标签（JSON）'],
+  ['labels.environment', '环境标签（environment）'],
+  ['summary', '告警注解中的摘要'],
+  ['description', '告警注解中的详细描述'],
+  ['started_at', '触发时间'],
+  ['generator_url', '告警来源链接，例如 Prometheus 表达式页面'],
+]
+const templateVariables = computed(() => templateEvent.value === 'resolved'
+  ? [...commonTemplateVariables, ['resolved_at', '恢复时间'], ['duration', '告警持续时长，例如 15m0s']]
+  : commonTemplateVariables)
+const templatePreview = ref(null)
+const previewLoading = ref(false)
+let previewRequest = 0
+const templatePreviewKey = computed(() => JSON.stringify([
+  templateEvent.value, createForm.value.templates[templateEvent.value],
+]))
 const testForm = ref({
   recipients: '',
+  event: '',
   subject: '测试邮件',
   message: '这是一封测试邮件。',
 })
+
+function templateDrafts(saved) {
+  return Object.fromEntries(['firing', 'resolved'].map((event) => [event, {
+    subject: saved?.[event]?.subject ?? '',
+    body: saved?.[event]?.body ?? '',
+  }]))
+}
+
+function resetTemplateEditor() {
+  mediaTab.value = 'settings'
+  templateEvent.value = 'firing'
+  templatePreview.value = null
+  previewLoading.value = false
+  previewRequest++
+}
+
+async function loadTemplatePreview() {
+  const request = ++previewRequest
+  const key = templatePreviewKey.value
+  previewLoading.value = true
+  templatePreview.value = null
+  try {
+    const response = await previewAlertMediaTemplate({
+      event: templateEvent.value,
+      template: { ...createForm.value.templates[templateEvent.value] },
+    })
+    if (request === previewRequest && createModalVisible.value && key === templatePreviewKey.value) {
+      templatePreview.value = { ...parseApiData(response), key }
+    }
+  } finally {
+    if (request === previewRequest) previewLoading.value = false
+  }
+}
 
 function createDefaultForm() {
   return {
@@ -241,6 +335,7 @@ function createDefaultForm() {
     username: '',
     password: '',
     messageFormat: 'html',
+    templates: templateDrafts(),
     description: '',
     enabled: true,
   }
@@ -256,6 +351,7 @@ function openCreateModal() {
   if (!checkPermission('monitor:create')) return
   editingId.value = null
   createForm.value = createDefaultForm()
+  resetTemplateEditor()
   createModalVisible.value = true
 }
 
@@ -274,9 +370,11 @@ function openEditModal(record) {
     username: config.username || '',
     password: config.password || '',
     messageFormat: config.messageFormat || 'html',
+    templates: templateDrafts(config.message_templates),
     description: record.remark || '',
     enabled: record.enabled,
   }
+  resetTemplateEditor()
   createModalVisible.value = true
 }
 
@@ -289,6 +387,7 @@ function openTestModal(record) {
   testingMediaId.value = record.id
   testForm.value = {
     recipients: '',
+    event: '',
     subject: '测试主题',
     message: '这是一封测试邮件。',
   }
@@ -302,13 +401,18 @@ function closeTestModal() {
 async function sendTestEmail() {
   if (!checkPermission('monitor:execute')) return
   const recipients = testForm.value.recipients.split(/[,;，；]/).map((item) => item.trim()).filter(Boolean)
-  if (!recipients.length || !testForm.value.subject.trim() || !testForm.value.message.trim()) {
-    message.warning('请填写收件人、主题和消息')
+  if (!recipients.length) {
+    message.warning('请填写收件人')
+    return
+  }
+  const { event, subject, message: body } = testForm.value
+  if (!event && (!subject.trim() || !body.trim())) {
+    message.warning('请填写主题和消息')
     return
   }
   testLoading.value = true
   try {
-    await testAlertMedia(testingMediaId.value, { ...testForm.value, recipients })
+    await testAlertMedia(testingMediaId.value, event ? { event, recipients } : { subject, message: body, recipients })
     testModalVisible.value = false
     message.success('测试邮件已发送')
   } finally {
@@ -319,10 +423,12 @@ async function sendTestEmail() {
 async function saveMedia() {
   if (!checkPermission(editingId.value ? 'monitor:update' : 'monitor:create')) return
   if (!createForm.value.name || !createForm.value.type) {
+    mediaTab.value = 'settings'
     message.warning('请填写名称并选择媒介类型')
     return
   }
   if (createForm.value.type === 'email' && !createForm.value.email) {
+    mediaTab.value = 'settings'
     message.warning('请填写电子邮件')
     return
   }
@@ -330,12 +436,14 @@ async function saveMedia() {
     && createForm.value.provider === 'custom'
     && createForm.value.authType === 'password'
     && (!createForm.value.username || !createForm.value.password)) {
+    mediaTab.value = 'settings'
     message.warning('请填写用户名和密码')
     return
   }
   if (createForm.value.type === 'email'
     && createForm.value.provider === 'custom'
     && (!createForm.value.smtpServer || !createForm.value.smtpPort)) {
+    mediaTab.value = 'settings'
     message.warning('请填写 SMTP 服务器和端口')
     return
   }
@@ -357,6 +465,7 @@ async function saveMedia() {
         ...(isGmail ? {} : { username: createForm.value.username }),
         password: createForm.value.password,
         messageFormat: createForm.value.messageFormat,
+        message_templates: createForm.value.templates,
       },
     }
     if (editingId.value) {
@@ -452,22 +561,13 @@ onMounted(async () => {
   padding: 8px;
 }
 
-.media-tabs {
-  display: flex;
-  gap: 24px;
-  margin: -8px 0 18px;
-  border-bottom: 1px solid #e5e7eb;
+.template-preview {
+  margin-top: 12px;
+  overflow-wrap: anywhere;
 }
 
-.media-tab {
-  padding: 0 10px 10px;
-  color: #1677ff;
-  font-size: 13px;
-}
-
-.media-tab.active {
-  border-bottom: 3px solid #1677ff;
-  color: #111827;
+.template-preview pre {
+  white-space: pre-wrap;
 }
 
 .media-form :deep(.ant-form-item) {

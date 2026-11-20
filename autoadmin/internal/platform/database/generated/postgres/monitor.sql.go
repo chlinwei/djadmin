@@ -1781,7 +1781,8 @@ func (q *Queries) GetAlertNotificationDeliveryStatus(ctx context.Context, id int
 
 const getAlertNotificationEventDispatch = `-- name: GetAlertNotificationEventDispatch :one
 SELECT e.event_type, e.attempt_count, e.status,
-       a.id, a.alertname, a.severity, a.instance, a.state, a.labels
+       a.id, a.alertname, a.severity, a.instance, a.state, a.labels,
+       a.annotations, a.started_at, a.resolved_at, a.generator_url
 FROM monitor_alert_notification_event e
 JOIN monitor_alert_history a ON a.id = e.alert_id
 WHERE e.id = $1
@@ -1797,6 +1798,10 @@ type GetAlertNotificationEventDispatchRow struct {
 	Instance     string          `json:"instance"`
 	State        string          `json:"state"`
 	Labels       json.RawMessage `json:"labels"`
+	Annotations  json.RawMessage `json:"annotations"`
+	StartedAt    time.Time       `json:"started_at"`
+	ResolvedAt   sql.NullTime    `json:"resolved_at"`
+	GeneratorUrl string          `json:"generator_url"`
 }
 
 // 事件与告警关键字段一次取齐（原实现分两条语句读同一行，合并为一条）：
@@ -1814,6 +1819,10 @@ func (q *Queries) GetAlertNotificationEventDispatch(ctx context.Context, id int6
 		&i.Instance,
 		&i.State,
 		&i.Labels,
+		&i.Annotations,
+		&i.StartedAt,
+		&i.ResolvedAt,
+		&i.GeneratorUrl,
 	)
 	return i, err
 }
@@ -2966,7 +2975,7 @@ func (q *Queries) ListAlertMedia(ctx context.Context, arg ListAlertMediaParams) 
 }
 
 const listAlertMediaBindingsByMedia = `-- name: ListAlertMediaBindingsByMedia :many
-SELECT b.user_id, u.username, b.recipients
+SELECT b.user_id, u.username, b.recipients, u.timezone
 FROM monitor_user_alert_media_binding b JOIN sys_user u ON u.id = b.user_id
 WHERE b.media_id = $1 AND b.enabled = TRUE
 ORDER BY b.id
@@ -2976,6 +2985,7 @@ type ListAlertMediaBindingsByMediaRow struct {
 	UserID     int32           `json:"user_id"`
 	Username   string          `json:"username"`
 	Recipients json.RawMessage `json:"recipients"`
+	Timezone   string          `json:"timezone"`
 }
 
 // 出口媒介的收件人绑定：不限组 / 仅限指定用户组成员两种（组限制为可变长 IN）。
@@ -2988,7 +2998,12 @@ func (q *Queries) ListAlertMediaBindingsByMedia(ctx context.Context, mediaID int
 	items := []ListAlertMediaBindingsByMediaRow{}
 	for rows.Next() {
 		var i ListAlertMediaBindingsByMediaRow
-		if err := rows.Scan(&i.UserID, &i.Username, &i.Recipients); err != nil {
+		if err := rows.Scan(
+			&i.UserID,
+			&i.Username,
+			&i.Recipients,
+			&i.Timezone,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -3003,7 +3018,7 @@ func (q *Queries) ListAlertMediaBindingsByMedia(ctx context.Context, mediaID int
 }
 
 const listAlertMediaBindingsByMediaInUserGroups = `-- name: ListAlertMediaBindingsByMediaInUserGroups :many
-SELECT b.user_id, u.username, b.recipients
+SELECT b.user_id, u.username, b.recipients, u.timezone
 FROM monitor_user_alert_media_binding b JOIN sys_user u ON u.id = b.user_id
 WHERE b.media_id = $1 AND b.enabled = TRUE
   AND b.user_id IN (SELECT user_id FROM sys_user_group_member WHERE group_id = ANY($2::bigint[]))
@@ -3019,6 +3034,7 @@ type ListAlertMediaBindingsByMediaInUserGroupsRow struct {
 	UserID     int32           `json:"user_id"`
 	Username   string          `json:"username"`
 	Recipients json.RawMessage `json:"recipients"`
+	Timezone   string          `json:"timezone"`
 }
 
 func (q *Queries) ListAlertMediaBindingsByMediaInUserGroups(ctx context.Context, arg ListAlertMediaBindingsByMediaInUserGroupsParams) ([]ListAlertMediaBindingsByMediaInUserGroupsRow, error) {
@@ -3030,7 +3046,12 @@ func (q *Queries) ListAlertMediaBindingsByMediaInUserGroups(ctx context.Context,
 	items := []ListAlertMediaBindingsByMediaInUserGroupsRow{}
 	for rows.Next() {
 		var i ListAlertMediaBindingsByMediaInUserGroupsRow
-		if err := rows.Scan(&i.UserID, &i.Username, &i.Recipients); err != nil {
+		if err := rows.Scan(
+			&i.UserID,
+			&i.Username,
+			&i.Recipients,
+			&i.Timezone,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

@@ -565,6 +565,8 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	monitorRoutes.GET("/alert-notification/chain/:historyId/", monitorHandler.AlertChainEvaluation)
 	monitorRoutes.GET("/media/", monitorHandler.ListAlertMedia)
 	monitorRoutes.POST("/media/", middleware.RequirePermission("monitor:create"), monitorHandler.CreateAlertMedia)
+	// Pure sample rendering: no persisted media lookup, SMTP, or mutation.
+	monitorRoutes.POST("/media/template-preview/", monitorHandler.PreviewAlertMediaTemplate)
 	monitorRoutes.GET("/media/:id/", monitorHandler.GetAlertMedia)
 	monitorRoutes.PATCH("/media/:id/", middleware.RequirePermission("monitor:update"), monitorHandler.UpdateAlertMedia)
 	monitorRoutes.PUT("/media/:id/", middleware.RequirePermission("monitor:update"), monitorHandler.UpdateAlertMedia)

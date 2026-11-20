@@ -327,7 +327,6 @@ func (handler *Handler) policiesEffectiveForMedia(ctx context.Context, root *pol
 
 // policyMatcherSummary 保留沿路径累积的 AND 约束；名称由后端解析，不依赖用户的资产列表权限。
 func (handler *Handler) policyMatcherSummary(ctx context.Context, path []*policyNode, treeDescriptions map[string]string) (string, error) {
-	queries := db.New(handler.db)
 	operatorNames := map[string]string{"=": "等于", "!=": "不等于", "=~": "匹配正则", "!~": "不匹配正则"}
 	parts := make([]string, 0)
 	for _, node := range path {
@@ -340,40 +339,9 @@ func (handler *Handler) policyMatcherSummary(ctx context.Context, path []*policy
 				}
 				parts = append(parts, fmt.Sprintf("标签「%s」%s「%s」", matcher.Label, operator, matcher.Value))
 			case "tree":
-				key := fmt.Sprintf("%s:%d", matcher.NodeType, matcher.ID)
-				description, exists := treeDescriptions[key]
-				if !exists {
-					var name, typeName string
-					var err error
-					switch matcher.NodeType {
-					case "project":
-						typeName = "项目"
-						name, err = queries.GetProjectNameByID(ctx, matcher.ID)
-					case "business":
-						typeName = "业务系统"
-						var system db.GetBusinessSystemRow
-						system, err = queries.GetBusinessSystem(ctx, matcher.ID)
-						name = system.Name
-					case "environment":
-						typeName = "环境"
-						name, err = queries.GetBusinessEnvironmentNameByID(ctx, matcher.ID)
-					case "service":
-						typeName = "服务"
-						name, err = queries.GetApplicationServiceName(ctx, matcher.ID)
-					default:
-						return "", fmt.Errorf("通知策略包含不支持的服务树节点类型 %q", matcher.NodeType)
-					}
-					switch {
-					case err == sql.ErrNoRows:
-						description = fmt.Sprintf("%s不存在（原编号：%d）", typeName, matcher.ID)
-					case err != nil:
-						return "", err
-					case strings.TrimSpace(name) == "":
-						description = fmt.Sprintf("%s名称为空（编号：%d）", typeName, matcher.ID)
-					default:
-						description = fmt.Sprintf("%s「%s」", typeName, name)
-					}
-					treeDescriptions[key] = description
+				description, err := handler.policyTreeDescription(ctx, matcher, treeDescriptions)
+				if err != nil {
+					return "", err
 				}
 				parts = append(parts, description)
 			default:
@@ -385,6 +353,47 @@ func (handler *Handler) policyMatcherSummary(ctx context.Context, path []*policy
 		return "不限", nil
 	}
 	return strings.Join(parts, " 且 "), nil
+}
+
+func (handler *Handler) policyTreeDescription(ctx context.Context, matcher policyMatcher, descriptions map[string]string) (string, error) {
+	key := fmt.Sprintf("%s:%d", matcher.NodeType, matcher.ID)
+	if description, ok := descriptions[key]; ok {
+		return description, nil
+	}
+	queries := db.New(handler.db)
+	var name, typeName string
+	var err error
+	switch matcher.NodeType {
+	case "project":
+		typeName = "项目"
+		name, err = queries.GetProjectNameByID(ctx, matcher.ID)
+	case "business":
+		typeName = "业务系统"
+		var system db.GetBusinessSystemRow
+		system, err = queries.GetBusinessSystem(ctx, matcher.ID)
+		name = system.Name
+	case "environment":
+		typeName = "环境"
+		name, err = queries.GetBusinessEnvironmentNameByID(ctx, matcher.ID)
+	case "service":
+		typeName = "服务"
+		name, err = queries.GetApplicationServiceName(ctx, matcher.ID)
+	default:
+		return "", fmt.Errorf("通知策略包含不支持的服务树节点类型 %q", matcher.NodeType)
+	}
+	var description string
+	switch {
+	case err == sql.ErrNoRows:
+		description = fmt.Sprintf("%s不存在（原编号：%d）", typeName, matcher.ID)
+	case err != nil:
+		return "", err
+	case strings.TrimSpace(name) == "":
+		description = fmt.Sprintf("%s名称为空（编号：%d）", typeName, matcher.ID)
+	default:
+		description = fmt.Sprintf("%s「%s」", typeName, name)
+	}
+	descriptions[key] = description
+	return description, nil
 }
 
 // userInGroups 判断用户是否属于任一组；空组列表返回 false，查询失败不能冒充非成员。
@@ -466,12 +475,22 @@ func (handler *Handler) AlertChainEvaluation(context *gin.Context) {
 	levels := make([][]alertChainPolicyEval, 0)
 	path := []*policyNode{root}
 	summaryIssues := make([]string, 0)
+	treeDescriptions := make(map[string]string)
 	current := root
 	for {
 		level := make([]alertChainPolicyEval, 0, len(current.Children))
 		next := (*policyNode)(nil)
 		for _, child := range current.Children {
-			matched, missReason := policyNodeMatches(child, mergedString, scopeNodes)
+			miss, missReason := firstPolicyMiss(child, mergedString, scopeNodes)
+			matched := miss == nil
+			if miss != nil && miss.Type == "tree" {
+				description, err := handler.policyTreeDescription(context.Request.Context(), *miss, treeDescriptions)
+				if err != nil {
+					response.Error(context, err)
+					return
+				}
+				missReason = fmt.Sprintf("告警归属服务树未匹配：%s", description)
+			}
 			eval := alertChainPolicyEval{
 				ID: child.ID, Name: child.Name,
 				Matchers: mustMarshalMatchers(child.Matchers),

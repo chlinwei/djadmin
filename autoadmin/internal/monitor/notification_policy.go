@@ -217,13 +217,14 @@ func policyMatcherMatch(matcher policyMatcher, labels map[string]string, scopeNo
 }
 
 // policyNodeMatches 节点内全部 matcher AND。
-func policyNodeMatches(node *policyNode, labels map[string]string, scopeNodes map[string]bool) (bool, string) {
-	for _, matcher := range node.Matchers {
-		if matched, missReason := policyMatcherMatch(matcher, labels, scopeNodes); !matched {
-			return false, missReason
+func firstPolicyMiss(node *policyNode, labels map[string]string, scopeNodes map[string]bool) (*policyMatcher, string) {
+	for i := range node.Matchers {
+		matcher := &node.Matchers[i]
+		if matched, missReason := policyMatcherMatch(*matcher, labels, scopeNodes); !matched {
+			return matcher, missReason
 		}
 	}
-	return true, ""
+	return nil, ""
 }
 
 // resolvePolicyRoute 从根向下逐层取第一条命中的子策略，返回根到最深命中节点的路径（至少含根）。
@@ -233,7 +234,7 @@ func resolvePolicyRoute(root *policyNode, labels map[string]string, scopeNodes m
 	for {
 		next := (*policyNode)(nil)
 		for _, child := range current.Children {
-			if matched, _ := policyNodeMatches(child, labels, scopeNodes); matched {
+			if miss, _ := firstPolicyMiss(child, labels, scopeNodes); miss == nil {
 				next = child
 				break
 			}

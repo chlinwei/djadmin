@@ -633,7 +633,8 @@ VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(event_type),sq
 -- event_type 决定路由匹配开关，status 决定是否跳过已成功的事件，labels 用于 matchers 匹配。
 -- name: GetAlertNotificationEventDispatch :one
 SELECT e.event_type, e.attempt_count, e.status,
-       a.id, a.alertname, a.severity, a.instance, a.state, a.labels
+       a.id, a.alertname, a.severity, a.instance, a.state, a.labels,
+       a.annotations, a.started_at, a.resolved_at, a.generator_url
 FROM monitor_alert_notification_event e
 JOIN monitor_alert_history a ON a.id = e.alert_id
 WHERE e.id = sqlc.arg(id);
@@ -660,13 +661,13 @@ WHERE id=sqlc.arg(id);
 
 -- 出口媒介的收件人绑定：不限组 / 仅限指定用户组成员两种（组限制为可变长 IN）。
 -- name: ListAlertMediaBindingsByMedia :many
-SELECT b.user_id, u.username, b.recipients
+SELECT b.user_id, u.username, b.recipients, u.timezone
 FROM monitor_user_alert_media_binding b JOIN sys_user u ON u.id = b.user_id
 WHERE b.media_id = sqlc.arg(media_id) AND b.enabled = TRUE
 ORDER BY b.id;
 
 -- name: ListAlertMediaBindingsByMediaInUserGroups :many
-SELECT b.user_id, u.username, b.recipients
+SELECT b.user_id, u.username, b.recipients, u.timezone
 FROM monitor_user_alert_media_binding b JOIN sys_user u ON u.id = b.user_id
 WHERE b.media_id = sqlc.arg(media_id) AND b.enabled = TRUE
   AND b.user_id IN (SELECT user_id FROM sys_user_group_member WHERE group_id IN (sqlc.slice(group_ids)))

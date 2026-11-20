@@ -5,6 +5,9 @@
 -- name: GetUserByID :one
 SELECT * FROM sys_user WHERE id = $1 LIMIT 1;
 
+-- name: GetUserTimezone :one
+SELECT timezone FROM sys_user WHERE id = $1 LIMIT 1;
+
 -- name: GetUserByUsername :one
 SELECT * FROM sys_user WHERE username = $1 LIMIT 1;
 

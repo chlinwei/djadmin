@@ -34,6 +34,8 @@ func TestInventoryScopeQueriesUseReadPermission(t *testing.T) {
 				if permission == "automation:inventory:view" {
 					wantCode = 200
 					if path == "/sys/automation/playbooks/host-options/" {
+						mock.ExpectQuery("FROM sys_config").WithArgs("sys.automation.host_options.max_page_size").
+							WillReturnRows(sqlmock.NewRows([]string{"id"}))
 						mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM assets_host h").
 							WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 						mock.ExpectQuery("SELECT h.id, h.instance_name, s.hostname, h.ip, h.group_id").

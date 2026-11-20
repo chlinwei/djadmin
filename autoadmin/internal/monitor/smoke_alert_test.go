@@ -104,6 +104,32 @@ func TestSmokeAlertConfigQueriesAgainstRealDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("建告警历史：%v", err)
 	}
+	checkNotificationFilter := func(want string) {
+		t.Helper()
+		id := sql.NullInt64{Int64: alertID, Valid: true}
+		for _, filter := range []string{"", "none", "in_progress", "success", "failed"} {
+			wantCount := int64(0)
+			if filter == "" || filter == want {
+				wantCount = 1
+			}
+			count, err := queries.CountAlertHistories(ctx, db.CountAlertHistoriesParams{
+				ID: id, LabelKey: "alertname", NotificationStatus: filter, SkipNotificationStatus: filter == "",
+			})
+			if err != nil || count != wantCount {
+				t.Fatalf("status %q, filter %q: count = %d, want %d, err=%v", want, filter, count, wantCount, err)
+			}
+			rows, err := queries.ListAlertHistories(ctx, db.ListAlertHistoriesParams{
+				ID: id, LabelKey: "alertname", NotificationStatus: filter, SkipNotificationStatus: filter == "", Limit: 1,
+			})
+			if err != nil || int64(len(rows)) != wantCount {
+				t.Fatalf("status %q, filter %q: got %d rows, want %d, err=%v", want, filter, len(rows), wantCount, err)
+			}
+			if len(rows) == 1 && alertHistoryResponseFrom(rows[0]).NotificationStatus != want {
+				t.Fatalf("filter %q matched an unexpected notification status, want %q", filter, want)
+			}
+		}
+	}
+	checkNotificationFilter("none")
 	open, err := queries.GetOpenFiringAlertForUpdate(ctx, fingerprint)
 	if err != nil || open.ID != alertID {
 		t.Fatalf("加锁读未恢复告警：%+v err=%v", open, err)
@@ -201,6 +227,7 @@ func TestSmokeAlertConfigQueriesAgainstRealDatabase(t *testing.T) {
 	if err != nil || dispatch.Alertname != "SmokeAlert" || dispatch.Status != "pending" {
 		t.Fatalf("派发上下文：%+v err=%v", dispatch, err)
 	}
+	checkNotificationFilter("in_progress")
 	if err = queries.MarkAlertNotificationEventSending(ctx, db.MarkAlertNotificationEventSendingParams{
 		UpdateTime: time.Now().UTC(), ID: eventID,
 	}); err != nil {
@@ -216,6 +243,7 @@ func TestSmokeAlertConfigQueriesAgainstRealDatabase(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("事件置 success：%v", err)
 	}
+	checkNotificationFilter("failed") // A finished event without delivery details is not a success.
 	if err = queries.MarkAlertNotificationEventFailed(ctx, db.MarkAlertNotificationEventFailedParams{
 		ErrorMessage: "失败", UpdateTime: time.Now().UTC(), ID: eventID,
 	}); err != nil {
@@ -278,6 +306,13 @@ func TestSmokeAlertConfigQueriesAgainstRealDatabase(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("投递置 success：%v", err)
 	}
+	checkNotificationFilter("failed")
+	if err = queries.MarkAlertNotificationEventSuccess(ctx, db.MarkAlertNotificationEventSuccessParams{
+		SentAt: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: eventID,
+	}); err != nil {
+		t.Fatalf("事件置 success：%v", err)
+	}
+	checkNotificationFilter("success")
 	if _, err := queries.ListAlertNotificationDeliveriesForChain(ctx, eventID); err != nil {
 		t.Fatalf("链诊断投递记录：%v", err)
 	}

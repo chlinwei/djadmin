@@ -119,14 +119,16 @@ func (q *Queries) CountInspectionTasks(ctx context.Context, arg CountInspectionT
 // PG 侧 sqlc 推导成 string 与 sql.NullString，这里做一次显式转换。
 
 type CountAlertHistoriesParams struct {
-	ID         sql.NullInt64  `json:"id"`
-	State      sql.NullString `json:"state"`
-	Severity   sql.NullString `json:"severity"`
-	Keyword    sql.NullString `json:"keyword"`
-	StartTime  sql.NullTime   `json:"start_time"`
-	EndTime    sql.NullTime   `json:"end_time"`
-	LabelKey   interface{}    `json:"label_key"`
-	LabelValue interface{}    `json:"label_value"`
+	ID                     sql.NullInt64  `json:"id"`
+	State                  sql.NullString `json:"state"`
+	Severity               sql.NullString `json:"severity"`
+	Keyword                sql.NullString `json:"keyword"`
+	StartTime              sql.NullTime   `json:"start_time"`
+	EndTime                sql.NullTime   `json:"end_time"`
+	LabelKey               interface{}    `json:"label_key"`
+	LabelValue             interface{}    `json:"label_value"`
+	NotificationStatus     string         `json:"notification_status"`
+	SkipNotificationStatus bool           `json:"skip_notification_status"`
 }
 
 func (q *Queries) CountAlertHistories(ctx context.Context, arg CountAlertHistoriesParams) (int64, error) {
@@ -134,20 +136,24 @@ func (q *Queries) CountAlertHistories(ctx context.Context, arg CountAlertHistori
 		ID: arg.ID, State: arg.State, Severity: arg.Severity, Keyword: arg.Keyword,
 		StartTime: arg.StartTime, EndTime: arg.EndTime,
 		LabelKey: labelKeyArg(arg.LabelKey), LabelValue: nullStringArg(arg.LabelValue),
+		NotificationStatus:     arg.NotificationStatus,
+		SkipNotificationStatus: arg.SkipNotificationStatus,
 	})
 }
 
 type ListAlertHistoriesParams struct {
-	ID         sql.NullInt64  `json:"id"`
-	State      sql.NullString `json:"state"`
-	Severity   sql.NullString `json:"severity"`
-	Keyword    sql.NullString `json:"keyword"`
-	StartTime  sql.NullTime   `json:"start_time"`
-	EndTime    sql.NullTime   `json:"end_time"`
-	LabelKey   interface{}    `json:"label_key"`
-	LabelValue interface{}    `json:"label_value"`
-	Limit      int32          `json:"limit"`
-	Offset     int32          `json:"offset"`
+	ID                     sql.NullInt64  `json:"id"`
+	State                  sql.NullString `json:"state"`
+	Severity               sql.NullString `json:"severity"`
+	Keyword                sql.NullString `json:"keyword"`
+	StartTime              sql.NullTime   `json:"start_time"`
+	EndTime                sql.NullTime   `json:"end_time"`
+	LabelKey               interface{}    `json:"label_key"`
+	LabelValue             interface{}    `json:"label_value"`
+	NotificationStatus     string         `json:"notification_status"`
+	SkipNotificationStatus bool           `json:"skip_notification_status"`
+	Limit                  int32          `json:"limit"`
+	Offset                 int32          `json:"offset"`
 }
 
 func (q *Queries) ListAlertHistories(ctx context.Context, arg ListAlertHistoriesParams) ([]ListAlertHistoriesRow, error) {
@@ -155,7 +161,9 @@ func (q *Queries) ListAlertHistories(ctx context.Context, arg ListAlertHistories
 		ID: arg.ID, State: arg.State, Severity: arg.Severity, Keyword: arg.Keyword,
 		StartTime: arg.StartTime, EndTime: arg.EndTime,
 		LabelKey: labelKeyArg(arg.LabelKey), LabelValue: nullStringArg(arg.LabelValue),
-		Limit: arg.Limit, Offset: arg.Offset,
+		NotificationStatus:     arg.NotificationStatus,
+		SkipNotificationStatus: arg.SkipNotificationStatus,
+		Limit:                  arg.Limit, Offset: arg.Offset,
 	})
 }
 

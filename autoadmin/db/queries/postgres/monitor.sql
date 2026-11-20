@@ -248,6 +248,7 @@ ORDER BY ih.id DESC
 LIMIT $1 OFFSET $2;
 
 -- name: CountAlertHistories :one
+-- Keep the notification predicate in sync with ListAlertHistories and notificationStatusFrom.
 SELECT COUNT(*) FROM monitor_alert_history ah
 WHERE (ah.id = sqlc.narg(id) OR sqlc.narg(id) IS NULL)
   AND (ah.state = sqlc.narg(state) OR sqlc.narg(state) IS NULL)
@@ -255,7 +256,14 @@ WHERE (ah.id = sqlc.narg(id) OR sqlc.narg(id) IS NULL)
   AND (ah.alertname LIKE sqlc.narg(keyword) OR ah.instance LIKE sqlc.narg(keyword) OR sqlc.narg(keyword) IS NULL)
   AND (ah.started_at >= sqlc.narg(start_time) OR sqlc.narg(start_time) IS NULL)
   AND (ah.started_at <= sqlc.narg(end_time) OR sqlc.narg(end_time) IS NULL)
-  AND (ah.labels->>CAST(sqlc.arg(label_key) AS text) = CAST(sqlc.narg(label_value) AS text) OR sqlc.narg(label_value) IS NULL);
+  AND (ah.labels->>CAST(sqlc.arg(label_key) AS text) = CAST(sqlc.narg(label_value) AS text) OR sqlc.narg(label_value) IS NULL)
+  AND (sqlc.arg(skip_notification_status) = TRUE OR CAST(sqlc.arg(notification_status) AS text) = CASE
+    WHEN NOT EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id) THEN 'none'
+    WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status = 'failed') THEN 'failed'
+    WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('pending','sending')) THEN 'in_progress'
+    WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id = ah.id) THEN 'success'
+    ELSE 'failed'
+  END);
 
 -- name: ListAlertHistories :many
 SELECT ah.id, ah.create_time, ah.update_time, ah.remark, ah.fingerprint, ah.alertname, ah.severity, ah.instance,
@@ -273,6 +281,13 @@ WHERE (ah.id = sqlc.narg(id) OR sqlc.narg(id) IS NULL)
   AND (ah.started_at >= sqlc.narg(start_time) OR sqlc.narg(start_time) IS NULL)
   AND (ah.started_at <= sqlc.narg(end_time) OR sqlc.narg(end_time) IS NULL)
   AND (ah.labels->>CAST(sqlc.arg(label_key) AS text) = CAST(sqlc.narg(label_value) AS text) OR sqlc.narg(label_value) IS NULL)
+  AND (sqlc.arg(skip_notification_status) = TRUE OR CAST(sqlc.arg(notification_status) AS text) = CASE
+    WHEN NOT EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id) THEN 'none'
+    WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status = 'failed') THEN 'failed'
+    WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('pending','sending')) THEN 'in_progress'
+    WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id = ah.id) THEN 'success'
+    ELSE 'failed'
+  END)
 ORDER BY ah.started_at DESC, ah.id DESC
 LIMIT $1 OFFSET $2;
 

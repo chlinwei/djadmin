@@ -49,6 +49,8 @@ HTML 邮件会转义正文并保留换行，告警值和模板内容不执行为
 
 前端历史告警列表 `rule_details.query` 即规则快照中的 PromQL；`monitor_alert_history.rule_snapshot` 为 JSON 列。
 
+`GET /monitor/alert-histories/` 支持 `notification_status=none|in_progress|success|failed`；不传或传 `all` 时不筛选。通知状态筛选与告警自身的触发/恢复状态独立，在数据库分页前和其他条件一起应用，列表和总数使用同一口径：无通知事件为「无通知」；任一事件失败为「存在失败」；否则有待发或发送中的事件为「发送中」；已结束但没有投递明细也算失败，其余为「全部成功」。
+
 **「问题」列两处同源**（2026-09-20 修）：列表里的"问题"文案取告警自身的 annotation ——
 `summary`，没写就退回 `description`（`alertSummaryText`，`internal/monitor/handler.go`）。
 - 当前告警：Prometheus `/api/v1/alerts` 的 `annotations` 是平铺 map，handler 现场算；

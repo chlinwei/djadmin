@@ -152,19 +152,29 @@ WHERE (ah.id = ? OR ? IS NULL)
   AND (ah.started_at >= ? OR ? IS NULL)
   AND (ah.started_at <= ? OR ? IS NULL)
   AND (JSON_UNQUOTE(JSON_EXTRACT(ah.labels, CONCAT('$.', ?))) = CAST(? AS CHAR) OR ? IS NULL)
+  AND (? = TRUE OR CAST(? AS CHAR) = CASE
+    WHEN NOT EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id) THEN 'none'
+    WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status = 'failed') THEN 'failed'
+    WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('pending','sending')) THEN 'in_progress'
+    WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id = ah.id) THEN 'success'
+    ELSE 'failed'
+  END)
 `
 
 type CountAlertHistoriesParams struct {
-	ID         sql.NullInt64  `json:"id"`
-	State      sql.NullString `json:"state"`
-	Severity   sql.NullString `json:"severity"`
-	Keyword    sql.NullString `json:"keyword"`
-	StartTime  sql.NullTime   `json:"start_time"`
-	EndTime    sql.NullTime   `json:"end_time"`
-	LabelKey   interface{}    `json:"label_key"`
-	LabelValue interface{}    `json:"label_value"`
+	ID                     sql.NullInt64  `json:"id"`
+	State                  sql.NullString `json:"state"`
+	Severity               sql.NullString `json:"severity"`
+	Keyword                sql.NullString `json:"keyword"`
+	StartTime              sql.NullTime   `json:"start_time"`
+	EndTime                sql.NullTime   `json:"end_time"`
+	LabelKey               interface{}    `json:"label_key"`
+	LabelValue             interface{}    `json:"label_value"`
+	SkipNotificationStatus interface{}    `json:"skip_notification_status"`
+	NotificationStatus     interface{}    `json:"notification_status"`
 }
 
+// Keep the notification predicate in sync with ListAlertHistories and notificationStatusFrom.
 func (q *Queries) CountAlertHistories(ctx context.Context, arg CountAlertHistoriesParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countAlertHistories,
 		arg.ID,
@@ -183,6 +193,8 @@ func (q *Queries) CountAlertHistories(ctx context.Context, arg CountAlertHistori
 		arg.LabelKey,
 		arg.LabelValue,
 		arg.LabelValue,
+		arg.SkipNotificationStatus,
+		arg.NotificationStatus,
 	)
 	var count int64
 	err := row.Scan(&count)
@@ -2904,21 +2916,30 @@ WHERE (ah.id = ? OR ? IS NULL)
   AND (ah.started_at >= ? OR ? IS NULL)
   AND (ah.started_at <= ? OR ? IS NULL)
   AND (JSON_UNQUOTE(JSON_EXTRACT(ah.labels, CONCAT('$.', ?))) = CAST(? AS CHAR) OR ? IS NULL)
+  AND (? = TRUE OR CAST(? AS CHAR) = CASE
+    WHEN NOT EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id) THEN 'none'
+    WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status = 'failed') THEN 'failed'
+    WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('pending','sending')) THEN 'in_progress'
+    WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id = ah.id) THEN 'success'
+    ELSE 'failed'
+  END)
 ORDER BY ah.started_at DESC, ah.id DESC
 LIMIT ? OFFSET ?
 `
 
 type ListAlertHistoriesParams struct {
-	ID         sql.NullInt64  `json:"id"`
-	State      sql.NullString `json:"state"`
-	Severity   sql.NullString `json:"severity"`
-	Keyword    sql.NullString `json:"keyword"`
-	StartTime  sql.NullTime   `json:"start_time"`
-	EndTime    sql.NullTime   `json:"end_time"`
-	LabelKey   interface{}    `json:"label_key"`
-	LabelValue interface{}    `json:"label_value"`
-	Limit      int32          `json:"limit"`
-	Offset     int32          `json:"offset"`
+	ID                     sql.NullInt64  `json:"id"`
+	State                  sql.NullString `json:"state"`
+	Severity               sql.NullString `json:"severity"`
+	Keyword                sql.NullString `json:"keyword"`
+	StartTime              sql.NullTime   `json:"start_time"`
+	EndTime                sql.NullTime   `json:"end_time"`
+	LabelKey               interface{}    `json:"label_key"`
+	LabelValue             interface{}    `json:"label_value"`
+	SkipNotificationStatus interface{}    `json:"skip_notification_status"`
+	NotificationStatus     interface{}    `json:"notification_status"`
+	Limit                  int32          `json:"limit"`
+	Offset                 int32          `json:"offset"`
 }
 
 type ListAlertHistoriesRow struct {
@@ -2965,6 +2986,8 @@ func (q *Queries) ListAlertHistories(ctx context.Context, arg ListAlertHistories
 		arg.LabelKey,
 		arg.LabelValue,
 		arg.LabelValue,
+		arg.SkipNotificationStatus,
+		arg.NotificationStatus,
 		arg.Limit,
 		arg.Offset,
 	)

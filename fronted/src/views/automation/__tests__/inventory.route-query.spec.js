@@ -58,19 +58,19 @@ const componentStubs = {
   FontAwesomeIcon: true,
 }
 
+function hostOptionsPage(results, { count = results.length, page = 1, pageSize = 1000 } = {}) {
+  return {
+    data: { code: 200, data: {
+      count, pageNumber: page, pageSize, totalPages: Math.ceil(count / pageSize), next: null, results,
+    } },
+  }
+}
+
 function mockCommonApiResponses() {
   getAutomationGroupTree.mockResolvedValue({
     data: { data: [] },
   })
-  getAutomationHostOptions.mockResolvedValue({
-    data: {
-      data: {
-        count: 0,
-        next: null,
-        results: [],
-      },
-    },
-  })
+  getAutomationHostOptions.mockResolvedValue(hostOptionsPage([]))
   getInventoryList.mockResolvedValue({
     data: {
       data: {
@@ -119,11 +119,9 @@ describe('inventory route query auto search', () => {
     getAutomationGroupTree.mockResolvedValue({
       data: { data: [{ id: 1, name: 'production', children: [] }] },
     })
-    getAutomationHostOptions.mockResolvedValue({
-      data: { data: { count: 1, next: null, results: [
-        { id: 201, instance_name: 'prod-01', ip: '10.0.0.1', group_id: 1 },
-      ] } },
-    })
+    getAutomationHostOptions.mockResolvedValue(hostOptionsPage([
+      { id: 201, instance_name: 'prod-01', ip: '10.0.0.1', group_id: 1 },
+    ]))
     const wrapper = mount(InventoryPage, {
       attachTo: document.body,
       global: { plugins: [Antd], directives: { permission }, stubs: { FontAwesomeIcon: true } },
@@ -273,12 +271,10 @@ describe('inventory route query auto search', () => {
     getAutomationGroupTree.mockResolvedValue({
       data: { data: [{ id: 1, name: 'production', children: [] }, { id: 2, name: 'testing', children: [] }] },
     })
-    getAutomationHostOptions.mockResolvedValue({
-      data: { data: { count: 2, next: null, results: [
-        { id: 201, instance_name: 'prod-01', ip: '10.0.0.1', group_id: 1 },
-        { id: 202, instance_name: 'test-01', ip: '10.0.0.2', group_id: 2 },
-      ] } },
-    })
+    getAutomationHostOptions.mockResolvedValue(hostOptionsPage([
+      { id: 201, instance_name: 'prod-01', ip: '10.0.0.1', group_id: 1 },
+      { id: 202, instance_name: 'test-01', ip: '10.0.0.2', group_id: 2 },
+    ]))
     const wrapper = mountPage()
     try {
       await flushPromises()
@@ -293,18 +289,63 @@ describe('inventory route query auto search', () => {
     }
   })
 
+  it('loads all host pages at the effective page size before selecting an entire group', async () => {
+    getAutomationGroupTree.mockResolvedValue({
+      data: { data: [{ id: 1, name: 'wuhan' }, { id: 2, name: 'other' }] },
+    })
+    const hosts = Array.from({ length: 32 }, (_, index) => ({
+      id: index + 1, ip: `10.0.0.${index + 1}`, group_id: index === 29 ? 2 : 1,
+    }))
+    getAutomationHostOptions
+      .mockResolvedValueOnce(hostOptionsPage(hosts.slice(0, 30), { count: 32, pageSize: 30 }))
+      .mockResolvedValueOnce(hostOptionsPage(hosts.slice(30), { count: 32, pageSize: 30, page: 2 }))
+    const wrapper = mountPage()
+    try {
+      await flushPromises()
+      expect(getAutomationHostOptions.mock.calls).toEqual([
+        [{ page: 1, page_size: 1000 }], [{ page: 2, page_size: 30 }],
+      ])
+      const wuhan = wrapper.vm.scopeEditTreeData.find(({ key }) => key === 'group-1')
+      expect(wuhan.children).toHaveLength(31)
+      wrapper.vm.onScopeCheck([wuhan.key, ...wuhan.children.map(({ key }) => key)])
+      expect(wrapper.vm.form.selected_host_ids).toEqual(hosts.filter(({ group_id }) => group_id === 1).map(({ id }) => id))
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('does not allow saving a scope when a later page is incomplete', async () => {
+    getAutomationHostOptions
+      .mockResolvedValueOnce(hostOptionsPage([{ id: 1, ip: '10.0.0.1', group_id: 1 }], { count: 2, pageSize: 1 }))
+      .mockResolvedValueOnce(hostOptionsPage([], { count: 2, pageSize: 1, page: 2 }))
+    const error = vi.spyOn(message, 'error').mockImplementation(() => {})
+    const warning = vi.spyOn(message, 'warning').mockImplementation(() => {})
+    const wrapper = mountPage()
+    try {
+      await flushPromises()
+      wrapper.vm.openEditModal({ id: 1, name: 'wuhan', selected_host_ids: [1] })
+      wrapper.vm.openScopeModal()
+      await wrapper.vm.submitForm()
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('主机范围加载失败'))
+      expect(wrapper.vm.scopeModalVisible).toBe(false)
+      expect(updateInventory).not.toHaveBeenCalled()
+    } finally {
+      error.mockRestore()
+      warning.mockRestore()
+      wrapper.unmount()
+    }
+  })
+
   it('uses string instance names in both scope trees, search and host navigation', async () => {
     getAutomationGroupTree.mockResolvedValue({
       data: { data: [{ id: 1, name: 'wuhan', children: [] }] },
     })
-    getAutomationHostOptions.mockResolvedValue({
-      data: { data: { count: 4, next: null, results: [
-        { id: 201, instance_name: 'hak-app-201', hostname: 'os-host-201', ip: '10.25.66.201', group_id: 1 },
-        { id: 202, instance_name: null, hostname: null, ip: '10.25.66.202', group_id: 1 },
-        { id: 203, instance_name: '', hostname: '', ip: '10.25.66.203', group_id: 1 },
-        { id: 204, instance_name: 'not-selected', ip: '10.25.66.204', group_id: 1 },
-      ] } },
-    })
+    getAutomationHostOptions.mockResolvedValue(hostOptionsPage([
+      { id: 201, instance_name: 'hak-app-201', hostname: 'os-host-201', ip: '10.25.66.201', group_id: 1 },
+      { id: 202, instance_name: null, hostname: null, ip: '10.25.66.202', group_id: 1 },
+      { id: 203, instance_name: '', hostname: '', ip: '10.25.66.203', group_id: 1 },
+      { id: 204, instance_name: 'not-selected', ip: '10.25.66.204', group_id: 1 },
+    ]))
     const wrapper = mountPage()
     try {
       await flushPromises()

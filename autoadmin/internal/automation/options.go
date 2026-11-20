@@ -2,13 +2,22 @@ package automation
 
 import (
 	"database/sql"
+	"errors"
+	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 
 	"autoadmin/internal/api/response"
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/apperror"
 
 	"github.com/gin-gonic/gin"
+)
+
+const (
+	hostOptionsPageSizeKey        = "sys.automation.host_options.max_page_size"
+	defaultHostOptionsMaxPageSize = 1000
 )
 
 func (handler *Handler) HostOptions(context *gin.Context) {
@@ -20,8 +29,24 @@ func (handler *Handler) HostOptions(context *gin.Context) {
 	if size < 1 {
 		size = 10
 	}
-	if size > 30 {
-		size = 30
+	queries := db.New(handler.db)
+	maxSize := defaultHostOptionsMaxPageSize
+	setting, err := queries.GetConfigByKey(context, hostOptionsPageSizeKey)
+	if err == nil {
+		if value, parseErr := strconv.ParseInt(strings.TrimSpace(setting.Value), 10, 32); parseErr == nil && value > 0 {
+			maxSize = int(value)
+		} else {
+			slog.Warn("invalid host options page size limit; using default", "key", hostOptionsPageSizeKey, "default", maxSize)
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		response.Error(context, err)
+		return
+	}
+	size = min(size, maxSize)
+	// sqlc takes a signed 32-bit offset; reject pages that would wrap.
+	if page > math.MaxInt32 || page-1 > math.MaxInt32/size {
+		response.Error(context, apperror.ErrInvalidRequest)
+		return
 	}
 	// 搜索：空串传 NULL，查询里是 `... LIKE narg(pattern) OR narg(pattern) IS NULL` 的"不过滤"分支。
 	search := strings.TrimSpace(context.Query("search"))
@@ -29,7 +54,6 @@ func (handler *Handler) HostOptions(context *gin.Context) {
 	if search != "" {
 		pattern = sql.NullString{String: "%" + search + "%", Valid: true}
 	}
-	queries := db.New(handler.db)
 	count, err := queries.CountAutomationHostOptions(context, db.CountAutomationHostOptionsParams{Pattern: pattern})
 	if err != nil {
 		response.Error(context, err)

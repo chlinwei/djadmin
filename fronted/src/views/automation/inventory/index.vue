@@ -245,6 +245,7 @@ const groupTreeData = ref([])
 const groupNameMap = ref({})
 const groupPathMap = ref({})
 const hostOptions = ref([])
+const scopeLoadState = ref('loading')
 const checkedKeys = ref([])
 
 const pagination = reactive(createPagination())
@@ -593,10 +594,19 @@ function formatInventoryHostDisplayName(host) {
   return String(host.ip || '').trim() || `host-${host?.id || ''}`
 }
 
+function canUseScope() {
+  if (scopeLoadState.value === 'ready') return true
+  message.warning(scopeLoadState.value === 'loading'
+    ? '正在加载主机范围，请稍后再试'
+    : '主机范围加载失败，请刷新页面后重试')
+  return false
+}
+
 function openScopeViewer(record) {
+  const selectedHostIds = Array.isArray(record?.selected_host_ids) ? record.selected_host_ids : []
+  if (selectedHostIds.length > 0 && !canUseScope()) return
   scopeViewInventory.value = record
   scopeViewKeyword.value = ''
-  const selectedHostIds = Array.isArray(record?.selected_host_ids) ? record.selected_host_ids : []
 
   scopeViewTitle.value = `查看 Inventory 详情 - ${record?.name || ''}`
 
@@ -615,6 +625,7 @@ function openScopeViewer(record) {
 }
 
 function openScopeModal() {
+  if (!canUseScope()) return
   scopeEditKeyword.value = ''
   scopeModalVisible.value = true
 }
@@ -688,34 +699,36 @@ async function loadGroupTree() {
 }
 
 async function loadAllHostOptions() {
-  const pageSize = 500
-  let page = 1
-  let total = null
-  let next = null
+  let pageSize = 1000
+  let totalPages = 1
+  let total = 0
   const records = []
 
-  while (true) {
+  for (let page = 1; page <= totalPages; page++) {
     const res = await getAutomationHostOptions({ page, page_size: pageSize })
-    const data = res?.data?.data || {}
-    const pageRecords = Array.isArray(data.results) ? data.results : []
+    const data = res?.data?.data
+    if (res?.data?.code !== 200 || !Array.isArray(data?.results)
+      || data.pageNumber !== page || !Number.isSafeInteger(data.pageSize)
+      || data.pageSize < 1 || data.pageSize > pageSize
+      || !Number.isSafeInteger(data.count) || data.count < 0
+      || data.totalPages !== Math.ceil(data.count / data.pageSize)) {
+      throw new Error('主机分页响应无效')
+    }
 
-    if (typeof data.count === 'number') {
+    if (page === 1) {
+      // Use the effective page size so a raised limit cannot shift later offsets.
+      pageSize = data.pageSize
+      totalPages = data.totalPages
       total = data.count
     }
-    next = data.next || null
-    records.push(...pageRecords)
-
-    if (!next) {
-      break
+    if (data.pageSize !== pageSize || data.count !== total
+      || data.results.length !== Math.min(pageSize, total - records.length)) {
+      throw new Error('主机列表在分页期间发生变化')
     }
-    if (typeof total === 'number' && records.length >= total) {
-      break
-    }
-
-    page += 1
-    if (page > 100) {
-      break
-    }
+    records.push(...data.results)
+  }
+  if (new Set(records.map((host) => host.id)).size !== total) {
+    throw new Error('主机列表在分页期间发生变化')
   }
 
   hostOptions.value = records
@@ -774,6 +787,7 @@ function openEditModal(record) {
 }
 
 async function submitForm() {
+  if (!canUseScope()) return
   if (!form.name || !String(form.name).trim()) {
     message.error('请输入名称')
     return
@@ -860,7 +874,13 @@ function onTableChange(page) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadGroupTree(), loadAllHostOptions()])
+  try {
+    await Promise.all([loadGroupTree(), loadAllHostOptions()])
+    scopeLoadState.value = 'ready'
+  } catch (error) {
+    scopeLoadState.value = 'failed'
+    message.error(`主机范围加载失败：${error?.message || '请刷新页面后重试'}`)
+  }
   applyRouteSearchQuery()
   await loadInventories(true)
 })

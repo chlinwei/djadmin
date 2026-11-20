@@ -231,7 +231,7 @@ Inventory 预检沿用 `automation:inventory:view` 权限，任务预检沿用�
 
 ### API 语义
 
-- `GET /sys/automation/playbooks/host-options/`：返回统一分页主机选项；
+- `GET /sys/automation/playbooks/host-options/`：按 `page`、`page_size` 返回统一分页主机选项。未传 `page_size` 时取 10；每页上限从「参数设置」的 `sys.automation.host_options.max_page_size` 实时读取，默认 1000。配置缺失或非法时取默认值，数据库读取失败则返回错误。Inventory 按 `totalPages` 加载完整候选列表后才允许编辑范围和保存，不以 `next` 判断是否结束；分页失败不会把部分主机当成全集。
   `instance_name`、`hostname`、`ip` 为 JSON 字符串或 `null`，`group_id` 为数字或 `null`，
   不暴露 Go 数据库可空类型的 `String/Valid` 等内部字段，空字符串与 `null` 保持区别。
   Inventory 范围编辑与只读范围树共用该接口，主机标签显示实例名及 IP；

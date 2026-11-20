@@ -54,6 +54,7 @@ type Querier interface {
 	CompleteScheduledTask(ctx context.Context, arg CompleteScheduledTaskParams) error
 	CountAPITokensByApiID(ctx context.Context, apiID string) (int64, error)
 	CountActiveAgentInstallJobs(ctx context.Context, hostIds []int64) (int64, error)
+	// Keep the notification predicate in sync with ListAlertHistories and notificationStatusFrom.
 	CountAlertHistories(ctx context.Context, arg CountAlertHistoriesParams) (int64, error)
 	CountAlertMedia(ctx context.Context, arg CountAlertMediaParams) (int64, error)
 	CountAllElasticsearchClusters(ctx context.Context) (int64, error)

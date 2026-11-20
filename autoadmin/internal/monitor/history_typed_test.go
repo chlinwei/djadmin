@@ -1,10 +1,16 @@
 package monitor
 
 import (
+	"database/sql/driver"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	db "autoadmin/internal/platform/database/generated"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/gin-gonic/gin"
 )
 
 // 回归用例：resolved_by_reconciliation 是 monitor_alert_history 的 TINYINT(1) 列，
@@ -50,5 +56,40 @@ func TestNotificationStatusFromMatchesExpectedPriority(t *testing.T) {
 				t.Fatalf("notificationStatusFrom(%d,%d,%d,%d) = %q, want %q", testCase.count, testCase.failed, testCase.active, testCase.delivery, got, testCase.want)
 			}
 		})
+	}
+}
+
+func TestAlertHistoriesGETAppliesNotificationFilterToCountAndPage(t *testing.T) {
+	pool, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	args := append(make([]driver.Value, 13), "alertname", nil, nil, false, "failed")
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM monitor_alert_history`).
+		WithArgs(args...).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery(`SELECT ah.id.*FROM monitor_alert_history`).
+		WithArgs(append(args, 10, 10)...).WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	router := gin.New()
+	router.GET("/monitor/alert-histories/", (&Handler{db: pool}).ListAlertHistories)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet,
+		"/monitor/alert-histories/?notification_status=failed&page=2&page_size=10", nil))
+	var result struct {
+		Code int `json:"code"`
+		Data struct {
+			Count   int     `json:"count"`
+			Results []int64 `json:"results"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusOK || result.Code != 200 || result.Data.Count != 1 || len(result.Data.Results) != 0 {
+		t.Fatalf("unexpected filtered page: %s", recorder.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }

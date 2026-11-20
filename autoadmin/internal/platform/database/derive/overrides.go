@@ -22,6 +22,7 @@ var globalOverrides = []Override{
 	// `COALESCE(col,'') LIKE sqlc.narg(pattern)`：sqlc.arg 在列可空性不一致时无法合并同名参数，
 	// 会生成 Pattern/Pattern_2/… 多个参数，调用点漏设就变成 LIKE NULL（真库上复现过搜索失效）。
 	{Old: "CAST(sqlc.narg(label_value) AS CHAR)", New: "CAST(sqlc.narg(label_value) AS text)"},
+	{Old: "CAST(sqlc.arg(notification_status) AS CHAR)", New: "CAST(sqlc.arg(notification_status) AS text)"},
 	// SIGNED 是 MySQL 专有类型名，PG 用 bigint；两侧都落到 Go 的 int64。
 	// 覆盖所有 `CAST(... AS SIGNED)`：baseline 的 max_sort 取序号，assets 的部署列表
 	// 用标量子查询取 application_id（无匹配行时靠 COALESCE(...,0) 兜底，否则 NULL 扫不进 int64）。

@@ -9,6 +9,7 @@ import (
 
 	"autoadmin/internal/api/response"
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/apperror"
 	"autoadmin/internal/shared/binding"
 
 	"github.com/gin-gonic/gin"
@@ -208,7 +209,7 @@ type alertHistoryResponse struct {
 	NotificationStatus        string          `json:"notification_status"`
 }
 
-// notificationStatusFrom 判断口径与旧版 notificationStatus(map) 完全一致，只是参数从 gin.H 换成具名 int64。
+// notificationStatusFrom 的优先级与历史列表和计数查询的筛选保持一致。
 func notificationStatusFrom(count, failed, active, delivery int64) string {
 	if count == 0 {
 		return "none"
@@ -260,6 +261,17 @@ func (handler *Handler) alertHistories(context *gin.Context, id int64) {
 	if id > 0 {
 		idFilter = sql.NullInt64{Int64: id, Valid: true}
 	}
+	var notificationStatus string
+	if id == 0 {
+		switch status := strings.TrimSpace(context.Query("notification_status")); status {
+		case "", "all":
+		case "none", "in_progress", "success", "failed":
+			notificationStatus = status
+		default:
+			response.Error(context, apperror.New(apperror.CodeInvalidArgument, "无效的通知状态"))
+			return
+		}
+	}
 	state, severity := binding.OptionalStringParam(context, "state"), binding.OptionalStringParam(context, "severity")
 	keyword := optionalLikeParam(context, "keyword")
 	startTime, endTime := optionalTimeParam(context, "start_time"), optionalTimeParam(context, "end_time")
@@ -275,7 +287,8 @@ func (handler *Handler) alertHistories(context *gin.Context, id int64) {
 	queries := db.New(handler.db)
 	count, err := queries.CountAlertHistories(context, db.CountAlertHistoriesParams{
 		ID: idFilter, State: state, Severity: severity, Keyword: keyword, StartTime: startTime, EndTime: endTime,
-		LabelKey: labelKey, LabelValue: nullStringInterface(labelValue),
+		LabelKey: labelKey, LabelValue: nullStringInterface(labelValue), NotificationStatus: notificationStatus,
+		SkipNotificationStatus: notificationStatus == "",
 	})
 	if err != nil {
 		response.Error(context, err)
@@ -283,8 +296,9 @@ func (handler *Handler) alertHistories(context *gin.Context, id int64) {
 	}
 	rows, err := queries.ListAlertHistories(context, db.ListAlertHistoriesParams{
 		ID: idFilter, State: state, Severity: severity, Keyword: keyword, StartTime: startTime, EndTime: endTime,
-		LabelKey: labelKey, LabelValue: nullStringInterface(labelValue),
-		Limit: int32(size), Offset: int32((page - 1) * size),
+		LabelKey: labelKey, LabelValue: nullStringInterface(labelValue), NotificationStatus: notificationStatus,
+		SkipNotificationStatus: notificationStatus == "",
+		Limit:                  int32(size), Offset: int32((page - 1) * size),
 	})
 	if err != nil {
 		response.Error(context, err)

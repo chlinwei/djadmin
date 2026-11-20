@@ -15,6 +15,7 @@
 
 - `normalize` 按 `value_type` 严格校验：`int`（Atoi，不 trim）；`bool` 接受 true/1/yes、false/0/no（大小写不敏感）；`json` 接受对象/数组/合法 JSON 字符串；`secret` 哈希落库，**掩码 `******` 原样透传**（编辑页未改密时防重复哈希）；未知类型按字符串。
 - `typed`：读取侧类型还原；`secret` 值对所有客户端输出一律掩码 `******`（含 default_value）。
+- `sys.automation.host_options.max_page_size`（自动化主机选项每页上限）：可编辑的正整数，安装及升级迁移预置 `1000`，修改后下次接口请求生效，无需重启。仅影响自动化主机选项接口的单页上限，不限制 Inventory 保存的主机总数。
 
 ## 操作审计（internal/audit）
 

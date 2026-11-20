@@ -7,7 +7,12 @@
         </div>
         <div class="current-time-timezone">{{ currentTimezoneLabel }}</div>
 
-        <a-dropdown placement="bottomRight">
+        <a-dropdown
+            v-model:open="userMenuOpen"
+            placement="bottomRight"
+            :align="{ offset: [0, 0] }"
+            :mouse-leave-delay="0.25"
+        >
             <a class="ant-dropdown-link" @click.prevent>
                 <a-avatar :size="28" :src="avatarUrl || undefined" class="header-avatar">
                     <template #icon>
@@ -17,7 +22,7 @@
                 {{ currentUser?.username || '用户' }}
             </a>
             <template #overlay>
-                <a-menu class="header-user-menu" :selectable="false">
+                <a-menu class="header-user-menu" :selectable="false" @click="userMenuOpen = false">
                     <a-menu-item key="profile">
                         <router-link class="header-user-menu-entry" :to="{ name: '个人中心' }">
                             <UserOutlined aria-hidden="true" />
@@ -44,7 +49,7 @@ import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { getMediaUrl } from '@/util/request'
 import router from '@/router'
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
-import { formatTimeWithTimezone, getTimezoneLabel } from '@/util/timezone'
+import { formatTimeWithTimezone } from '@/util/timezone'
 import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
 import store from '@/store'
 
@@ -56,15 +61,15 @@ const avatarUrl = computed(() => {
     return raw ? getMediaUrl(raw) : ''
 })
 const currentTime = ref('')
-const currentInstant = ref(new Date())
+// Control visibility so clicks on popup padding don't act like menu selections.
+const userMenuOpen = ref(false)
 const userTimezone = ref(currentUser.value?.timezone || 'UTC')
 let timeInterval = null
 let stopListenTimezone = null
 
 const currentDate = computed(() => currentTime.value.split(' ')[0] || '--')
 const currentClock = computed(() => currentTime.value.split(' ')[1] || '--:--:--')
-// 标签与时钟共用计算时刻，长时间打开页面跨越夏令时切换时偏移也会刷新。
-const currentTimezoneLabel = computed(() => `时区: ${getTimezoneLabel(userTimezone.value || 'UTC', currentInstant.value)}`)
+const currentTimezoneLabel = computed(() => `时区: ${userTimezone.value}`)
 const currentWeekday = computed(() => {
     try {
         return new Intl.DateTimeFormat('zh-CN', {
@@ -77,10 +82,8 @@ const currentWeekday = computed(() => {
 })
 
 const formatTime = () => {
-    currentInstant.value = new Date()
     try {
-        const now = currentInstant.value
-        return formatTimeWithTimezone(now, userTimezone.value, 'YYYY-MM-DD HH:mm:ss')
+        return formatTimeWithTimezone(new Date(), userTimezone.value, 'YYYY-MM-DD HH:mm:ss')
     } catch (error) {
         const now = new Date()
         const year = now.getFullYear()

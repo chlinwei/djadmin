@@ -99,7 +99,7 @@
             <template v-else-if="column.key === 'action'">
               <a-space>
                 <a-tooltip title="编辑" placement="top">
-                  <a-button v-permission="'inspection:tasks:update'" size="small" type="primary" @click="openTaskModal(record)">
+                  <a-button v-permission="'inspection:tasks:update'" class="task-edit-button" size="small" type="primary" @click="openTaskModal(record)">
                     <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                   </a-button>
                 </a-tooltip>
@@ -1954,6 +1954,11 @@ useKeepAliveRefreshLifecycle(() => {
 .summary-strip span { color: #66727d; font-size: 12px; }
 .workspace-tabs { margin-top: 18px; padding: 0 20px 20px; background: #fff; border: 1px solid #e1e6ea; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 16px; }
+
+/* The click wave inserts another child, so :only-child cannot keep this icon flush. */
+.task-edit-button :deep(.svg-inline--fa) {
+  margin-right: 0;
+}
 .filter-select { width: 170px; }
 .field-hint { margin-top: 4px; color: #66727d; font-size: 12px; }
 .goss-spec-actions { margin-bottom: 6px; }

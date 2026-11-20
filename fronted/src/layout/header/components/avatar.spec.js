@@ -95,7 +95,7 @@ describe('顶部头像实时同步', () => {
 })
 
 describe('顶部用户时区标签', () => {
-  it('updates the offset alongside the clock across a DST transition', async () => {
+  it('只显示时区名称，时钟仍按夏令时切换', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-03-08T06:59:59Z'))
     wrapper = shallowMount(Avatar, {
@@ -104,15 +104,15 @@ describe('顶部用户时区标签', () => {
 
     await nextTick()
     await nextTick()
-    expect(wrapper.find('.current-time-timezone').text()).toBe('时区: UTC-05:00 · America/New_York')
+    expect(wrapper.find('.current-time-timezone').text()).toBe('时区: America/New_York')
     expect(wrapper.find('.current-time-clock').text()).toBe('01:59:59')
     await vi.advanceTimersByTimeAsync(1000)
-    expect(wrapper.find('.current-time-timezone').text()).toBe('时区: UTC-04:00 · America/New_York')
+    expect(wrapper.find('.current-time-timezone').text()).toBe('时区: America/New_York')
     expect(wrapper.find('.current-time-clock').text()).toBe('03:00:00')
   })
 })
 
-it('展开用户菜单后可通过整行退出，清理会话并跳回登录页', async () => {
+it('移入菜单或点击菜单留白不会误关闭，点击退出才关闭并清理会话', async () => {
   vi.useFakeTimers()
   sessionStorage.setItem('test-session', 'active')
   wrapper = mount(Avatar, {
@@ -127,9 +127,22 @@ it('展开用户菜单后可通过整行退出，清理会话并跳回登录页'
   await nextTick()
   const menu = document.querySelector('.header-user-menu')
   expect(menu?.textContent).toContain('个人中心')
+
+  const popup = menu.closest('.ant-dropdown')
+  await wrapper.get('.ant-dropdown-link').trigger('mouseleave', { relatedTarget: document.body })
+  await vi.advanceTimersByTimeAsync(150)
+  expect(wrapper.vm.userMenuOpen).toBe(true)
+  popup.dispatchEvent(new MouseEvent('mouseenter', { relatedTarget: document.body }))
+  await vi.advanceTimersByTimeAsync(300)
+  menu.click()
+  await nextTick()
+  expect(wrapper.vm.userMenuOpen).toBe(true)
+
   const logoutItem = menu.querySelector('.ant-dropdown-menu-item-danger')
   expect(logoutItem?.textContent).toContain('安全退出')
   logoutItem.click()
+  await nextTick()
+  expect(wrapper.vm.userMenuOpen).toBe(false)
   expect(sessionStorage.getItem('test-session')).toBeNull()
   expect(localStorage.getItem('currentUser')).toBeNull()
   expect(router.replace).toHaveBeenCalledWith('/login')

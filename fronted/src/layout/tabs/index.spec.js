@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import Antd from 'ant-design-vue'
+import Antd, { Tooltip } from 'ant-design-vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/router', async () => {
@@ -32,8 +32,37 @@ import Menu from '@/layout/menu/index.vue'
 let wrapper
 afterEach(() => {
   wrapper?.unmount()
+  vi.useRealTimers()
   vi.restoreAllMocks()
   store.commit('close_all_tabs')
+})
+
+it('快速掠过关闭按钮不弹提示，停留后提示在下方且不拦截点击', async () => {
+  await router.push('/assets/service-tree/index')
+  wrapper = mount(Tabs, { attachTo: document.body, global: { plugins: [Antd, store, router] } })
+  await flushPromises()
+  vi.useFakeTimers()
+
+  const button = wrapper.get('.tabs-action-btn')
+  const tip = () => document.querySelector('[role="tooltip"]')
+  await button.trigger('mouseenter')
+  await vi.advanceTimersByTimeAsync(150)
+  await button.trigger('mouseleave', { relatedTarget: document.body })
+  await vi.advanceTimersByTimeAsync(400)
+  expect(tip()).toBeNull()
+
+  await button.trigger('mouseenter')
+  await vi.advanceTimersByTimeAsync(400)
+  const popup = tip()?.closest('.ant-tooltip')
+  expect(popup?.textContent).toContain('关闭全部标签页（保留首页）')
+  expect(wrapper.getComponent(Tooltip).props('placement')).toBe('bottomRight')
+  expect(popup.style.pointerEvents).toBe('none')
+
+  await button.trigger('click')
+  await vi.useRealTimers()
+  await flushPromises()
+  expect(router.currentRoute.value.path).toBe('/index')
+  expect(store.state.tabs.every(({ key }) => key === '/index')).toBe(true)
 })
 
 describe('service tree tab navigation', () => {

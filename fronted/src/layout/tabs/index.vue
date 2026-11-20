@@ -2,7 +2,12 @@
   <div>
     <a-tabs v-model:activeKey="activeKey" type="editable-card" @edit="onEdit" :hideAdd="true" class="app-tabs">
       <template #rightExtra>
-        <a-tooltip title="关闭全部标签页（保留首页）">
+        <a-tooltip
+          title="关闭全部标签页（保留首页）"
+          placement="bottomRight"
+          :mouse-enter-delay="0.35"
+          :overlay-style="{ pointerEvents: 'none' }"
+        >
           <a-button type="text" class="tabs-action-btn" @click="closeAllTabs">
             <template #icon>
               <CloseCircleOutlined />

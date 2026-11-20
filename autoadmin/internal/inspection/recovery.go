@@ -45,7 +45,7 @@ func (handler *Handler) RecoverDispatches(ctx context.Context) (func(), error) {
 			if ctx.Err() != nil {
 				return
 			}
-			go handler.execute(job.id, job.Task, job.Targets)
+			handler.enqueueExecution(job.id, job.Task, job.Targets)
 		}
 	}, nil
 }

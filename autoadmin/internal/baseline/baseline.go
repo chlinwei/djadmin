@@ -12,6 +12,7 @@ import (
 
 	"autoadmin/internal/agent"
 	"autoadmin/internal/api/response"
+	"autoadmin/internal/job"
 	"autoadmin/internal/shared/opapolicy"
 
 	"github.com/gin-gonic/gin"
@@ -24,6 +25,7 @@ import (
 type Handler struct {
 	db      *sql.DB
 	gateway *agent.Gateway
+	jobs    *job.AgentScope
 	// canceledScans 内存镜像已取消扫描（扫描 goroutine 据此丢弃结果/提前收尾）；
 	// Agent 协议无 cancel 帧，无法真正终止已下发的执行，与巡检 CancelExecution 同语义。
 	canceledScans sync.Map
@@ -36,8 +38,8 @@ func (handler *Handler) isCanceled(scanID int64) bool {
 	return canceled
 }
 
-func NewHandler(database *sql.DB, gateway *agent.Gateway) *Handler {
-	return &Handler{db: database, gateway: gateway}
+func NewHandler(database *sql.DB, gateway *agent.Gateway, jobs *job.AgentScope) *Handler {
+	return &Handler{db: database, gateway: gateway, jobs: jobs}
 }
 
 type baselineItemInput struct {

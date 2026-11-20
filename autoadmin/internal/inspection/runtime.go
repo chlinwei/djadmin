@@ -15,6 +15,7 @@ import (
 	"autoadmin/internal/agent/pb"
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/identity"
+	"autoadmin/internal/job"
 	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
@@ -129,7 +130,7 @@ func (handler *Handler) startRunWithClaim(ctx context.Context, taskID int64, tri
 		return 0, "", err
 	}
 	if executionID != 0 {
-		go handler.execute(executionID, task, targets)
+		handler.enqueueExecution(executionID, task, targets)
 	}
 	return executionID, "", nil
 }
@@ -294,10 +295,14 @@ func (handler *Handler) createExecution(ctx context.Context, task runTask, targe
 	return executionID, tx.Commit()
 }
 
-func (handler *Handler) execute(executionID int64, task runTask, targets []runTarget) {
-	ctx, queries := context.Background(), db.New(handler.db)
+func (handler *Handler) enqueueExecution(executionID int64, task runTask, targets []runTarget) {
+	handler.jobs.Go(func(ctx context.Context) { handler.execute(ctx, executionID, task, targets) })
+}
+
+func (handler *Handler) execute(ctx context.Context, executionID int64, task runTask, targets []runTarget) {
+	stopping, queries := handler.jobs.Stopping(), db.New(handler.db)
 	now := time.Now().UTC()
-	claimed, claimErr := queries.MarkInspectionExecutionRunning(ctx, db.MarkInspectionExecutionRunningParams{
+	claimed, claimErr := queries.MarkInspectionExecutionRunning(stopping, db.MarkInspectionExecutionRunningParams{
 		StartTime: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: executionID,
 	})
 	if claimErr != nil {
@@ -316,22 +321,30 @@ func (handler *Handler) execute(executionID int64, task runTask, targets []runTa
 	}
 	semaphore, group := make(chan struct{}, limit), sync.WaitGroup{}
 	for _, target := range targets {
+		if handler.isCanceled(executionID) || !job.AcquireAgentSlot(ctx, stopping, semaphore) {
+			break
+		}
+		if !job.AcquireAgentSlot(ctx, stopping, handler.globalSlots) {
+			<-semaphore
+			break
+		}
 		group.Add(1)
 		go func(target runTarget) {
 			defer group.Done()
-			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
-			handler.globalSlots <- struct{}{}
 			defer func() { <-handler.globalSlots }()
-			handler.executeTarget(executionID, task, target)
+			handler.executeTarget(ctx, stopping, executionID, task, target)
 		}(target)
 	}
 	group.Wait()
-	if err := handler.interruptDispatch(ctx, executionID, true, false); err != nil {
+	if stopping.Err() != nil || handler.isCanceled(executionID) {
+		return // Persisted pending targets remain eligible for startup recovery.
+	}
+	if err := handler.interruptDispatch(stopping, executionID, true, false); err != nil {
 		slog.Error("reconcile unfinished inspection targets", "execution_id", executionID, "error", err)
 		return
 	}
-	handler.finishExecution(ctx, executionID)
+	handler.finishExecution(stopping, executionID)
 }
 
 func (handler *Handler) finishExecution(ctx context.Context, executionID int64) {
@@ -479,13 +492,13 @@ func nullablePositiveID(value int64) sql.NullInt64 {
 	return sql.NullInt64{}
 }
 
-func (handler *Handler) executeTarget(executionID int64, task runTask, target runTarget) {
+func (handler *Handler) executeTarget(ctx, stopping context.Context, executionID int64, task runTask, target runTarget) {
 	if handler.isCanceled(executionID) {
 		return
 	}
-	ctx, queries := context.Background(), db.New(handler.db)
+	queries := db.New(handler.db)
 	now := func() time.Time { return time.Now().UTC() }
-	claimed, err := queries.ClaimInspectionDispatchTarget(ctx, db.ClaimInspectionDispatchTargetParams{
+	claimed, err := queries.ClaimInspectionDispatchTarget(stopping, db.ClaimInspectionDispatchTargetParams{
 		StartTime: sql.NullTime{Time: now(), Valid: true}, UpdateTime: now(), ID: target.ID,
 	})
 	if err != nil {

@@ -152,7 +152,15 @@ func runAPI(configuration config.Config) error {
 	if err != nil {
 		return err
 	}
-	errChannel := make(chan error, 1)
+	var grpcListener net.Listener
+	if configuration.AgentGRPCAddress != "" {
+		grpcListener, err = net.Listen("tcp", configuration.AgentGRPCAddress)
+		if err != nil {
+			return fmt.Errorf("listen Agent gRPC: %w", err)
+		}
+		defer grpcListener.Close()
+	}
+	errChannel := make(chan error, 3) // Each listener and the queue consumer can report once.
 	if err := server.StartAgentJobs(ctx); err != nil {
 		return err
 	}
@@ -170,11 +178,7 @@ func runAPI(configuration config.Config) error {
 		errChannel <- fmt.Errorf("consume job queues: %w", consumeErr)
 	}()
 	var grpcServer *grpc.Server
-	if configuration.AgentGRPCAddress != "" {
-		grpcListener, listenErr := net.Listen("tcp", configuration.AgentGRPCAddress)
-		if listenErr != nil {
-			return fmt.Errorf("listen Agent gRPC: %w", listenErr)
-		}
+	if grpcListener != nil {
 		// Agent 客户端每 30s 发一次 keepalive ping（PermitWithoutStream），gRPC 服务端默认
 		// EnforcementPolicy 的 MinTime=5m 会把这种高频 ping 判为 too_many_pings 并 GOAWAY，
 		// 表现为 agent 每约 90s 被断开重连一次（基线/巡检恰好撞在断开窗口就误报离线）。
@@ -197,18 +201,26 @@ func runAPI(configuration config.Config) error {
 		}()
 	}
 
+	var runErr error
 	select {
-	case err := <-errChannel:
-		return err
+	case runErr = <-errChannel:
 	case <-ctx.Done():
-		if grpcServer != nil {
-			// Agent streams are long-lived and reconnect automatically; graceful stop would wait indefinitely.
-			grpcServer.Stop()
-		}
-		shutdownContext, cancel := context.WithTimeout(context.Background(), configuration.ShutdownTimeout)
-		defer cancel()
-		return server.Shutdown(shutdownContext)
 	}
+	stop()
+	shutdownContext, cancel := context.WithTimeout(context.Background(), configuration.ShutdownTimeout)
+	defer cancel()
+
+	httpDone := make(chan error, 1)
+	go func() { httpDone <- server.Shutdown(shutdownContext) }()
+	// Keep the Agent transport available during the shared shutdown budget.
+	if err := server.ShutdownAgentJobs(shutdownContext); err != nil {
+		slog.Warn("Agent job drain interrupted; recover unfinished work on restart", "error", err)
+	}
+	if grpcServer != nil {
+		// Agent streams reconnect automatically; GracefulStop would wait for all streams.
+		grpcServer.Stop()
+	}
+	return errors.Join(runErr, <-httpDone)
 }
 
 func newAgentTokenValidator(databaseConnection *sql.DB) func(string, string) bool {

@@ -250,6 +250,12 @@ dj-agent 必须编译为纯静态二进制，否则会动态链接构建机的 g
 RabbitMQ 保留日志采集批量动作路由 `autoadmin.logcollect.execute`，由持有会话的 api 消费；
 不参与 dj-agent 通信，也不再承载定时清理。调度的持久化与故障恢复见 [定时清理架构](SCHEDULER_ARCHITECTURE.md)。
 
+**部署边界**：当前只支持单 API 实例，新旧 API 不能重叠运行。会话表在 API 进程内，
+巡检、基线启动对账以旧执行器已退出为前提；数据库或普通负载均衡不会共享活跃连接。
+API 停机时停止巡检、基线的任务和目标领取，保留 Agent gRPC 给在途目标使用；
+最多等待 `SHUTDOWN_TIMEOUT` 后取消等待并关闭连接，未确认状态留给下次启动对账。
+其他角色不接管 Agent 会话。参见[部署说明](../../autoadmin/deploy/README.md#api-instance-and-restart-boundary)。
+
 
 <a id="agent-install-update"></a>
 

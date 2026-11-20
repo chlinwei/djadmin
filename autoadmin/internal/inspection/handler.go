@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"autoadmin/internal/agent"
+	"autoadmin/internal/job"
 
 	"github.com/gin-gonic/gin"
 )
@@ -17,6 +18,7 @@ const maxGlobalConcurrentTargets = 200
 type Handler struct {
 	db      *sql.DB
 	gateway *agent.Gateway
+	jobs    *job.AgentScope
 	// canceled holds execution IDs cancelled after dispatch; Agent responses
 	// arriving afterwards are dropped without hitting the database.
 	canceled sync.Map
@@ -24,8 +26,8 @@ type Handler struct {
 	globalSlots chan struct{}
 }
 
-func NewHandler(db *sql.DB, gateway *agent.Gateway) *Handler {
-	return &Handler{db: db, gateway: gateway, globalSlots: make(chan struct{}, maxGlobalConcurrentTargets)}
+func NewHandler(db *sql.DB, gateway *agent.Gateway, jobs *job.AgentScope) *Handler {
+	return &Handler{db: db, gateway: gateway, jobs: jobs, globalSlots: make(chan struct{}, maxGlobalConcurrentTargets)}
 }
 
 func (handler *Handler) markCanceled(executionID int64) {

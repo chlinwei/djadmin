@@ -20,14 +20,7 @@ const (
 	retentionConfigKey         = "sys.inspection.executions.retention_days"
 )
 
-// StartScheduler launches the background loop that fires cron-configured
-// inspection tasks and prunes expired execution history. It must run in the API
-// process because executions dispatch through the in-process Agent gateway.
-func (handler *Handler) StartScheduler(ctx context.Context) {
-	go handler.runScheduler(ctx)
-}
-
-func (handler *Handler) runScheduler(ctx context.Context) {
+func (handler *Handler) RunScheduler(ctx context.Context) {
 	ticker := time.NewTicker(schedulerTickInterval)
 	defer ticker.Stop()
 	lastCleanup := time.Now().Add(-cleanupInterval + 5*time.Minute)
@@ -40,7 +33,7 @@ func (handler *Handler) runScheduler(ctx context.Context) {
 		handler.dispatchDueTasks(ctx)
 		if time.Since(lastCleanup) >= cleanupInterval {
 			lastCleanup = time.Now()
-			handler.cleanupExpiredExecutions()
+			handler.cleanupExpiredExecutions(ctx)
 		}
 	}
 }
@@ -79,8 +72,8 @@ func (handler *Handler) dispatchDueTasks(ctx context.Context) {
 }
 
 // configValue 读 sys_config 字符串值；key 不存在或读失败返回空串（调用方用缺省值）。
-func (handler *Handler) configValue(key string) string {
-	row, err := db.New(handler.db).GetConfigByKey(context.Background(), key)
+func (handler *Handler) configValue(ctx context.Context, key string) string {
+	row, err := db.New(handler.db).GetConfigByKey(ctx, key)
 	if err != nil {
 		return ""
 	}
@@ -94,28 +87,28 @@ func (handler *Handler) configValue(key string) string {
 // （2026-09-19 对着配置表逐条核对时发现）。
 // Child rows are removed before executions because only inspection_result
 // carries a physical foreign key.
-func (handler *Handler) cleanupExpiredExecutions() {
+func (handler *Handler) cleanupExpiredExecutions(ctx context.Context) {
 	days := defaultResultRetentionDays
-	if parsed, parseErr := strconv.Atoi(handler.configValue(retentionConfigKey)); parseErr == nil && parsed > 0 {
+	if parsed, parseErr := strconv.Atoi(handler.configValue(ctx, retentionConfigKey)); parseErr == nil && parsed > 0 {
 		days = parsed
 	}
 	cutoff := sql.NullTime{Time: time.Now().UTC().AddDate(0, 0, -days), Valid: true}
-	transaction, err := handler.db.Begin()
+	transaction, err := handler.db.BeginTx(ctx, nil)
 	if err != nil {
 		slog.Error("begin inspection cleanup", "error", err)
 		return
 	}
 	defer transaction.Rollback()
 	queries := db.New(transaction)
-	if _, err = queries.DeleteFinishedInspectionResults(context.Background(), cutoff); err != nil {
+	if _, err = queries.DeleteFinishedInspectionResults(ctx, cutoff); err != nil {
 		slog.Error("cleanup inspection results", "error", err)
 		return
 	}
-	if _, err = queries.DeleteFinishedInspectionTargetExecutions(context.Background(), cutoff); err != nil {
+	if _, err = queries.DeleteFinishedInspectionTargetExecutions(ctx, cutoff); err != nil {
 		slog.Error("cleanup inspection target executions", "error", err)
 		return
 	}
-	deleted, err := queries.DeleteFinishedInspectionExecutions(context.Background(), cutoff)
+	deleted, err := queries.DeleteFinishedInspectionExecutions(ctx, cutoff)
 	if err != nil {
 		slog.Error("cleanup inspection executions", "error", err)
 		return

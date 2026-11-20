@@ -328,7 +328,8 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	profiles.PATCH("/:id/", middleware.RequirePermission("assets:applications:update"), assetsHandler.UpdateProfile)
 	profiles.POST("/batch-delete/", middleware.RequirePermission("assets:applications:delete"), assetsHandler.BatchDeleteProfiles)
 
-	baselineHandler := baseline.NewHandler(database, gateway)
+	agentScope := job.NewAgentScope()
+	baselineHandler := baseline.NewHandler(database, gateway, agentScope)
 	baselineGroup := engine.Group("/sys/security/baseline", middleware.Authenticate(tokens))
 	baselineGroup.GET("/", middleware.RequirePermission("baseline:view"), baselineHandler.ListBaselines)
 	baselineGroup.GET("/:id/", middleware.RequirePermission("baseline:view"), baselineHandler.GetBaseline)
@@ -414,7 +415,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	deployments.PATCH("/:id/", middleware.RequirePermission("assets:applications:update"), assetsHandler.UpdateApplicationDeployment)
 	deployments.POST("/batch-delete/", middleware.RequirePermission("assets:applications:delete"), assetsHandler.BatchDeleteApplicationDeployments)
 
-	inspectionHandler := inspection.NewHandler(database, gateway)
+	inspectionHandler := inspection.NewHandler(database, gateway, agentScope)
 	// Cron-configured inspection tasks are dispatched from the API process because
 	// executions go through the in-process Agent gateway.
 	inspectionGroups := engine.Group("/sys/inspection/groups", middleware.Authenticate(tokens))
@@ -631,7 +632,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	for _, prefix := range []string{"/sys", "/sys/scheduler", "/sys/automation", "/sys/inspection", "/sys/audit", "/assets", "/monitor", "/api/agent"} {
 		engine.Group(prefix)
 	}
-	return engine, batchRunner, &AgentJobs{baseline: baselineHandler, inspection: inspectionHandler}, nil
+	return engine, batchRunner, &AgentJobs{baseline: baselineHandler, inspection: inspectionHandler, scope: agentScope}, nil
 }
 
 func readiness(database *sql.DB) gin.HandlerFunc {

@@ -56,7 +56,7 @@ func (handler *Handler) RecoverDispatches(ctx context.Context) (func(), error) {
 			if ctx.Err() != nil {
 				return
 			}
-			go handler.runScan(job.id, job.items, job.hosts)
+			handler.enqueueScan(job.id, job.items, job.hosts)
 		}
 	}, nil
 }

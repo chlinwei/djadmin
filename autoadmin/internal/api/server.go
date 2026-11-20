@@ -46,6 +46,10 @@ func (server *Server) StartAgentJobs(ctx context.Context) error {
 	return server.agentJobs.Start(ctx)
 }
 
+func (server *Server) ShutdownAgentJobs(ctx context.Context) error {
+	return server.agentJobs.Shutdown(ctx)
+}
+
 func (server *Server) Run() error {
 	if err := server.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serve HTTP: %w", err)

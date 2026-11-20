@@ -17,6 +17,7 @@ import (
 	"autoadmin/internal/agent/pb"
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/identity"
+	"autoadmin/internal/job"
 
 	db "autoadmin/internal/platform/database/generated"
 
@@ -276,16 +277,21 @@ func (handler *Handler) StartScan(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
-	go handler.runScan(scanID, itemRows, hosts)
+	handler.enqueueScan(scanID, itemRows, hosts)
 	response.Success(context, gin.H{"scan_id": scanID, "targets": len(hosts), "status": "pending"})
 }
 
 // runScan 逐主机并发执行基线检查（每主机一次 OPA 策略下发），完成后聚合 summary。
-func (handler *Handler) runScan(scanID int64, items []db.ListBaselineItemsRow, hosts []scanHost) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+func (handler *Handler) enqueueScan(scanID int64, items []db.ListBaselineItemsRow, hosts []scanHost) {
+	handler.jobs.Go(func(ctx context.Context) { handler.runScan(ctx, scanID, items, hosts) })
+}
+
+func (handler *Handler) runScan(work context.Context, scanID int64, items []db.ListBaselineItemsRow, hosts []scanHost) {
+	stopping := handler.jobs.Stopping()
+	ctx, cancel := context.WithTimeout(work, 30*time.Minute)
 	defer cancel()
 	now := time.Now().UTC()
-	claimed, err := db.New(handler.db).ClaimBaselineScan(ctx, db.ClaimBaselineScanParams{
+	claimed, err := db.New(handler.db).ClaimBaselineScan(stopping, db.ClaimBaselineScanParams{
 		StartTime: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: scanID,
 	})
 	if err != nil {
@@ -298,25 +304,24 @@ func (handler *Handler) runScan(scanID int64, items []db.ListBaselineItemsRow, h
 	var waitGroup sync.WaitGroup
 	semaphore := make(chan struct{}, 20)
 	for _, host := range hosts {
-		if handler.isCanceled(scanID) {
+		if handler.isCanceled(scanID) || !job.AcquireAgentSlot(ctx, stopping, semaphore) {
 			break // 已取消：剩余目标的 target 行已被 CancelScan 置 canceled
 		}
 		waitGroup.Add(1)
 		go func(host scanHost) {
 			defer waitGroup.Done()
-			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
-			if handler.isCanceled(scanID) {
+			if handler.isCanceled(scanID) || stopping.Err() != nil {
 				return
 			}
-			handler.runScanHost(ctx, scanID, items, host)
+			handler.runScanHost(ctx, work, stopping, scanID, items, host)
 		}(host)
 	}
 	waitGroup.Wait()
-	if handler.isCanceled(scanID) {
+	if handler.isCanceled(scanID) || stopping.Err() != nil {
 		return // 终态已由 CancelScan 落库（canceled），不聚合覆盖
 	}
-	finishCtx, finishCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	finishCtx, finishCancel := context.WithTimeout(stopping, 30*time.Second)
 	defer finishCancel()
 	if err := handler.interruptDispatch(finishCtx, scanID, true, false); err != nil {
 		log.Printf("[BASELINE] scan=%d reconcile unfinished targets: %v", scanID, err)
@@ -326,14 +331,14 @@ func (handler *Handler) runScan(scanID int64, items []db.ListBaselineItemsRow, h
 }
 
 // runScanHost 对单台主机执行全部基线条目（编译为一次 OPA 检查下发）。
-func (handler *Handler) runScanHost(ctx context.Context, scanID int64, items []db.ListBaselineItemsRow, host scanHost) {
+func (handler *Handler) runScanHost(ctx, work, stopping context.Context, scanID int64, items []db.ListBaselineItemsRow, host scanHost) {
 	queries := db.New(handler.db)
 	targetRow, err := queries.GetBaselineScanTarget(ctx, db.GetBaselineScanTargetParams{ScanID: scanID, HostID: host.HostID})
 	if err != nil {
 		return
 	}
 	targetRowID := targetRow.ID
-	claimed, err := queries.ClaimBaselineDispatchTarget(ctx, targetRowID)
+	claimed, err := queries.ClaimBaselineDispatchTarget(stopping, targetRowID)
 	if err != nil {
 		log.Printf("[BASELINE] scan=%d target=%d claim: %v", scanID, targetRowID, err)
 		return
@@ -343,7 +348,7 @@ func (handler *Handler) runScanHost(ctx context.Context, scanID int64, items []d
 	}
 	save := func(status, message string, results []scanResultRow) {
 		// 远端超时不应取消结果持久化；事务可安全重试，最终失败必须在扫描中显式呈现。
-		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		persistCtx, persistCancel := context.WithTimeout(work, 30*time.Second)
 		defer persistCancel()
 		var persistErr error
 		for attempt := 0; attempt < 3; attempt++ {

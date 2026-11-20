@@ -156,7 +156,7 @@ func TestInspectionStartupPreservesUndispatchedTargets(t *testing.T) {
 	// A terminal target cannot be re-sent; no operational Agent gateway is present.
 	mock.ExpectExec("UPDATE inspection_target_execution SET status = 'running'.*status = 'pending'").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), int64(27)).WillReturnResult(sqlmock.NewResult(0, 0))
-	handler.executeTarget(19, runTask{ID: 4}, runTarget{ID: 27})
+	handler.executeTarget(context.Background(), context.Background(), 19, runTask{ID: 4}, runTarget{ID: 27})
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}

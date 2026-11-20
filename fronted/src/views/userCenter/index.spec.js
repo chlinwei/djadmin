@@ -1,5 +1,5 @@
 import { DOMWrapper, flushPromises, mount } from '@vue/test-utils'
-import Antd, { Select, message } from 'ant-design-vue'
+import Antd, { Select, Tooltip, message } from 'ant-design-vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // 「个人信息」侧栏只放**真实数据**（2026-09-20 现场）：
@@ -10,6 +10,7 @@ vi.mock('@/api/user', () => ({
     id: 3, username: 'op', phonenumber: '13800000000', create_time: '2026-01-01T00:00:00Z',
   })),
   getCurrentUserAlertMediaBindings: vi.fn(() => Promise.resolve({ data: { data: { results: [] } } })),
+  updateCurrentUserAlertMediaBindings: vi.fn(() => Promise.resolve()),
   saveCurrentUser: vi.fn(),
   updateUserInfo: vi.fn(values => Promise.resolve({ data: { data: { user: { id: 3, ...values } } } })),
   updateUserPassword: vi.fn(),
@@ -33,7 +34,8 @@ window.getComputedStyle = (element) => originalGetComputedStyle(element)
 
 import UserCenter from './index.vue'
 import { getCurrentUserInfo } from '@/api/sys/userTimezone'
-import { saveCurrentUser, updateUserInfo } from '@/api/user'
+import { getCurrentUserAlertMediaBindings, saveCurrentUser, updateCurrentUserAlertMediaBindings, updateUserInfo } from '@/api/user'
+import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { emitUserTimezoneChanged } from '@/util/userTimezoneSync'
 
 async function mountPage() {
@@ -50,6 +52,54 @@ describe('个人中心：个人信息侧栏', () => {
     document.body.innerHTML = ''
     vi.clearAllMocks()
     vi.restoreAllMocks()
+  })
+
+  it('逐行编辑邮箱，确认删除只改草稿，保存才提交收件人数组', async () => {
+    getCurrentUserAlertMediaBindings.mockResolvedValueOnce({ data: { data: {
+      options: [{ id: 7, name: 'smtp', media_type: 'email' }],
+      selected_bindings: [{ id: 13, media_id: 7, media_name: 'smtp', recipients: ['ops@example.com', 'old@example.com'], enabled: true }],
+    } } })
+    const wrapper = await mountPage()
+    try {
+      wrapper.vm.activeKey = '3'
+      await flushPromises()
+      expect(wrapper.findAll('.recipient-list li').map((item) => item.text())).toEqual(['ops@example.com', 'old@example.com'])
+      wrapper.vm.editBinding(wrapper.vm.alertMediaBindings[0])
+      await flushPromises()
+      const dialog = () => new DOMWrapper(document.querySelector('[role="dialog"]'))
+      const button = (text) => dialog().findAll('button').find((item) => item.text().replace(/\s/g, '') === text)
+      const warning = vi.spyOn(message, 'warning').mockImplementation(() => {})
+      const input = () => dialog().get('input[aria-label="收件人邮箱"]')
+
+      expect(wrapper.findAllComponents(Tooltip).some((item) => item.props('title') === '编辑' && item.props('placement') === 'top')).toBe(true)
+      await dialog().get('button[aria-label="编辑 ops@example.com"]').trigger('click')
+      await input().setValue('night@example.com')
+      await button('确定').trigger('click')
+
+      await button('添加邮箱').trigger('click')
+      await input().setValue('night@example.com')
+      await button('确定').trigger('click')
+      expect(warning).toHaveBeenCalledWith('该收件人邮箱已存在')
+      await input().setValue('backup@example.com')
+      await button('确定').trigger('click')
+
+      await dialog().get('button[aria-label="删除 old@example.com"]').trigger('click')
+      const confirm = openDeleteConfirm.mock.calls.at(-1)[0]
+      expect(confirm.items).toEqual(['old@example.com'])
+      expect(dialog().text()).toContain('old@example.com')
+      confirm.onConfirm()
+      await flushPromises()
+      expect(dialog().text()).not.toContain('old@example.com')
+      expect(wrapper.vm.alertMediaBindings[0].recipients).toEqual(['ops@example.com', 'old@example.com'])
+      expect(updateCurrentUserAlertMediaBindings).not.toHaveBeenCalled()
+
+      await button('保存').trigger('click')
+      expect(updateCurrentUserAlertMediaBindings).toHaveBeenCalledWith([
+        { media_id: 7, recipients: ['night@example.com', 'backup@example.com'], enabled: true },
+      ])
+    } finally {
+      wrapper.unmount()
+    }
   })
 
   it('lists real profile fields and no longer shows the media guidance text', async () => {

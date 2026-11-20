@@ -7,7 +7,7 @@
         </div>
         <div class="current-time-timezone">{{ currentTimezoneLabel }}</div>
 
-        <a-dropdown>
+        <a-dropdown placement="bottomRight">
             <a class="ant-dropdown-link" @click.prevent>
                 <a-avatar :size="28" :src="avatarUrl || undefined" class="header-avatar">
                     <template #icon>
@@ -17,12 +17,19 @@
                 {{ currentUser?.username || '用户' }}
             </a>
             <template #overlay>
-                <a-menu>
-                    <a-menu-item>
-                        <router-link class="hoverColoir" :to="{ name: '个人中心' }">个人中心</router-link>
+                <a-menu class="header-user-menu" :selectable="false">
+                    <a-menu-item key="profile">
+                        <router-link class="header-user-menu-entry" :to="{ name: '个人中心' }">
+                            <UserOutlined aria-hidden="true" />
+                            <span>个人中心</span>
+                        </router-link>
                     </a-menu-item>
-                    <a-menu-item>
-                        <a class="hoverColoir" href="javascript:;" @click="logout">安全退出</a>
+                    <a-menu-divider />
+                    <a-menu-item key="logout" danger @click="logout">
+                        <span class="header-user-menu-entry">
+                            <LogoutOutlined aria-hidden="true" />
+                            <span>安全退出</span>
+                        </span>
                     </a-menu-item>
                 </a-menu>
             </template>
@@ -31,6 +38,7 @@
 </template>
 
 <script setup>
+import { LogoutOutlined, UserOutlined } from '@ant-design/icons-vue'
 import { getCurrentUser } from '@/api/user'
 import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { getMediaUrl } from '@/util/request'
@@ -130,9 +138,21 @@ const logout = () => {
 </script>
 
 <style scoped>
-.hoverColoir:hover {
-    background-color: #1677ff;
-    color: #fff !important;
+.header-user-menu {
+    min-width: 144px;
+}
+
+.header-user-menu-entry {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 28px;
+    white-space: nowrap;
+}
+
+.header-user-menu-entry .anticon {
+    flex-shrink: 0;
+    font-size: 15px;
 }
 
 .header-avatar {

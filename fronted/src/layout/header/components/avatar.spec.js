@@ -6,6 +6,7 @@ import Avatar from './avatar.vue'
 import AvatarUploader from '@/views/userCenter/components/Avatar.vue'
 import { saveCurrentUser } from '@/api/user'
 import store from '@/store'
+import router from '@/router'
 
 vi.mock('@/api/sys/userTimezone', () => ({
   getCurrentUserInfo: () => Promise.resolve({ data: { data: { timezone: 'America/New_York' } } }),
@@ -98,8 +99,9 @@ describe('顶部用户时区标签', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-03-08T06:59:59Z'))
     wrapper = shallowMount(Avatar, {
-      global: { stubs: { 'a-dropdown': true, 'a-avatar': true, 'a-menu': true, 'a-menu-item': true, 'router-link': true, SvgIcon: true } },
+      global: { stubs: { 'a-dropdown': true, 'a-avatar': true, 'a-menu': true, 'a-menu-item': true, 'a-menu-divider': true, 'router-link': true, SvgIcon: true } },
     })
+
     await nextTick()
     await nextTick()
     expect(wrapper.find('.current-time-timezone').text()).toBe('时区: UTC-05:00 · America/New_York')
@@ -108,4 +110,27 @@ describe('顶部用户时区标签', () => {
     expect(wrapper.find('.current-time-timezone').text()).toBe('时区: UTC-04:00 · America/New_York')
     expect(wrapper.find('.current-time-clock').text()).toBe('03:00:00')
   })
+})
+
+it('展开用户菜单后可通过整行退出，清理会话并跳回登录页', async () => {
+  vi.useFakeTimers()
+  sessionStorage.setItem('test-session', 'active')
+  wrapper = mount(Avatar, {
+    attachTo: document.body,
+    global: {
+      plugins: [Antd],
+      stubs: { RouterLink: { template: '<a><slot /></a>' }, SvgIcon: true },
+    },
+  })
+  await wrapper.get('.ant-dropdown-link').trigger('mouseenter')
+  await vi.advanceTimersByTimeAsync(200)
+  await nextTick()
+  const menu = document.querySelector('.header-user-menu')
+  expect(menu?.textContent).toContain('个人中心')
+  const logoutItem = menu.querySelector('.ant-dropdown-menu-item-danger')
+  expect(logoutItem?.textContent).toContain('安全退出')
+  logoutItem.click()
+  expect(sessionStorage.getItem('test-session')).toBeNull()
+  expect(localStorage.getItem('currentUser')).toBeNull()
+  expect(router.replace).toHaveBeenCalledWith('/login')
 })

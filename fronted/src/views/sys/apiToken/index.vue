@@ -177,14 +177,10 @@ const normalizeUtcTime = (value) => {
 }
 
 const formatDateTime = (value) => {
-  if (!value) {
-    return '-'
-  }
-  try {
-    return formatTimeWithTimezone(normalizeUtcTime(value), store.state.user?.timezone || 'Asia/Shanghai', 'YYYY-MM-DD HH:mm:ss')
-  } catch (error) {
-    return value
-  }
+  // Token list exposes nullable SQL timestamps as { Time, Valid }.
+  const timestamp = typeof value?.Valid === 'boolean' ? (value.Valid ? value.Time : null) : value
+  if (timestamp == null || (typeof timestamp === 'string' && !timestamp.trim())) return '-'
+  return formatTimeWithTimezone(normalizeUtcTime(timestamp), store.state.user?.timezone || 'Asia/Shanghai', 'YYYY-MM-DD HH:mm:ss')
 }
 
 const setRowRotateLoading = (id, status) => {

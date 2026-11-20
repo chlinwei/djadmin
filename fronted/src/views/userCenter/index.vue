@@ -122,7 +122,10 @@
                                     >
                                         <template #bodyCell="{ column, record }">
                                             <template v-if="column.key === 'recipients'">
-                                                {{ record.recipients.join(', ') }}
+                                                <ul v-if="record.recipients.length" class="recipient-list">
+                                                    <li v-for="email in record.recipients" :key="email">{{ email }}</li>
+                                                </ul>
+                                                <span v-else>—</span>
                                             </template>
                                             <template v-else-if="column.key === 'enabled'">
                                                 <EnabledSwitch v-model:checked="record.enabled" :endpoint="`sys/usercenter/alertMediaBindings/${record.id}/`" self-service />
@@ -173,11 +176,42 @@
                                 />
                             </a-form-item>
                             <a-form-item label="收件人邮箱" required>
-                                <a-textarea
-                                    v-model:value="bindingForm.recipientsText"
-                                    placeholder="请输入收件人邮箱"
-                                    :rows="3"
-                                />
+                                <ul v-if="bindingForm.recipients.length" class="recipient-list recipient-editor-list">
+                                    <li v-for="email in bindingForm.recipients" :key="email" class="recipient-row">
+                                        <span class="recipient-address">{{ email }}</span>
+                                        <a-space>
+                                            <a-tooltip title="编辑" placement="top">
+                                                <a-button size="small" type="primary" :disabled="!!recipientDraft || bindingSaving"
+                                                    :aria-label="`编辑 ${email}`" @click="openRecipientEditor(email)">
+                                                    <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
+                                                </a-button>
+                                            </a-tooltip>
+                                            <a-tooltip title="删除" placement="top">
+                                                <a-button class="delBtn" size="small" type="primary" danger :disabled="!!recipientDraft || bindingSaving"
+                                                    :aria-label="`删除 ${email}`" @click="deleteRecipient(email)">
+                                                    <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                                                </a-button>
+                                            </a-tooltip>
+                                        </a-space>
+                                    </li>
+                                </ul>
+                                <div v-if="recipientDraft" class="recipient-row">
+                                    <a-input
+                                        v-model:value="recipientDraft.email"
+                                        type="email"
+                                        aria-label="收件人邮箱"
+                                        placeholder="例如 ops@example.com"
+                                        @press-enter.prevent="applyRecipient"
+                                    />
+                                    <a-space>
+                                        <a-button @click="recipientDraft = null">取消</a-button>
+                                        <a-button type="primary" @click="applyRecipient">确定</a-button>
+                                    </a-space>
+                                </div>
+                                <a-button v-else size="large" :disabled="bindingSaving" @click="openRecipientEditor()">
+                                    <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
+                                    <span>&nbsp;添加邮箱</span>
+                                </a-button>
                             </a-form-item>
                             <a-form-item>
                                 <div class="scope-hint">订阅范围由管理员在「通知策略」中统一配置；绑定只决定告警发到哪些收件邮箱。</div>
@@ -236,9 +270,10 @@ const bindingLoading = ref(false)
 const bindingSaving = ref(false)
 const bindingModalVisible = ref(false)
 const editingBindingId = ref(null)
+const recipientDraft = ref(null)
 const bindingForm = reactive({
     media_id: undefined,
-    recipientsText: '',
+    recipients: [],
     enabled: true,
 })
 const password_formState = reactive({
@@ -352,7 +387,8 @@ var roleList = ref('');
 const openBindingModal = () => {
     editingBindingId.value = null
     bindingForm.media_id = undefined
-    bindingForm.recipientsText = ''
+    bindingForm.recipients = []
+    recipientDraft.value = null
     bindingForm.enabled = true
     bindingModalVisible.value = true
 }
@@ -360,10 +396,41 @@ const openBindingModal = () => {
 const editBinding = (binding) => {
     editingBindingId.value = binding.id
     bindingForm.media_id = binding.media_id
-    bindingForm.recipientsText = binding.recipients.join('\n')
+    bindingForm.recipients = [...binding.recipients]
+    recipientDraft.value = null
     bindingForm.enabled = binding.enabled
     bindingModalVisible.value = true
 }
+
+const openRecipientEditor = (original = '') => {
+    recipientDraft.value = { original, email: original }
+}
+
+const applyRecipient = () => {
+    const { original, email } = recipientDraft.value
+    const address = email.trim()
+    if (!/^[^\s@,;，；]+@[^\s@,;，；]+$/u.test(address)) {
+        message.warning('请输入一个有效的收件人邮箱')
+        return
+    }
+    if (address !== original && bindingForm.recipients.includes(address)) {
+        message.warning('该收件人邮箱已存在')
+        return
+    }
+    bindingForm.recipients = original
+        ? bindingForm.recipients.map((item) => item === original ? address : item)
+        : [...bindingForm.recipients, address]
+    recipientDraft.value = null
+}
+
+const deleteRecipient = (email) => openDeleteConfirm({
+    title: '删除收件人邮箱',
+    summary: '保存媒介绑定后生效。',
+    items: [email],
+    onConfirm: () => {
+        bindingForm.recipients = bindingForm.recipients.filter((item) => item !== email)
+    },
+})
 
 const toBindingPayload = (bindings) => bindings.map((binding) => ({
     media_id: binding.media_id,
@@ -377,14 +444,12 @@ const saveBinding = async () => {
         return
     }
 
-    const recipients = [...new Set(
-        bindingForm.recipientsText
-            .split(/[,;，；\n]/)
-            .map((item) => item.trim())
-            .filter(Boolean),
-    )]
-    if (!recipients.length || recipients.some((item) => !item.includes('@'))) {
-        message.warning('请输入有效的收件人邮箱')
+    if (recipientDraft.value) {
+        message.warning('请先确认或取消当前邮箱编辑')
+        return
+    }
+    if (!bindingForm.recipients.length) {
+        message.warning('请至少添加一个收件人邮箱')
         return
     }
     if (!editingBindingId.value && alertMediaBindings.value.some((item) => item.media_id === bindingForm.media_id)) {
@@ -394,7 +459,7 @@ const saveBinding = async () => {
 
     const nextBinding = {
         media_id: bindingForm.media_id,
-        recipients,
+        recipients: [...bindingForm.recipients],
         enabled: bindingForm.enabled,
     }
     const nextBindings = editingBindingId.value
@@ -548,6 +613,33 @@ const password_rules = {
 
 .alert-media-container {
     padding: 20px 0;
+}
+
+.recipient-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    overflow-wrap: anywhere;
+}
+
+.recipient-editor-list {
+    margin-bottom: 8px;
+}
+
+.recipient-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 4px 0;
+}
+
+.recipient-address {
+    min-width: 0;
+}
+
+.recipient-row > .ant-space {
+    flex-shrink: 0;
 }
 
 .scope-hint {

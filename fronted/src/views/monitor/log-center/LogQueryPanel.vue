@@ -3,9 +3,9 @@
     <a-empty
       v-if="!queryReady"
       class="log-query-empty"
-      :description="scope.applicationServiceId
-        ? '请选择左侧逻辑服务或部署实例查看日志'
-        : '当前范围内没有可查询的逻辑服务（先到部署模板/逻辑服务里创建）'"
+      :description="serviceHiddenByTreeSearch
+        ? '所选服务不匹配左侧搜索，请调整搜索词或选择其他服务'
+        : '当前范围内没有可查询的逻辑服务，请检查左侧服务树筛选'"
     />
 
     <template v-else>
@@ -541,9 +541,9 @@ const props = defineProps({
   // 宿主（日志中心）当前选中的节点范围；nodeType 为 service/deployment（带 applicationServiceId）
   // 时查单个服务；其它层级进入**跨服务模式**：候选集由 candidateServices 给出，可多选一起查。
   scope: { type: Object, required: true },
-  // 当前节点范围内的逻辑服务清单（util/logLevelOverview.servicesUnderScope 的产物）。
-  // 空数组且没有 applicationServiceId 时显示空态（范围内没有服务可查）。
+  // 当前节点范围与树搜索结果的交集。
   candidateServices: { type: Array, default: () => [] },
+  serviceHiddenByTreeSearch: { type: Boolean, default: false },
   // 维度编码 → 名称的映射（跨服务模式的维度列显示名称）：
   // { projects: {code:name}, businessSystems: {code:name}, environments: {code:name} }。
   // 缺映射时显示编码（流文档上只有编码）。
@@ -558,7 +558,7 @@ const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(trigge
 // 跨服务模式：非服务节点（业务系统/环境/项目/全部）。候选 = 范围内的全部逻辑服务。
 const isMultiService = computed(() => !props.scope.applicationServiceId && props.candidateServices.length > 0)
 // 是否具备查询条件：单服务（有 id）或多服务（范围内有服务）。
-const queryReady = computed(() => Boolean(props.scope.applicationServiceId) || isMultiService.value)
+const queryReady = computed(() => effectiveServiceIds().length > 0)
 
 // 树只决定范围，不改变查询入口，避免上层节点强迫用户先做聚合再找日志。
 const innerTabs = [{ key: 'logs', label: '日志' }, { key: 'stats', label: '统计' }]
@@ -566,6 +566,7 @@ const innerTabs = [{ key: 'logs', label: '日志' }, { key: 'stats', label: '统
 // 当前查询实际覆盖的逻辑服务 id（发请求与"刷新索引"共用）：
 // 单服务 = scope 上的 id；跨服务 = 范围（左树选中节点）内的全部候选服务——面板不再二次收窄。
 function effectiveServiceIds() {
+  if (props.serviceHiddenByTreeSearch) return []
   if (props.scope.applicationServiceId) return [props.scope.applicationServiceId]
   return props.candidateServices.map((service) => service.id)
 }
@@ -1006,7 +1007,7 @@ function reload() {
 // 强制刷新该服务采集中的 data stream 索引，然后重新查询：ES refresh_interval=10s，
 // 刚写入的日志默认要等一会才可搜，这个按钮把"已写入未刷新"的部分立即变得可查。
 async function refreshIndexAndReload() {
-  if (!checkPermission('monitor:execute')) return
+  if (!queryReady.value || !checkPermission('monitor:execute')) return
   if (indexRefreshing.value) return
   indexRefreshing.value = true
   try {

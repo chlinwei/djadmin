@@ -45,6 +45,27 @@ describe('ServiceTree', () => {
     ]))
   })
 
+  it('reports the services kept by tree search, including instance matches', async () => {
+    const wrapper = mount(ServiceTree, {
+      global: { plugins: [Antd], stubs: { FontAwesomeIcon: true } },
+    })
+    try {
+      await flushPromises()
+      const input = wrapper.get('.service-tree-search input')
+      const latestMatches = () => wrapper.emitted('search-service-ids-change')?.at(-1)?.[0]
+      for (const [keyword, expected] of [
+        ['ORDER-PROD-1', new Set([21])],
+        ['no-match', new Set()],
+        ['', null],
+      ]) {
+        await input.setValue(keyword)
+        await vi.waitFor(() => expect(latestMatches()).toEqual(expected))
+      }
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('reveals a deep-linked deployment after loading and after changing external scope', async () => {
     const wrapper = mount(ServiceTree, {
       props: { selectedScope: { nodeType: 'deployment', deploymentId: 11, applicationServiceId: 21 } },

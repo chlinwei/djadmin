@@ -10,6 +10,7 @@
         :show-stats="false"
         group-by-project
         @select="selectScope"
+        @search-service-ids-change="treeSearchServiceIds = $event"
       />
     </template>
     <main class="log-center-content">
@@ -25,11 +26,14 @@
       <a-tabs v-model:active-key="activeTab" @change="syncLocation">
         <!-- 日志查询最常用，放第一个 tab，也是默认打开的那个。 -->
         <a-tab-pane key="query" tab="日志查询">
-          <!-- 非服务节点进入**跨服务查询**：与服务级检索同一套界面（LogQueryPanel），
-               多一个「逻辑服务」列与服务多选下拉（空选 = 范围内全部）。
-               候选集与层级视图同源（util/logLevelOverview.servicesUnderScope），
-               保证"层级里列出的服务"与"下拉里能选的服务"一致。 -->
-          <LogQueryPanel ref="queryPanelRef" :scope="scope" :candidate-services="queryCandidateServices" :dimension-names="queryDimensionNames" :scope-trail="queryScopeTrail" />
+          <LogQueryPanel
+            ref="queryPanelRef"
+            :scope="scope"
+            :candidate-services="queryCandidateServices"
+            :service-hidden-by-tree-search="serviceHiddenByTreeSearch"
+            :dimension-names="queryDimensionNames"
+            :scope-trail="queryScopeTrail"
+          />
         </a-tab-pane>
 
         <a-tab-pane key="config" tab="日志配置" force-render>
@@ -2280,11 +2284,17 @@ const levelView = computed(() => (serviceId.value ? { dimension: null, rows: [] 
 const levelRows = computed(() => levelView.value.rows)
 const levelMetrics = computed(() => buildLevelMetrics(levelRows.value))
 
-// 跨服务日志查询的候选集：当前节点范围内的全部逻辑服务（与层级视图同一套收窄口径）。
-// 选中服务时为空——那是单服务检索，不需要候选。
-const queryCandidateServices = computed(() => (
-  serviceId.value ? [] : servicesUnderScope(scope.value, levelServices.value, levelBusinessSystems.value)
+// 日志查询取选中范围和树搜索结果的交集，不改变配置和存储页签的节点范围。
+const treeSearchServiceIds = ref(null)
+const serviceHiddenByTreeSearch = computed(() => Boolean(
+  serviceId.value && treeSearchServiceIds.value && !treeSearchServiceIds.value.has(serviceId.value),
 ))
+const queryCandidateServices = computed(() => {
+  if (serviceId.value) return []
+  const services = servicesUnderScope(scope.value, levelServices.value, levelBusinessSystems.value)
+  const matchedIds = treeSearchServiceIds.value
+  return matchedIds ? services.filter((service) => matchedIds.has(service.id)) : services
+})
 
 // 跨服务查询头部的层级路径（如 yilake / aos）：scope 里只带节点自己的名字，
 // 上级名由层级视图的名单反推。空数组 = 全部节点（不显示路径行，没有可说的上级）。

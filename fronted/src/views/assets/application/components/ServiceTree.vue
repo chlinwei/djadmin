@@ -123,7 +123,7 @@ const props = defineProps({
   // 默认 false 不动服务树页自己的现有层级，避免影响已有页面/测试。
   groupByProject: { type: Boolean, default: false },
 })
-const emit = defineEmits(['select', 'stats-change', 'hosts-loaded'])
+const emit = defineEmits(['select', 'stats-change', 'hosts-loaded', 'search-service-ids-change'])
 const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 
@@ -608,7 +608,26 @@ function filterNodes(nodes, keyword) {
   }, [])
 }
 
-const filteredTreeData = computed(() => filterNodes(treeData.value, debouncedSearchText.value.trim().toLowerCase()))
+const treeSearchKeyword = computed(() => debouncedSearchText.value.trim().toLowerCase())
+const filteredTreeData = computed(() => filterNodes(treeData.value, treeSearchKeyword.value))
+
+watch([treeSearchKeyword, filteredTreeData], ([keyword, nodes]) => {
+  if (!keyword) {
+    emit('search-service-ids-change', null)
+    return
+  }
+  // Use the rendered tree's matches, including services retained because an instance matched.
+  const serviceIds = new Set()
+  function collect(items) {
+    for (const node of items) {
+      const scope = scopeByKey.get(node.key)
+      if (scope?.nodeType === 'service') serviceIds.add(scope.applicationServiceId)
+      collect(node.children || [])
+    }
+  }
+  collect(nodes)
+  emit('search-service-ids-change', serviceIds)
+})
 
 function updateTreeHeight() {
   treeHeight.value = Math.max(MIN_TREE_HEIGHT, window.innerHeight - 360)

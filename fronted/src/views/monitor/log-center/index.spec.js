@@ -219,8 +219,8 @@ async function mountPage(query = {}, hash = '') {
       plugins: [Antd, router],
       stubs: {
         // 树与查询面板各有一整套自己的数据流与 spec，这里只验证本页的接线（scope → 各 tab 的数据）。
-        ServiceTree: { name: 'ServiceTree', props: ['selectedScope'], emits: ['select', 'stats-change'], template: '<div class="stub-tree" />' },
-        LogQueryPanel: { name: 'LogQueryPanel', props: ['scope', 'candidateServices', 'dimensionNames', 'scopeTrail'], methods: { resize: vi.fn() }, template: '<div class="stub-query-panel" />' },
+        ServiceTree: { name: 'ServiceTree', props: ['selectedScope'], emits: ['select', 'stats-change', 'search-service-ids-change'], template: '<div class="stub-tree" />' },
+        LogQueryPanel: { name: 'LogQueryPanel', props: ['scope', 'candidateServices', 'serviceHiddenByTreeSearch', 'dimensionNames', 'scopeTrail'], methods: { resize: vi.fn() }, template: '<div class="stub-query-panel" />' },
         LogFormatVerifyDialog: { name: 'LogFormatVerifyDialog', props: ['open', 'serviceId', 'target', 'targets', 'deploymentOptions'], template: '<div class="stub-verify" />' },
         // echarts 在 jsdom 里没有真实 canvas：只验证 option 接线（option 的构造另有纯函数单测）。
         StorageUsagePie: { name: 'StorageUsagePie', props: ['option'], methods: { resize: vi.fn() }, template: '<div class="stub-pie" />' },
@@ -2078,20 +2078,26 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     wrapper.unmount()
   })
 
-  // 环境层（逻辑服务的上一层）的查询 tab = 跨服务检索面板：候选集是该环境下的全部服务，
-  // 可多选一起查（2026-09-28 起，替代原先"点行进入单个服务"的层级清单）。
-  it('offers cross-service search with the environment-level candidates', async () => {
+  it('limits environment log queries to services shown by tree search and restores scope on clear', async () => {
     const wrapper = await mountPage()
-    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', {
+    const tree = wrapper.findComponent({ name: 'ServiceTree' })
+    tree.vm.$emit('select', {
       nodeType: 'environment', businessSystemId: 7, businessSystemName: '订单系统',
       environment: 10, environmentName: 'poc', nodeTitle: 'poc',
     })
     await flushPromises()
 
-    expect(wrapper.vm.queryCandidateServices.map((service) => service.id)).toEqual([15, 16])
     const panel = wrapper.findComponent({ name: 'LogQueryPanel' })
-    expect(panel.props('candidateServices')).toEqual(wrapper.vm.queryCandidateServices)
     expect(panel.props('scope').nodeType).toBe('environment')
+    for (const [matches, expected] of [[new Set([15, 99]), [15]], [new Set(), []], [null, [15, 16]]]) {
+      tree.vm.$emit('search-service-ids-change', matches)
+      await flushPromises()
+      expect(panel.props('candidateServices').map((service) => service.id)).toEqual(expected)
+    }
+    tree.vm.$emit('select', serviceScope)
+    tree.vm.$emit('search-service-ids-change', new Set([16]))
+    await flushPromises()
+    expect(panel.props('serviceHiddenByTreeSearch')).toBe(true)
     wrapper.unmount()
   })
 

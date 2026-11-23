@@ -125,6 +125,25 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
     store.state.perms = []
   })
 
+  it('stops single-service log and facet requests while tree search hides that service', async () => {
+    const wrapper = mountPanel({ nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' })
+    try {
+      await flushPromises()
+      searchElasticsearchLogs.mockClear()
+      searchElasticsearchLogFacetStats.mockClear()
+      await wrapper.setProps({ serviceHiddenByTreeSearch: true })
+      await flushPromises()
+      expect(wrapper.text()).toContain('所选服务不匹配左侧搜索')
+      expect(searchElasticsearchLogs).not.toHaveBeenCalled()
+      expect(searchElasticsearchLogFacetStats).not.toHaveBeenCalled()
+      await wrapper.setProps({ serviceHiddenByTreeSearch: false })
+      await flushPromises()
+      expect(searchElasticsearchLogs).toHaveBeenLastCalledWith(CLUSTER.id, expect.objectContaining({ application_service_id: 42 }))
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   describe('日志表格吸顶与吸底滚动', () => {
     const scope = { nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' }
     const isBody = (element) => element.classList.contains('ant-table-body')

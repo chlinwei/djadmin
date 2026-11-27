@@ -38,7 +38,7 @@ import Alerts from '../index.vue'
 async function mountPage() {
   const wrapper = mount(Alerts, {
     attachTo: document.body,
-    global: { plugins: [Antd], stubs: { FontAwesomeIcon: true } },
+    global: { plugins: [Antd], stubs: { FontAwesomeIcon: true, RouterLink: true } },
   })
   await flushPromises()
   return wrapper

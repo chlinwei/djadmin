@@ -8,35 +8,38 @@
     <a-alert v-if="error" type="error" show-icon :message="error" style="margin-bottom: 12px" />
     <a-table :columns="columns" :data-source="types" row-key="id" size="small" :locale="tableLocale" :loading="loading" :scroll="{ x: 800 }" :pagination="pagination" @change="handleTableChange">
       <template #bodyCell="{ column, record }">
+        <template v-if="column.key === 'name'"><a href="#" @click.prevent="openEditor(record)">{{ record.name }}</a></template>
         <template v-if="column.key === 'enabled'"><EnabledSwitch v-model:checked="record.enabled" :endpoint="`assets/service-dependency-types/${record.id}/`" permission="assets:applications:update" :disabled="saving || !!deleting" @changed="emit('changed')" /></template>
         <template v-else-if="column.key === 'action'">
           <a-space>
             <a-tooltip v-if="canUpdate" title="编辑" placement="top"><a-button size="small" type="primary" :disabled="!!deleting" @click="openEditor(record)"><FontAwesomeIcon :icon="['fas', 'pen-to-square']" /></a-button></a-tooltip>
+            <ViewRecordButton v-else :disabled="!!deleting" @click="openEditor(record)" />
             <a-tooltip v-if="canDelete" title="删除" placement="top"><a-button class="delBtn" size="small" type="primary" danger :loading="deleting === record.id" :disabled="!!deleting" @click="remove(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip>
           </a-space>
         </template>
       </template>
     </a-table>
   </a-modal>
-  <a-modal :open="editorOpen" :title="editingId ? '编辑交互类型' : '新增交互类型'" centered :mask-closable="false" :closable="!saving" @cancel="closeEditor">
+  <a-modal :open="editorOpen" :title="readOnly ? '查看交互类型' : editingId ? '编辑交互类型' : '新增交互类型'" centered :mask-closable="false" :closable="!saving" @cancel="closeEditor">
     <a-form ref="formRef" :model="form" layout="vertical">
       <a-form-item label="稳定编码" name="code" :rules="[{ required: true, pattern: /^[a-z][a-z0-9_-]{0,63}$/, message: '小写字母开头，仅含小写字母、数字、下划线和短横线，最长 64 字符' }]">
         <a-input v-model:value="form.code" :disabled="!!editingId || saving" :maxlength="64" placeholder="例如 http、database、consume" />
       </a-form-item>
-      <a-form-item label="显示名称" name="name" :rules="[{ required: true, whitespace: true, message: '请输入显示名称' }]"><a-input v-model:value="form.name" :maxlength="128" :disabled="saving" /></a-form-item>
-      <a-form-item label="启用"><EnabledSwitch v-model:checked="form.enabled" :disabled="saving" /></a-form-item>
-      <a-form-item label="说明"><a-textarea v-model:value="form.description" :maxlength="500" :rows="3" :disabled="saving" /></a-form-item>
+      <a-form-item label="显示名称" name="name" :rules="[{ required: true, whitespace: true, message: '请输入显示名称' }]"><a-input v-model:value="form.name" :maxlength="128" :readonly="readOnly" :disabled="saving" /></a-form-item>
+      <a-form-item label="启用"><EnabledSwitch v-model:checked="form.enabled" :disabled="readOnly || saving" /></a-form-item>
+      <a-form-item label="说明"><a-textarea v-model:value="form.description" :maxlength="500" :rows="3" :readonly="readOnly" :disabled="saving" /></a-form-item>
     </a-form>
     <a-alert v-if="saveError" type="error" show-icon :message="saveError" />
-    <template #footer><a-button :disabled="saving" @click="closeEditor">取消</a-button><a-button type="primary" :loading="saving" @click="save">保存</a-button></template>
+    <template #footer><a-button :disabled="saving" @click="closeEditor">{{ readOnly ? '关闭' : '取消' }}</a-button><a-button v-if="!readOnly" type="primary" :loading="saving" @click="save">保存</a-button></template>
   </a-modal>
 </template>
 
 <script setup>
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { deleteServiceDependencyTypes, getServiceDependencyTypes, saveServiceDependencyType } from '@/api/assets/serviceDependencies'
+import { deleteServiceDependencyTypes, getServiceDependencyType, getServiceDependencyTypes, saveServiceDependencyType } from '@/api/assets/serviceDependencies'
 import { checkPermission } from '@/directives/permission/permission'
 import { assertBatchDeleteSucceeded, openDeleteConfirm } from '@/util/deleteConfirm'
 import { fetchAllPages } from '@/util/fetchAllPages'
@@ -49,7 +52,7 @@ const canCreate = computed(() => checkPermission('assets:applications:create'))
 const canUpdate = computed(() => checkPermission('assets:applications:update'))
 const canDelete = computed(() => checkPermission('assets:applications:delete'))
 const columns = [
-  { title: '名称', dataIndex: 'name', width: 140 },
+  { title: '名称', dataIndex: 'name', key: 'name', width: 140 },
   { title: '编码', dataIndex: 'code', width: 130 },
   { title: '状态', key: 'enabled', width: 90 },
   { title: '说明', dataIndex: 'description', width: 260 },
@@ -62,11 +65,13 @@ const deleting = ref(null)
 const error = ref('')
 const editorOpen = ref(false)
 const editingId = ref(null)
+const readOnly = computed(() => editingId.value ? !canUpdate.value : !canCreate.value)
 const formRef = ref()
 const form = reactive({ code: '', name: '', enabled: true, description: '' })
 const saving = ref(false)
 const saveError = ref('')
 let generation = 0
+let editorGeneration = 0
 let alive = true
 
 async function load(prefix = '') {
@@ -86,9 +91,19 @@ async function load(prefix = '') {
   } finally { if (current === generation) loading.value = false }
 }
 
-function openEditor(record) {
-  editingId.value = record?.id ?? null
-  Object.assign(form, { code: record?.code ?? '', name: record?.name ?? '', enabled: record?.enabled ?? true, description: record?.description ?? '' })
+async function openEditor(record) {
+  if (deleting.value || (!record && !canCreate.value)) return
+  const current = ++editorGeneration
+  let detail
+  try {
+    detail = record ? dependencyData(await getServiceDependencyType(record.id)) : null
+  } catch (failure) {
+    if (alive && current === editorGeneration) error.value = failure.message || '获取交互类型失败'
+    return
+  }
+  if (!alive || current !== editorGeneration || !props.open) return
+  editingId.value = detail?.id ?? null
+  Object.assign(form, { code: detail?.code ?? '', name: detail?.name ?? '', enabled: detail?.enabled ?? true, description: detail?.description ?? '' })
   saveError.value = ''
   editorOpen.value = true
   formRef.value?.clearValidate()
@@ -97,11 +112,12 @@ function closeEditor() { if (!saving.value) editorOpen.value = false }
 function handleTableChange(page) { Object.assign(pagination, { current: page.current, pageSize: page.pageSize }) }
 
 async function save() {
-  if (saving.value) return
+  if (saving.value || readOnly.value || !editorOpen.value) return
   try { await formRef.value.validate() } catch (validation) {
     if (!validation?.errorFields) saveError.value = validation?.message || '表单校验失败'
     return
   }
+  if (readOnly.value || !editorOpen.value) return
   saving.value = true
   saveError.value = ''
   try {

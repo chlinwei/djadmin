@@ -9,9 +9,13 @@ describe('service dependency API contracts', () => {
     const params = { project: 2, environment: 3, service: 4 }
     api.getServiceDependencyTopology(params)
     api.getServiceDependencyTypes({ enabled: true })
+    api.getServiceDependency(9)
+    api.getServiceDependencyType(4)
     expect(request.get.mock.calls).toEqual([
       ['assets/service-dependencies/topology/', params],
       ['assets/service-dependency-types/', { enabled: true }],
+      ['assets/service-dependencies/9/'],
+      ['assets/service-dependency-types/4/'],
     ])
   })
   it('creates with POST, fully updates with PUT and deletes only through batch endpoints', () => {

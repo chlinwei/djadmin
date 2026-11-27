@@ -352,6 +352,8 @@ func TestLogStatusSummaryHandlerContract(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
 	context.Request = httptest.NewRequest("GET", "/assets/application-services/log-status-summary/?service_ids=15,15", nil)
+	mock.ExpectQuery("ListServiceDefaultTierNames").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(3, "热档"))
 
 	handler.LogStatusSummary(context)
 
@@ -364,7 +366,7 @@ func TestLogStatusSummaryHandlerContract(t *testing.T) {
 	if len(payload.Data.Items) != 1 || payload.Data.Items[0].ServiceID != 15 {
 		t.Fatalf("响应 items 不对：%s", recorder.Body.String())
 	}
-	if payload.Data.Totals.Services != 1 || payload.Data.Totals.Logs != 1 {
+	if payload.Data.TierNames[3] != "热档" || payload.Data.Totals.Services != 1 || payload.Data.Totals.Logs != 1 {
 		t.Fatalf("响应 totals 不对：%s", recorder.Body.String())
 	}
 	if err = mock.ExpectationsWereMet(); err != nil {

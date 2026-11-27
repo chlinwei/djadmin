@@ -108,7 +108,7 @@ func TestSmokeAlertConfigQueriesAgainstRealDatabase(t *testing.T) {
 	checkNotificationFilter := func(want string) {
 		t.Helper()
 		id := sql.NullInt64{Int64: alertID, Valid: true}
-		for _, filter := range []string{"", "none", "in_progress", "success", "failed"} {
+		for _, filter := range []string{"", "none", "in_progress", "success", "failed", "suppressed", "partially_suppressed"} {
 			wantCount := int64(0)
 			if filter == "" || filter == want {
 				wantCount = 1
@@ -229,6 +229,20 @@ func TestSmokeAlertConfigQueriesAgainstRealDatabase(t *testing.T) {
 		t.Fatalf("派发上下文：%+v err=%v", dispatch, err)
 	}
 	checkNotificationFilter("in_progress")
+	// 同一窗口重复扫描不增加计数，不改写首次快照。
+	hits := []maintenanceWindowHit{{ID: alertID, Title: "smoke", EndsAt: now.Add(time.Hour)}}
+	if err = saveMaintenanceDecision(ctx, queries, eventID, hits, now, false); err != nil {
+		t.Fatal(err)
+	}
+	hits[0].Title = "changed"
+	if err = saveMaintenanceDecision(ctx, queries, eventID, hits, now.Add(time.Second), false); err != nil {
+		t.Fatal(err)
+	}
+	records, err := queries.ListEventMaintenanceDecisions(ctx, eventID)
+	if err != nil || len(records) != 1 || records[0].Title != "smoke" {
+		t.Fatalf("suppression snapshot: %v, err=%v", records, err)
+	}
+	checkNotificationFilter("suppressed")
 	if err = queries.MarkAlertNotificationEventSending(ctx, db.MarkAlertNotificationEventSendingParams{
 		UpdateTime: time.Now().UTC(), ID: eventID,
 	}); err != nil {
@@ -292,10 +306,13 @@ func TestSmokeAlertConfigQueriesAgainstRealDatabase(t *testing.T) {
 	if status, err := queries.GetAlertNotificationDeliveryStatus(ctx, firstDeliveryID); err != nil || status != "pending" {
 		t.Fatalf("投递状态：%q err=%v", status, err)
 	}
-	if err = queries.MarkAlertNotificationDeliverySending(ctx, db.MarkAlertNotificationDeliverySendingParams{
+	if rows, err := queries.MarkAlertNotificationDeliverySending(ctx, db.MarkAlertNotificationDeliverySendingParams{
 		UpdateTime: time.Now().UTC(), ID: firstDeliveryID,
-	}); err != nil {
+	}); err != nil || rows != 1 {
 		t.Fatalf("投递置 sending：%v", err)
+	}
+	if rows, err := queries.MarkAlertNotificationDeliverySending(ctx, db.MarkAlertNotificationDeliverySendingParams{UpdateTime: now, ID: firstDeliveryID}); err != nil || rows != 0 {
+		t.Fatalf("重复认领未拦截：%d %v", rows, err)
 	}
 	if err = queries.MarkAlertNotificationDeliveryFailed(ctx, db.MarkAlertNotificationDeliveryFailedParams{
 		ErrorMessage: "smtp down", UpdateTime: time.Now().UTC(), ID: firstDeliveryID,
@@ -308,6 +325,10 @@ func TestSmokeAlertConfigQueriesAgainstRealDatabase(t *testing.T) {
 		t.Fatalf("投递置 success：%v", err)
 	}
 	checkNotificationFilter("failed")
+	if err := saveMaintenanceDecision(ctx, queries, eventID, hits, now, true); err != nil {
+		t.Fatal(err)
+	}
+	checkNotificationFilter("partially_suppressed")
 	if err = queries.MarkAlertNotificationEventSuccess(ctx, db.MarkAlertNotificationEventSuccessParams{
 		SentAt: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: eventID,
 	}); err != nil {

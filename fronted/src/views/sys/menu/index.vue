@@ -1,6 +1,6 @@
 <template>
  <Dialog :open="itemAssignVisible" @update:open="(value) => { itemAssignVisible = value }"
-        :item_id="menu_id" :title="menu_assign_title" :treeData="treeData2"
+        :item_id="menu_id" :title="menu_assign_title" :read-only="menu_id !== -1 && !checkPermission('system:menus:update')" :treeData="treeData2"
         :max_tree_depth="menuMaxTreeDepth" @initList="initList" />
     <a-row class="tools" :gutter="16">
         <a-col class="AddBtn tool-item" v-permission="'system:menus:create'">
@@ -18,7 +18,7 @@
             </a-col>
         <a-col :span="24">
             <a-table v-if="treeData.length" 
-            :columns="columns" :data-source="treeData"
+            :columns="columns" :data-source="treeData" :scroll="{ x: 1350 }"
             :pagination="false" size="small" :locale="tableLocale"
             >
                
@@ -35,13 +35,14 @@
                     <template v-if="column.key === 'action'">
                         <div :key="record.id">
                             <a-row :gutter="6" class="action_row">
-                                <a-col v-permission="'system:menus:update'">
+                                <a-col v-if="checkPermission('system:menus:update')">
                                     <a-tooltip title="编辑">
                                         <a-button type="primary" @click="saveItem(record.key,record.name)">
                                             <FontAwesomeIcon :icon="['fa','edit']" />
                                         </a-button>
                                     </a-tooltip>
                                 </a-col>
+                                <a-col v-else-if="checkPermission('system:menu:list')"><ViewRecordButton @click="saveItem(record.key,record.name)" /></a-col>
                                 <a-col v-permission="'system:menus:delete'">
                                     <a-tooltip title="删除">
                                         <a-button class="delBtn" :loading="rowLoadingStates[record.key]" danger
@@ -62,6 +63,7 @@
 import { ref, reactive, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import Dialog from '@/views/sys/menu/components/Dialog.vue';
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import { message } from 'ant-design-vue';
 import { tableLocale } from '@/util/tableStyle';
 import { openDeleteConfirm } from '@/util/deleteConfirm'
@@ -122,13 +124,8 @@ const columns = [
         dataIndex: 'create_time',
         key: 'create_time',
     },
+    { title: '操作', key: 'action', fixed: 'right', width: 180 },
 ];
-if(checkPermission(['system:menus:update','system:menus:delete'])) {
-    columns.push({
-        title: '操作',
-        key: 'action',
-    })
-}
 const rowLoadingStates = reactive({
 });
 const treeData = ref([])
@@ -239,7 +236,7 @@ const menu_assign_title = ref("错误界面")
 const saveItem = (id,name) => {
     itemAssignVisible.value = true
     menu_id.value = id
-    menu_assign_title.value = "编辑" + "-" + name
+    menu_assign_title.value = (checkPermission('system:menus:update') ? '编辑' : '查看') + '-' + name
 }
 // 新增
 const HandleAdd = () => {

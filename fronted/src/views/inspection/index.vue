@@ -18,9 +18,9 @@
         <a-col :span="5">
           <a-tree
             :tree-data="taskNavTreeData"
+            :load-data="loadNavigationBranch"
             v-model:selected-keys="taskNavSelected"
             :block-node="true"
-            default-expand-all
             @select="handleTaskNodeSelect"
           >
             <template #title="{ key, title }">
@@ -61,12 +61,15 @@
           @change="handleTaskTableChange"
         >
           <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'group_name'">
+            <template v-if="column.key === 'name' && canView">
+              <a @click="openTaskModal(record)">{{ record.name }}</a>
+            </template>
+            <template v-else-if="column.key === 'group_name'">
               <a-space wrap>
-                <a-tooltip v-for="group in (record.groups || [])" :key="group.id" :title="(mountText(group) || '静态范围（存量）') + (canUpdateGroup ? '，点击编辑巡检组' : '')">
+                <a-tooltip v-for="group in (record.groups || [])" :key="group.id" :title="(mountText(group) || '静态范围（存量）') + (canView ? '，点击打开巡检组' : '')">
                   <a-tag
                     :color="group.category === 'application' ? 'purple' : 'green'"
-                    :class="{ 'task-group-tag--clickable': canUpdateGroup }"
+                    :class="{ 'task-group-tag--clickable': canView }"
                     @click="openGroupFromTask(group)"
                   >
                     <a-spin v-if="openingGroupFromTask === group.id" :spinning="true" size="small" />
@@ -98,11 +101,12 @@
             </template>
             <template v-else-if="column.key === 'action'">
               <a-space>
-                <a-tooltip title="编辑" placement="top">
-                  <a-button v-permission="'inspection:tasks:update'" class="task-edit-button" size="small" type="primary" @click="openTaskModal(record)">
+                <a-tooltip v-if="canView && canUpdateTask" title="编辑" placement="top">
+                  <a-button class="task-edit-button" size="small" type="primary" @click="openTaskModal(record)">
                     <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                   </a-button>
                 </a-tooltip>
+                <ViewRecordButton v-else-if="canView" @click="openTaskModal(record)" />
                 <a-tooltip title="运行" placement="top">
                   <a-button v-permission="'inspection:tasks:run'" size="small" type="primary" ghost :loading="runningTaskIds.has(record.id)" @click="runTask(record)">
                     <FontAwesomeIcon :icon="['fas', 'play']" />
@@ -127,7 +131,7 @@
             <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
             <span>&nbsp;新增定时任务</span>
           </a-button>
-          <a-button size="large" @click="loadSelectOptions">
+          <a-button size="large" @click="loadScheduleTasks">
             <FontAwesomeIcon :icon="['fas', 'rotate']" />
             <span>&nbsp;刷新</span>
           </a-button>
@@ -143,7 +147,10 @@
           :scroll="{ x: 1280 }"
         >
           <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'target'">
+            <template v-if="column.key === 'inspection_name' && canView">
+              <a @click="openScheduleModal(record)">{{ record.inspection_name }}</a>
+            </template>
+            <template v-else-if="column.key === 'target'">
               <a-space>
                 <a-tag :color="record.target_type === 'host_group' ? 'gold' : 'geekblue'">
                   {{ record.target_type === 'host_group' ? '主机组' : '逻辑服务' }}
@@ -173,11 +180,12 @@
             </template>
             <template v-else-if="column.key === 'action'">
               <a-space>
-                <a-tooltip title="编辑" placement="top">
-                  <a-button v-permission="'inspection:tasks:update'" size="small" type="primary" @click="openScheduleModal(record)">
+                <a-tooltip v-if="canView && canUpdateTask" title="编辑" placement="top">
+                  <a-button size="small" type="primary" @click="openScheduleModal(record)">
                     <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                   </a-button>
                 </a-tooltip>
+                <ViewRecordButton v-else-if="canView" @click="openScheduleModal(record)" />
                 <a-tooltip v-if="record.cron_expression" title="删除" placement="top">
                   <a-button v-permission="'inspection:tasks:update'" class="delBtn" size="small" type="primary" danger @click="confirmClearSchedule(record)">
                     <FontAwesomeIcon :icon="['fas', 'trash-can']" />
@@ -223,14 +231,17 @@
           :columns="groupColumns"
           :data-source="visibleGroups"
           :loading="groupLoading"
-          :pagination="groupPagination"
+          :pagination="{ ...groupPagination, total: visibleGroups.length }"
           size="small"
           :locale="tableLocale"
           :scroll="{ x: 900 }"
           @change="handleGroupTableChange"
         >
           <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'category'">
+            <template v-if="column.key === 'name' && canView">
+              <a @click="openGroupModal(record)">{{ record.name }}</a>
+            </template>
+            <template v-else-if="column.key === 'category'">
               <a-tag :color="record.category === 'application' ? 'purple' : 'green'">{{ record.category === 'application' ? (record.application_name ? `应用 · ${record.application_name}` : '应用类型') : '通用' }}</a-tag>
             </template>
             <template v-else-if="column.key === 'checks'">
@@ -246,11 +257,12 @@
             </template>
             <template v-else-if="column.key === 'action'">
               <a-space>
-                <a-tooltip title="编辑" placement="top">
-                  <a-button v-permission="'inspection:groups:update'" size="small" type="primary" @click="openGroupModal(record)">
+                <a-tooltip v-if="canView && canUpdateGroup" title="编辑" placement="top">
+                  <a-button size="small" type="primary" @click="openGroupModal(record)">
                     <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                   </a-button>
                 </a-tooltip>
+                <ViewRecordButton v-else-if="canView" @click="openGroupModal(record)" />
                 <a-tooltip title="删除" placement="top">
                   <a-button v-permission="'inspection:groups:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteGroup(record)">
                     <FontAwesomeIcon :icon="['fas', 'trash-can']" />
@@ -365,16 +377,17 @@
 
     <a-modal
       v-model:open="groupModalOpen"
-      :title="groupForm.id ? '编辑巡检组' : '新增巡检组'"
+      :title="groupReadOnly ? '查看巡检组' : groupForm.id ? '编辑巡检组' : '新增巡检组'"
       width="80vw"
       style="max-width: 1200px"
       centered
       :confirm-loading="savingGroup"
       @ok="submitGroup"
     >
-      <a-form layout="vertical">
+      <template v-if="groupReadOnly" #footer><a-button @click="groupModalOpen = false">关闭</a-button></template>
+      <a-form layout="vertical" :disabled="groupReadOnly">
         <div class="form-grid">
-          <a-form-item label="巡检组名称" required><a-input v-model:value="groupForm.name" /></a-form-item>
+          <a-form-item label="巡检组名称" required><a-input :readonly="groupReadOnly" v-model:value="groupForm.name" /></a-form-item>
         </div>
         <div class="form-grid">
           <a-form-item label="分类">
@@ -384,7 +397,7 @@
           <a-form-item v-if="groupForm.category === 'application'" label="适用应用" required>
             <a-select
               v-model:value="groupForm.application"
-              :options="applicationOptions"
+              :options="groupReadOnly ? [{ value: groupForm.application, label: groupForm.application_name }] : applicationOptions"
               :getPopupContainer="getPopupContainer"
               :virtual="false"
               show-search
@@ -395,23 +408,23 @@
             <div class="field-hint">关联应用（跨环境），建任务时用于建议过滤。</div>
           </a-form-item>
         </div>
-        <a-form-item label="描述"><a-textarea v-model:value="groupForm.description" :rows="2" /></a-form-item>
+        <a-form-item label="描述"><a-textarea :readonly="groupReadOnly" v-model:value="groupForm.description" :rows="2" /></a-form-item>
         <div class="check-heading">
           <span>检查参数</span>
-          <a-button size="large" @click="addParam"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;添加参数</a-button>
+          <a-button v-if="!groupReadOnly" size="large" @click="addParam"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;添加参数</a-button>
         </div>
         <div class="field-hint" style="margin-bottom:8px;">参数供检查项以 <code>${'{'}参数名${'}'}</code> 引用；任务绑定时赋值（固定值 / 引用内置变量 / 引用服务宏）。</div>
         <a-form-item v-for="(param, index) in groupForm.params" :key="index">
           <div class="form-grid">
             <a-form-item label="参数名" required class="mount-item">
-              <a-input v-model:value="param.name" placeholder="如 ORACLE_SID" />
+              <a-input :readonly="groupReadOnly" v-model:value="param.name" placeholder="如 ORACLE_SID" />
             </a-form-item>
-            <a-form-item label="说明" class="mount-item"><a-input v-model:value="param.description" /></a-form-item>
+            <a-form-item label="说明" class="mount-item"><a-input :readonly="groupReadOnly" v-model:value="param.description" /></a-form-item>
             <a-form-item label="必填" class="mount-item">
               <a-switch v-model:checked="param.required" checked-children="必填" un-checked-children="选填" />
             </a-form-item>
             <a-form-item class="mount-item">
-              <a-tooltip title="删除" placement="top">
+              <a-tooltip v-if="!groupReadOnly" title="删除" placement="top">
                 <a-button class="delBtn" size="small" type="primary" danger @click="groupForm.params.splice(index, 1)">
                   <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                 </a-button>
@@ -439,27 +452,27 @@
         </a-alert>
         <div class="check-heading">
           <span>检查项</span>
-          <a-button size="large" @click="addCheck"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;添加检查项</a-button>
+          <a-button v-if="!groupReadOnly" size="large" @click="addCheck"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;添加检查项</a-button>
         </div>
         <div v-for="(check, index) in groupForm.checks" :key="check.localKey" class="check-editor">
           <div class="check-editor-head">
             <strong>检查项 {{ index + 1 }}</strong>
-            <a-tooltip title="删除" placement="top">
+            <a-tooltip v-if="!groupReadOnly" title="删除" placement="top">
               <a-button class="delBtn" size="small" type="primary" danger @click="confirmRemoveCheck(check, index)">
                 <FontAwesomeIcon :icon="['fas', 'trash-can']" />
               </a-button>
             </a-tooltip>
           </div>
           <div class="form-grid">
-            <a-form-item label="名称" required><a-input v-model:value="check.name" /></a-form-item>
+            <a-form-item label="名称" required><a-input :readonly="groupReadOnly" v-model:value="check.name" /></a-form-item>
             <a-form-item label="严重级别" required>
-              <a-segmented v-model:value="check.severity" :options="severityOptions" block />
+              <a-segmented :disabled="groupReadOnly" v-model:value="check.severity" :options="severityOptions" block />
               <div class="field-hint">警告级失败只计入汇总，不会把巡检目标判为失败。</div>
             </a-form-item>
           </div>
           <div class="check-heading">
               <span>采集命令（{{ (check.config?.input_commands || []).length }}）</span>
-              <a-button size="small" @click="(check.config.input_commands ??= []).push({ key: '', exec: '', parse: 'raw' })">
+              <a-button v-if="!groupReadOnly" size="small" @click="(check.config.input_commands ??= []).push({ key: '', exec: '', parse: 'raw' })">
                 <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;添加采集命令
               </a-button>
             </div>
@@ -467,10 +480,10 @@
               每条命令的输出成为 input 的一个顶层字段，策略里用 <code>input.{{ '{' }}key{{ '}' }}</code> 引用；命令失败时整个检查项直接报错（附错误原因）。
             </div>
             <div v-for="(input, inputIndex) in (check.config?.input_commands || [])" :key="inputIndex" class="input-grid">
-              <a-input v-model:value="input.key" placeholder="key，如 es_limits" />
-              <a-input v-model:value="input.exec" placeholder="命令，如 cat /proc/1/limits" />
+              <a-input :readonly="groupReadOnly" v-model:value="input.key" placeholder="key，如 es_limits" />
+              <a-input :readonly="groupReadOnly" v-model:value="input.exec" placeholder="命令，如 cat /proc/1/limits" />
               <a-select v-model:value="input.parse" :options="opaParseOptions" :getPopupContainer="getPopupContainer" />
-              <a-tooltip title="删除" placement="top">
+              <a-tooltip v-if="!groupReadOnly" title="删除" placement="top">
                 <a-button class="delBtn" size="small" type="primary" danger @click="check.config.input_commands.splice(inputIndex, 1)">
                   <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                 </a-button>
@@ -478,22 +491,22 @@
             </div>
             <div class="check-heading">
               <span>文件采集（{{ (check.config?.input_files || []).length }}）</span>
-              <a-button size="small" @click="(check.config.input_files ??= []).push({ key: '', path: '', parse: 'lines' })">
+              <a-button v-if="!groupReadOnly" size="small" @click="(check.config.input_files ??= []).push({ key: '', path: '', parse: 'lines' })">
                 <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;添加文件采集
               </a-button>
             </div>
             <div v-for="(input, inputIndex) in (check.config?.input_files || [])" :key="'f' + inputIndex" class="input-grid">
-              <a-input v-model:value="input.key" placeholder="key，如 sshd_config" />
-              <a-input v-model:value="input.path" placeholder="路径，如 /etc/ssh/sshd_config" />
+              <a-input :readonly="groupReadOnly" v-model:value="input.key" placeholder="key，如 sshd_config" />
+              <a-input :readonly="groupReadOnly" v-model:value="input.path" placeholder="路径，如 /etc/ssh/sshd_config" />
               <a-select v-model:value="input.parse" :options="opaParseOptions" :getPopupContainer="getPopupContainer" />
-              <a-tooltip title="删除" placement="top">
+              <a-tooltip v-if="!groupReadOnly" title="删除" placement="top">
                 <a-button class="delBtn" size="small" type="primary" danger @click="check.config.input_files.splice(inputIndex, 1)">
                   <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                 </a-button>
               </a-tooltip>
             </div>
             <a-form-item label="Rego 策略" required>
-              <a-textarea v-model:value="check.config.policy" :rows="10" spellcheck="false" class="opa-policy-editor" />
+              <a-textarea :readonly="groupReadOnly" v-model:value="check.config.policy" :rows="10" spellcheck="false" class="opa-policy-editor" />
               <div class="field-hint">
                 必须以 <code>package baseline</code> 开头，产出 <code>assertions contains &lt;元素&gt; if {{ '{' }} ... {{ '}' }}</code> 全量断言清单（OPA v1 语法；pass/fail 都展示，空集即通过）。
                 元素形如 {'{'}name, pass, expected, actual{'}'}，expected/actual 进报告对应列。
@@ -501,7 +514,7 @@
               </div>
             </a-form-item>
             <a-form-item label="运行用户">
-              <a-input v-model:value="check.config.run_user" placeholder="root" />
+              <a-input :readonly="groupReadOnly" v-model:value="check.config.run_user" placeholder="root" />
               <div class="field-hint">采集命令以此用户执行（su -l 登录环境）；OPA 求值本身不降权。支持 ${'{'}HOST_IP{'}'} 等变量（在命令/路径中生效）。</div>
             </a-form-item>
         </div>
@@ -510,16 +523,17 @@
 
     <a-modal
       v-model:open="taskModalOpen"
-      :title="taskForm.id ? '编辑巡检任务' : '新增巡检任务'"
+      :title="taskReadOnly ? '查看巡检任务' : taskForm.id ? '编辑巡检任务' : '新增巡检任务'"
       centered
       :confirm-loading="savingTask"
       @ok="submitTask"
     >
-      <a-form layout="vertical">
-        <a-form-item label="任务名称" required><a-input v-model:value="taskForm.name" /></a-form-item>
+      <template v-if="taskReadOnly" #footer><a-button @click="taskModalOpen = false">关闭</a-button></template>
+      <a-form layout="vertical" :disabled="taskReadOnly">
+        <a-form-item label="任务名称" required><a-input :readonly="taskReadOnly" v-model:value="taskForm.name" /></a-form-item>
         <a-form-item label="巡检组" required>
           <a-select
-            v-model:value="taskForm.groups"
+            :value="taskForm.groups[0]"
             :options="taskGroupSelectOptions"
             :getPopupContainer="getPopupContainer"
             :virtual="false"
@@ -533,7 +547,7 @@
         <a-form-item label="巡检对象" required>
           <a-tree-select
             v-model:value="taskTargetSelectKey"
-            :tree-data="taskTargetTreeData"
+            :tree-data="taskReadOnly ? [{ value: taskTargetSelectKey, title: taskForm.target_name, pathTitle: taskForm.target_name }] : taskTargetTreeData"
             tree-node-label-prop="pathTitle"
             show-search
             tree-node-filter-prop="title"
@@ -549,8 +563,8 @@
           <div v-for="(meta, paramName) in taskParamAssignments" :key="paramName" class="param-assign-row">
             <span class="param-assign-name">{{ paramName }}</span>
             <a-select v-model:value="taskParamAssignments[paramName].mode" style="width: 140px" :options="paramAssignModes" :getPopupContainer="getPopupContainer" />
-            <a-input-number v-if="taskParamAssignments[paramName].mode === 'value'" v-model:value="taskParamAssignments[paramName].literal" placeholder="固定值" style="flex:1" />
-            <a-input v-else v-model:value="taskParamAssignments[paramName].refName" placeholder="变量名，如 ORACLE_SID / RUN_USER" style="flex:1" />
+            <a-input v-if="taskParamAssignments[paramName].mode === 'value'" :readonly="taskReadOnly" v-model:value="taskParamAssignments[paramName].literal" placeholder="固定值" style="flex:1" />
+            <a-input :readonly="taskReadOnly" v-else v-model:value="taskParamAssignments[paramName].refName" placeholder="变量名，如 ORACLE_SID / RUN_USER" style="flex:1" />
             <span class="field-hint">{{ meta.description }}</span>
           </div>
           <div class="field-hint">固定值 = 所有目标相同；引用 = 按每个部署实例的内置变量 / 服务宏展开。</div>
@@ -560,7 +574,7 @@
           <a-form-item label="单目标超时（秒）"><a-input-number v-model:value="taskForm.timeout_seconds" :min="5" :max="3600" /></a-form-item>
         </div>
         <a-form-item label="状态">
-          <EnabledSwitch v-model:checked="taskForm.enabled" />
+          <EnabledSwitch :read-only="taskReadOnly" v-model:checked="taskForm.enabled" />
           <div class="field-hint">停用后任务不会被定时调度，也不能手动运行。</div>
         </a-form-item>
       </a-form>
@@ -570,14 +584,15 @@
 
     <a-modal
       v-model:open="scheduleModalOpen"
-      :title="scheduleForm.id ? '编辑定时计划' : '新增定时任务'"
+      :title="scheduleReadOnly ? '查看定时计划' : scheduleForm.id ? '编辑定时计划' : '新增定时任务'"
       centered
       :confirm-loading="savingSchedule"
       @ok="submitSchedule"
     >
-      <a-form layout="vertical">
-        <a-form-item label="巡检名称" required><a-input v-model:value="scheduleForm.inspection_name" /></a-form-item>
-        <a-form-item v-if="scheduleForm.id" label="关联巡检任务"><a-input :value="scheduleForm.name" disabled /></a-form-item>
+      <template v-if="scheduleReadOnly" #footer><a-button @click="scheduleModalOpen = false">关闭</a-button></template>
+      <a-form layout="vertical" :disabled="scheduleReadOnly">
+        <a-form-item label="巡检名称" required><a-input :readonly="scheduleReadOnly" v-model:value="scheduleForm.inspection_name" /></a-form-item>
+        <a-form-item v-if="scheduleForm.id" label="关联巡检任务"><a-input :readonly="scheduleReadOnly" :value="scheduleForm.name" disabled /></a-form-item>
         <a-form-item v-else label="关联巡检任务" required>
           <a-select
             v-model:value="scheduleForm.task"
@@ -592,7 +607,7 @@
           </a-select>
         </a-form-item>
         <a-form-item label="定时计划" required>
-          <a-input v-model:value="scheduleForm.cron_expression" placeholder="例如 0 2 * * *" />
+          <a-input :readonly="scheduleReadOnly" v-model:value="scheduleForm.cron_expression" placeholder="例如 0 2 * * *" />
           <div class="field-hint">5 段 cron：分 时 日 月 周；保存后由调度器按分钟粒度扫描到期任务。</div>
         </a-form-item>
       </a-form>
@@ -703,6 +718,7 @@
 </template>
 
 <script setup>
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { createPagination, tableLocale } from '@/util/tableStyle'
@@ -722,6 +738,7 @@ import {
   getInspectionExecutions,
   getInspectionGroup,
   getInspectionGroups,
+  getInspectionTask,
   getInspectionTasks,
   runInspectionTask,
   cancelInspectionExecution,
@@ -758,7 +775,9 @@ const groupLoading = ref(false)
 const taskLoading = ref(false)
 const executionLoading = ref(false)
 const taskOptionsLoading = ref(false)
-const serviceTreeLoading = ref(false)
+const serviceTreeLoaded = ref(false)
+let serviceTreeRequest
+const canBrowseServiceTree = computed(() => checkPermission('assets:applications:view') && checkPermission('assets:service-tree:view'))
 const groupModalOpen = ref(false)
 const taskModalOpen = ref(false)
 const scheduleModalOpen = ref(false)
@@ -769,17 +788,20 @@ const savingSchedule = ref(false)
 const selectedExecution = ref(null)
 const runningTaskIds = reactive(new Set())
 const togglingTaskId = ref(null)
-const canUpdateTask = checkPermission('inspection:tasks:update')
-// 任务列表里的巡检组 tag 点击后直接打开该组的编辑弹窗（方案 A：免切 tab）
-const canUpdateGroup = checkPermission('inspection:groups:update')
+const canView = computed(() => checkPermission('inspection:view'))
+const canUpdateTask = computed(() => checkPermission('inspection:tasks:update'))
+const taskReadOnly = computed(() => !!taskForm.id && !canUpdateTask.value)
+const groupReadOnly = computed(() => !!groupForm.id && !canUpdateGroup.value)
+const scheduleReadOnly = computed(() => !!scheduleForm.id && !canUpdateTask.value)
+const savedTaskGroups = ref([])
+// 任务行只有巡检组摘要；从标签进入也必须读取组详情，再按组权限选择模式。
+const canUpdateGroup = computed(() => checkPermission('inspection:groups:update'))
 const openingGroupFromTask = ref(-1)
 async function openGroupFromTask(group) {
-  if (!canUpdateGroup || !group?.id || openingGroupFromTask.value === group.id) return
+  if (!canView.value || !group?.id || openingGroupFromTask.value === group.id) return
   openingGroupFromTask.value = group.id
   try {
-    // 任务行内嵌的 group 只有 id/name/category，编辑前必须拉完整详情（checks/params）
-    const data = responseData(await getInspectionGroup(group.id))
-    await openGroupModal(data)
+    await openGroupModal(group)
   } catch (error) {
     message.error(error?.message || '巡检组详情加载失败')
   } finally {
@@ -837,17 +859,20 @@ const scheduleColumns = [
 const groupNavSelected = ref(['all-groups'])
 const groupNavNode = computed(() => groupNavSelected.value?.[0] || 'all-groups')
 const groupNavTreeData = computed(() => {
-  const applicationNodes = applicationOptions.value
-    .filter((application) => groupOptions.value.some((group) => String(group.application) === String(application.value)))
-    .map((application) => {
-      const count = groupOptions.value.filter((group) => String(group.application) === String(application.value)).length
-      return { key: `app-${application.value}`, title: `${application.label}（${count}）` }
-    })
-  const unassignedCount = groupOptions.value.filter((group) => (group.category || 'general') === 'application' && !group.application).length
-  if (unassignedCount > 0) {
-    applicationNodes.push({ key: 'app-unassigned', title: `未指定应用（${unassignedCount}）` })
+  const apps = new Map()
+  let unassignedCount = 0
+  let generalCount = 0
+  for (const group of groups.value) {
+    if (group.category !== 'application') generalCount++
+    else if (!group.application) unassignedCount++
+    else {
+      const app = apps.get(group.application) || { name: group.application_name, count: 0 }
+      app.count++
+      apps.set(group.application, app)
+    }
   }
-  const generalCount = groupOptions.value.filter((group) => (group.category || 'general') === 'general').length
+  const applicationNodes = [...apps].map(([id, app]) => ({ key: `app-${id}`, title: `${app.name}（${app.count}）` }))
+  if (unassignedCount) applicationNodes.push({ key: 'app-unassigned', title: `未指定应用（${unassignedCount}）` })
   return [
     { key: 'all-groups', title: '全部组' },
     { key: 'general', title: `通用（${generalCount}）` },
@@ -868,6 +893,7 @@ function groupNavIcon(key) {
   return ['fas', 'desktop']
 }
 function handleGroupNodeSelect(keys, info) {
+  groupPagination.current = 1
   if (!keys.length) {
     groupNavSelected.value = [info?.node?.key ?? 'all-groups']
     return
@@ -958,7 +984,7 @@ const groupCategoryOptions = [
   { label: '通用', value: 'general' },
   { label: '应用类型', value: 'application' },
 ]
-const groupById = (id) => groupOptions.value.find((group) => group.id === id)
+const groupById = (id) => (taskReadOnly.value ? savedTaskGroups.value : groupOptions.value).find((group) => group.id === id)
 // 巡检参数赋值：根据所选组的 params 声明生成编辑行（静态范围任务无参数）。
 const taskParamAssignments = reactive({})
 const paramAssignModes = [
@@ -1032,7 +1058,7 @@ const taskNavNode = computed(() => taskNavSelected.value?.[0] || 'all')
 // 任务弹窗打开期间换巡检对象（下拉树选择或左侧树点击）→ 重新推导挂载绑定；
 // 巡检组未变时保留原 instance_mode，组变了则用默认值。
 watch(taskNavNode, () => {
-  if (!taskModalOpen.value) return
+  if (!taskModalOpen.value || taskReadOnly.value) return
   setTaskTargetSelectDisplay(taskNavNode.value === 'all' ? undefined : String(taskNavNode.value))
   applyTaskTargetContext(contextFromKey(taskNavNode.value))
 })
@@ -1195,7 +1221,7 @@ const taskNavTreeData = computed(() => {
     children: sortByName(businessSystems.value.filter((system) => String(system.project) === String(project.id))).map(businessNode),
   }))
   return [
-    { key: 'all', title: `全部任务`, children },
+    { key: 'all', title: '全部任务', isLeaf: !canBrowseServiceTree.value || (serviceTreeLoaded.value && !children.length), children },
   ]
 })
 // 每个绑定挂载点对应的树节点路径（从深到浅），任务出现在其任一路径节点下。
@@ -1285,6 +1311,7 @@ function defaultBinding(group, context = taskNavContext.value) {
 // 当前生效的巡检对象上下文：优先取下拉树选择，其次左侧树节点
 const activeTargetContext = computed(() => contextFromKey(taskTargetSelectKey.value || taskNavNode.value))
 const taskGroupSelectOptions = computed(() => {
+  if (taskReadOnly.value) return savedTaskGroups.value.map(g => ({ value: g.id, label: g.name }))
   const context = activeTargetContext.value
   // 目标为逻辑服务时，应用类型巡检组只保留与该服务所属应用一致的：
   // 组的"适用应用"(group.application) 必须等于服务的所属应用(service.application)。
@@ -1308,6 +1335,7 @@ const taskGroupSelectOptions = computed(() => {
 // 切换巡检对象后，已选巡检组可能不再出现在候选里（如应用组遇项目/环境对象、应用不匹配）：
 // 自动切换到第一个可用组并重新推导挂载，而不是清空让用户重选。
 watch(taskGroupSelectOptions, (options) => {
+  if (!taskModalOpen.value || taskReadOnly.value) return
   const current = taskForm.groups?.[0]
   if (current && !options.some((option) => option.value === current || option.options?.some((child) => child.value === current))) {
     const first = options[0]?.value ?? options[0]?.options?.[0]?.value
@@ -1490,9 +1518,9 @@ function applyPagination(pagination, data) {
 async function loadGroups() {
   groupLoading.value = true
   try {
-    const data = responseData(await getInspectionGroups({ page: groupPagination.current, page_size: groupPagination.pageSize }))
-    groups.value = data.results || []
-    applyPagination(groupPagination, data)
+    // 左侧导航的分类数量不能来自单页；同一份组列表同时用于导航和本地分页。
+    groups.value = await fetchAll(getInspectionGroups)
+    groupPagination.total = groups.value.length
   } finally { groupLoading.value = false }
 }
 async function loadTasks() {
@@ -1503,32 +1531,31 @@ async function loadTasks() {
     applyPagination(taskPagination, data)
   } finally { taskLoading.value = false }
 }
-async function loadServiceTree() {
-  serviceTreeLoading.value = true
-  try {
-    const [systems, environments, serviceRecords, projectRecords] = await Promise.all([
-      fetchAll(getBusinessSystemList),
-      fetchAll(getBusinessEnvironmentList),
-      fetchAll(getApplicationServiceList),
-      fetchAll(getProjectList),
-    ])
+function loadNavigationBranch(node) {
+  if (node.key !== 'all' || !canBrowseServiceTree.value) return Promise.resolve()
+  return loadServiceTree()
+}
+function loadServiceTree() {
+  if (serviceTreeLoaded.value) return Promise.resolve()
+  // 展开导航或编辑任务才需要完整服务树；查看已保存任务只使用详情路径。
+  serviceTreeRequest ??= Promise.all([
+    fetchAll(getBusinessSystemList),
+    fetchAll(getBusinessEnvironmentList),
+    fetchAll(getApplicationServiceList),
+    fetchAll(getProjectList),
+  ]).then(([systems, environments, serviceRecords, projectRecords]) => {
     businessSystems.value = systems
     businessEnvironments.value = environments
     services.value = serviceRecords
     projects.value = projectRecords
-  } finally {
-    serviceTreeLoading.value = false
-  }
+    serviceTreeLoaded.value = true
+  }).finally(() => { serviceTreeRequest = undefined })
+  return serviceTreeRequest
 }
-async function loadSelectOptions() {
+async function loadScheduleTasks() {
   taskOptionsLoading.value = true
   try {
-    const [groupRecords, taskRecords] = await Promise.all([
-      fetchAll(getInspectionGroups),
-      fetchAll(getInspectionTasks),
-    ])
-    groupOptions.value = groupRecords
-    taskOptions.value = taskRecords
+    taskOptions.value = await fetchAll(getInspectionTasks)
   } finally {
     taskOptionsLoading.value = false
   }
@@ -1559,7 +1586,6 @@ async function loadExecutions() {
 function handleGroupTableChange(pagination) {
   groupPagination.current = pagination.current
   groupPagination.pageSize = pagination.pageSize
-  loadGroups()
 }
 function handleTaskTableChange(pagination) {
   taskPagination.current = pagination.current
@@ -1608,8 +1634,10 @@ function confirmRemoveCheck(check, index) {
 function addParam() {
   groupForm.params.push({ name: '', description: '', required: false, default: '' })
 }
-function openGroupModal(record) {
-  ensureApplicationOptions()
+async function openGroupModal(record) {
+  if (record ? !canView.value : !checkPermission('inspection:groups:create')) return
+  if (record) record = responseData(await getInspectionGroup(record.id))
+  if (!record || canUpdateGroup.value) await ensureApplicationOptions()
   Object.assign(groupForm, emptyGroupForm(), record ? JSON.parse(JSON.stringify(record)) : {})
   // 存量数据 params/checks 可能为 null（建组时未填），归一化成数组避免后续遍历崩掉。
   groupForm.params = Array.isArray(groupForm.params) ? groupForm.params : []
@@ -1627,10 +1655,17 @@ function openGroupModal(record) {
       run_user: check.config?.run_user || '',
     },
   }))
-  if (!groupForm.checks.length) addCheck()
+  if (!groupReadOnly.value && !groupForm.checks.length) addCheck()
   groupModalOpen.value = true
 }
-function openTaskModal(record) {
+async function openTaskModal(record) {
+  if (record ? !canView.value : !checkPermission('inspection:tasks:create')) return
+  if (record) record = responseData(await getInspectionTask(record.id))
+  savedTaskGroups.value = record?.groups || []
+  if (!record || canUpdateTask.value) {
+    groupOptions.value = await fetchAll(getInspectionGroups)
+    await loadServiceTree()
+  }
   Object.assign(taskForm, emptyTaskForm(), record ? JSON.parse(JSON.stringify(record)) : {})
   // 编辑时把组对象（含挂载点）转成本地绑定配置；兼容仅返回单组 group 的旧数据。
   taskForm.groups = (record?.groups?.length ? record.groups.map((group) => group.id) : (record?.group ? [record.group] : []))
@@ -1660,7 +1695,10 @@ function openTaskModal(record) {
   // 新建时若树上有选中节点，选组后即按树上下文生成挂载（handleTaskGroupsChange 处理）。
   taskModalOpen.value = true
 }
-function openScheduleModal(record) {
+async function openScheduleModal(record) {
+  if (!canView.value) return
+  record = responseData(await getInspectionTask(record.id))
+  if (!record.cron_expression) return message.warning('该计划已移除，请刷新列表')
   Object.assign(scheduleForm, emptyScheduleForm(), {
     id: record.id,
     name: record.name,
@@ -1669,11 +1707,14 @@ function openScheduleModal(record) {
   })
   scheduleModalOpen.value = true
 }
-function openCreateScheduleModal() {
+async function openCreateScheduleModal() {
+  if (!canUpdateTask.value) return
+  await loadScheduleTasks()
   Object.assign(scheduleForm, emptyScheduleForm())
   scheduleModalOpen.value = true
 }
 async function submitGroup() {
+  if (groupReadOnly.value || !checkPermission('inspection:groups:' + (groupForm.id ? 'update' : 'create'))) return
   if (!groupForm.name.trim() || !groupForm.checks.length || groupForm.checks.some((check) => !check.name.trim())) {
     message.warning('请完整填写巡检组和检查项')
     return
@@ -1708,13 +1749,14 @@ async function submitGroup() {
     await saveInspectionGroup(payload)
     groupModalOpen.value = false
     message.success('巡检组已保存')
-    await Promise.all([loadGroups(), loadSelectOptions()])
+    await Promise.all([loadGroups(), loadScheduleTasks()])
   } catch (error) {
     // 保留弹窗，让用户能直接改掉被后端拒绝的内容。
     message.error(error?.message || '巡检组保存失败')
   } finally { savingGroup.value = false }
 }
 async function submitTask() {
+  if (taskReadOnly.value || !checkPermission('inspection:tasks:' + (taskForm.id ? 'update' : 'create'))) return
   const hasTarget = !!taskTargetSummary.value
   if (!taskForm.name.trim() || !taskForm.groups?.length || !hasTarget) {
     message.warning('请完整填写任务信息，并在左侧树选择巡检对象')
@@ -1731,12 +1773,13 @@ async function submitTask() {
     await saveInspectionTask(payload)
     taskModalOpen.value = false
     message.success('巡检任务已保存')
-    await Promise.all([loadTasks(), loadSelectOptions()])
+    await Promise.all([loadTasks(), loadScheduleTasks()])
   } catch (error) {
     message.error(error?.message || '巡检任务保存失败')
   } finally { savingTask.value = false }
 }
 async function submitSchedule() {
+  if (!canUpdateTask.value) return
   if (!scheduleForm.id && !scheduleForm.task) {
     message.warning('请选择巡检任务')
     return
@@ -1758,21 +1801,22 @@ async function submitSchedule() {
     })
     scheduleModalOpen.value = false
     message.success('定时计划已保存')
-    await Promise.all([loadTasks(), loadSelectOptions()])
+    await Promise.all([loadTasks(), loadScheduleTasks()])
   } catch (error) {
     message.error(error?.message || '定时计划保存失败')
   } finally { savingSchedule.value = false }
 }
 async function toggleTaskEnabled(record, checked) {
+  if (!canUpdateTask.value) return
   togglingTaskId.value = record.id
   try {
     await saveInspectionTask({ id: record.id, enabled: checked })
     message.success(checked ? '巡检任务已启用' : '巡检任务已停用')
-    await Promise.all([loadTasks(), loadSelectOptions()])
+    await Promise.all([loadTasks(), loadScheduleTasks()])
   } catch (error) {
     message.error(error?.message || '状态切换失败')
     // 失败后重拉，避免开关停在与后端不一致的位置。
-    await loadSelectOptions()
+    await loadScheduleTasks()
   } finally { togglingTaskId.value = null }
 }
 async function runTask(record) {
@@ -1861,7 +1905,7 @@ function confirmDeleteGroup(record) {
     onConfirm: async () => {
       try {
         await batchDeleteInspectionGroups([record.id])
-        await Promise.all([loadGroups(), loadSelectOptions()])
+        await Promise.all([loadGroups(), loadScheduleTasks()])
       } catch (error) {
         message.error(error?.message || '巡检组删除失败')
       }
@@ -1876,7 +1920,7 @@ function confirmDeleteTask(record) {
     onConfirm: async () => {
       try {
         await batchDeleteInspectionTasks([record.id])
-        await Promise.all([loadTasks(), loadSelectOptions()])
+        await Promise.all([loadTasks(), loadScheduleTasks()])
       } catch (error) {
         message.error(error?.message || '巡检任务删除失败')
       }
@@ -1892,7 +1936,7 @@ function confirmClearSchedule(record) {
       try {
         await saveInspectionTask({ id: record.id, inspection_name: '', cron_expression: '' })
         message.success('定时计划已取消')
-        await Promise.all([loadTasks(), loadSelectOptions()])
+        await Promise.all([loadTasks(), loadScheduleTasks()])
       } catch (error) {
         message.error(error?.message || '定时计划取消失败')
       }
@@ -1901,9 +1945,7 @@ function confirmClearSchedule(record) {
 }
 function handleTabChange(key) {
   if (key === 'executions') loadExecutions()
-  if (key === 'tasks' || key === 'schedules') loadSelectOptions()
-  // 组导航树按适用应用分组，需要应用列表
-  if (key === 'groups') ensureApplicationOptions()
+  if (key === 'executions' || key === 'schedules') loadScheduleTasks()
 }
 function startExecutionPolling() {
   if (executionPollTimer) return
@@ -1923,10 +1965,7 @@ onMounted(async () => {
   await Promise.all([
     loadGroups(),
     loadTasks(),
-    loadSelectOptions(),
-    loadServiceTree(),
     loadExecutions(),
-    ensureApplicationOptions(),
   ])
 })
 onBeforeUnmount(stopExecutionPolling)

@@ -4,7 +4,7 @@
       <a-col flex="360px"><a-input-search v-model:value="keyword" placeholder="搜索项目、编码或业务系统" allow-clear enter-button @search="loadProjects" /></a-col>
       <a-col flex="auto" class="right-tools">
         <a-space>
-          <a-button v-permission="'assets:projects:create'" size="large" @click="openProject()"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" /><span>&nbsp;新增项目</span></a-button>
+          <a-button v-permission="'assets:applications:create'" size="large" @click="openProject()"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" /><span>&nbsp;新增项目</span></a-button>
           <a-tooltip title="刷新"><a-button type="primary" ghost :loading="loading" @click="loadProjects"><FontAwesomeIcon :icon="['fas', 'arrows-rotate']" /><span>&nbsp;刷新</span></a-button></a-tooltip>
         </a-space>
       </a-col>
@@ -16,16 +16,18 @@
         </template>
         <template v-else-if="column.key === 'enabled'"><EnabledSwitch v-model:checked="record.enabled" :endpoint="`assets/projects/${record.id}/`" permission="assets:applications:update" /></template>
         <template v-else-if="column.key === 'action'"><a-space>
-          <a-tooltip title="编辑"><a-button v-permission="'assets:projects:update'" size="small" type="primary" @click="openProject(record)"><FontAwesomeIcon :icon="['fa', 'edit']" /></a-button></a-tooltip>
-          <a-tooltip title="删除"><a-button v-permission="'assets:projects:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDelete(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip>
+          <AssetFormAction @open="openProject(record, $event)" />
+          <a-tooltip title="删除"><a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDelete(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip>
         </a-space></template>
       </template>
     </a-table>
-    <ProjectDialog :open="dialogOpen" :project-id="selectedId" @update:open="dialogOpen = $event" @saved="loadProjects" />
+    <ProjectDialog :read-only="dialogReadOnly || (selectedId ? !canUpdate : !canCreate)" :open="dialogOpen" :project-id="selectedId" @update:open="dialogOpen = $event" @saved="loadProjects" />
   </section>
 </template>
 
 <script setup>
+import AssetFormAction from '../application/components/AssetFormAction.vue'
+import { canView, canCreate, canUpdate, canDelete } from '../application/components/assetPermissions'
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
@@ -37,6 +39,7 @@ import ProjectDialog from '../application/components/ProjectDialog.vue'
 const projects = ref([])
 const keyword = ref('')
 const loading = ref(false)
+const dialogReadOnly = ref(false)
 const dialogOpen = ref(false)
 const selectedId = ref(null)
 const columns = [
@@ -58,16 +61,24 @@ async function loadProjects() {
     loading.value = false
   }
 }
-function openProject(record = null) {
+function openProject(record = null, readOnly = false) {
+  if (record ? !canView.value : !canCreate.value) return
+  dialogReadOnly.value = readOnly
   selectedId.value = record?.id || null
   dialogOpen.value = true
 }
 function confirmDelete(record) {
+  if (!canDelete.value) return
   openDeleteConfirm({
     title: '删除项目',
     summary: '删除项目只会解除项目关联，不会删除业务系统和服务。',
     items: [record.name || record.code || record.id],
-    onConfirm: async () => { await batchDeleteProjects([record.id]); message.success('删除成功'); await loadProjects() },
+    onConfirm: async () => {
+      if (!canDelete.value) return
+      await batchDeleteProjects([record.id])
+      message.success('删除成功')
+      await loadProjects()
+    },
   })
 }
 onMounted(loadProjects)

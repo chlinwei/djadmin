@@ -25,7 +25,7 @@
               <span>&nbsp;新增业务系统</span>
             </a-button>
           </a-tooltip>
-          <a-tooltip v-if="canCreateService" title="新增逻辑服务">
+          <a-tooltip v-if="canCreateService && canManageService('create')" title="新增逻辑服务">
             <a-button v-permission="'assets:service-tree:manage'" type="primary" @click="openApplicationService()">
               <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
               <span>&nbsp;新增逻辑服务</span>
@@ -85,6 +85,7 @@
     <BusinessSystemDialog
       :open="businessSystemDialogOpen"
       :system-id="selectedBusinessSystemId"
+      :read-only="!!selectedBusinessSystemId && !canManageTree()"
       :initial-project-id="businessSystemInitialProjectId"
       @update:open="businessSystemDialogOpen = $event"
       @saved="handleBusinessSystemSaved"
@@ -92,6 +93,7 @@
     <ApplicationServiceDialog
       :open="serviceDialogOpen"
       :service-id="selectedServiceId"
+      :read-only="!!selectedServiceId && !canManageService('update')"
       :copy-service-id="copyServiceId"
       :initial-business-system-id="serviceCreateInitialBusinessSystemId"
       :initial-environment-id="serviceCreateInitialEnvironmentId"
@@ -112,6 +114,7 @@ import { useServiceTreeLocation } from '@/util/serviceTreeLocation'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { batchDeleteBusinessSystems, batchDeleteApplicationServices } from '@/api/assets/application'
 import { checkPermission } from '@/directives/permission/permission'
+import { canManageService, canManageTree, canViewBusiness, canViewService } from './configPermissions'
 import ServiceTree from '../application/components/ServiceTree.vue'
 import ServiceTreeNodeContent from './ServiceTreeNodeContent.vue'
 import BusinessSystemDialog from '../application/components/BusinessSystemDialog.vue'
@@ -240,6 +243,7 @@ async function refreshServiceTree() {
 }
 
 function openBusinessSystem(record = null) {
+  if (record ? !canViewBusiness() : !canManageTree()) return
   selectedBusinessSystemId.value = record?.id || null
   // 新增且当前选中的是项目节点时预填所属项目，不用用户再选一遍；编辑时不需要(字段会从记录本身加载)。
   businessSystemInitialProjectId.value = record
@@ -270,6 +274,7 @@ function confirmDeleteBusinessSystem(record) {
 }
 
 function openApplicationService(record = null) {
+  if (record ? !canViewService() : !canManageService('create')) return
   copyServiceId.value = null
   selectedServiceId.value = record?.id || null
   // 新增时按当前树选中的业务系统/环境预填，不用用户再选一遍；编辑时不需要(字段会从记录本身加载)。
@@ -283,6 +288,7 @@ async function handleApplicationServiceSaved() {
 }
 
 function copyApplicationService(record) {
+  if (!canViewService() || !canManageService('create')) return
   selectedServiceId.value = null
   copyServiceId.value = record.id
   serviceCreateInitialBusinessSystemId.value = null

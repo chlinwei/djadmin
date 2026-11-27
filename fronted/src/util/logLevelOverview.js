@@ -39,7 +39,7 @@ function serviceEnvironmentName(service) {
 // 入参：
 // - scope：服务树选中的节点（nodeType 决定这一层看什么；project/businessSystem/environment 层用它收窄）
 // - projects / businessSystems / services：资产侧的全量名单（服务行带 business_system / environment /
-//   log_collection_enabled / log_retention_tier_id —— 采集开关与档位的权威值就在这些行上）
+//   log_collection_enabled / log_retention_tier —— 采集开关与档位的权威值就在这些行上）
 // - statusByService：服务 id → 日志状态汇总（后端 log-status-summary 的 items，可能为空）
 // - usageByService：服务**编码** → 最近写入文档数（只有环境层会传，见 getLogServiceUsage）
 //
@@ -247,7 +247,7 @@ function summarizeMember(member, memberServices, statusByService, usageByService
         row.unmanagedPairs += status.pending.unmanaged || 0
       }
     }
-    if (dimensionKey === 'service') row.retentionTierId = service.log_retention_tier_id ?? null
+    if (dimensionKey === 'service') row.retentionTierId = service.log_retention_tier ?? null
     if (usageByService && Object.prototype.hasOwnProperty.call(usageByService, service.code)) {
       usageKnown = true
       usageTotal += Number(usageByService[service.code] || 0)

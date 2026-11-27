@@ -21,11 +21,13 @@ vi.mock('vue-router', () => ({
   }),
 }))
 
+const getInventory = vi.fn()
 const getInventoryList = vi.fn()
 const getAutomationHostOptions = vi.fn()
 const getAutomationGroupTree = vi.fn()
 
 vi.mock('@/api/sys/automation', () => ({
+  getInventory: (...args) => getInventory(...args),
   getInventoryList: (...args) => getInventoryList(...args),
   createInventory: vi.fn(),
   updateInventory: vi.fn(),
@@ -82,7 +84,10 @@ function mockCommonApiResponses() {
 }
 
 describe('inventory route query auto search', () => {
+  const originalRoles = store.state.role_codes
+  afterEach(() => { store.state.role_codes = originalRoles })
   beforeEach(() => {
+    store.state.role_codes = ['admin']
     routeState.query = {}
     routerPush.mockReset()
     routerResolve.mockClear()
@@ -128,38 +133,29 @@ describe('inventory route query auto search', () => {
     })
     try {
       await flushPromises()
-      const view = wrapper.get('[data-view-inventory]')
-      expect(view.isVisible()).toBe(true)
-      expect(view.classes()).toContain('ant-btn-link')
-      expect(view.classes()).toContain('detail-action')
-      expect(view.text()).toBe('详情')
-      const tooltip = wrapper.findAllComponents({ name: 'ATooltip' })
-        .find((item) => item.props('title') === '查看详情')
-      expect(tooltip.props('placement')).toBe('top')
-      await view.trigger('mouseenter')
-      await new Promise((resolve) => setTimeout(resolve, 150))
-      await flushPromises()
-      expect(document.body.querySelector('.ant-tooltip-inner')?.textContent).toBe('查看详情')
-      const visibleButtons = wrapper.findAll('tbody button').filter((button) => button.isVisible())
-      expect(visibleButtons).toHaveLength(3) // 主机数量、禁用状态开关与查看详情。
-      expect(wrapper.get('tbody .ant-switch').attributes('disabled')).toBeDefined()
-      expect(wrapper.findComponent({ name: 'ATable' }).props('scroll')).toEqual({ x: 1140 })
-      expect(wrapper.vm.columns.find((column) => column.key === 'action')).toMatchObject({ fixed: 'right', width: 220 })
-      await view.trigger('click')
+      getInventory.mockResolvedValue({ data: { data: {
+        ...wrapper.vm.records[0], selected_host_ids: [201, 202], selected_host_names: { 201: 'prod-01', 202: 'no-ip' },
+        resolved_hosts: [{ host_id: 201, host_name: 'prod-01', host_ip: '10.0.0.1', group_id: 1, group_name: 'production' }],
+      } } })
+      await wrapper.get('[data-inventory-form]').trigger('click')
       await flushPromises()
       const dialog = document.body.querySelector('.ant-modal-content')
-      expect(dialog.textContent).toContain('查看 Inventory 详情 - Production Inventory')
-      expect(dialog.textContent).toContain('生产主机只读查看')
-      expect(dialog.textContent).toContain('已选主机可用')
-      expect(dialog.textContent).toContain('当前范围：1台主机')
-      expect(dialog.textContent).toContain('prod-01(10.0.0.1)')
-      expect(dialog.querySelector('.ant-modal-footer')).toBeNull()
+      expect(dialog.querySelector('.ant-modal-title').textContent).toBe('查看Inventory')
+      expect(dialog.querySelector('input').value).toBe('Production Inventory')
+      expect(dialog.querySelector('textarea').value).toContain('production / prod-01')
       expect(dialog.querySelector('.ant-switch').disabled).toBe(true)
-      expect(dialog.querySelector('.ant-switch').getAttribute('aria-checked')).toBe('true')
-      expect(dialog.querySelectorAll('input.ant-input')).toHaveLength(1)
-      expect(dialog.querySelector('input.ant-input').placeholder).toBe('搜索分组/主机/IP')
-      expect(dialog.querySelector('form')).toBeNull()
-      expect(wrapper.vm.modalVisible).toBe(false)
+      expect(dialog.querySelector('.ant-modal-footer').textContent.replace(/\s/g, '')).toBe('关闭')
+      wrapper.vm.openScopeModal()
+      expect(wrapper.vm.scopeModalVisible).toBe(true)
+      expect(wrapper.vm.scopeEditTreeData[1].children[0].title).toBe('no-ip')
+      wrapper.vm.onScopeCheck([])
+      expect(wrapper.vm.form.selected_host_ids).toEqual([201, 202])
+      await wrapper.vm.submitForm()
+      await wrapper.vm.openScopeViewer(wrapper.vm.records[0])
+      expect(wrapper.vm.scopeViewTreeData[0].children[0].title).toBe('prod-01(10.0.0.1)')
+      expect(wrapper.vm.scopeViewTreeData).toHaveLength(1)
+      expect(getAutomationHostOptions).not.toHaveBeenCalled()
+      expect(getAutomationGroupTree).not.toHaveBeenCalled()
       expect(createInventory).not.toHaveBeenCalled()
       expect(updateInventory).not.toHaveBeenCalled()
       expect(batchDeleteInventories).not.toHaveBeenCalled()
@@ -171,23 +167,19 @@ describe('inventory route query auto search', () => {
     }
   })
 
-  it('查看空范围仍显示状态、健康信息及备注占位，不复用编辑表单', async () => {
+  it('实际主机清单也支持停用的空 Inventory', async () => {
+    const roles = store.state.role_codes
+    store.state.role_codes = ['admin']
     const wrapper = mountPage()
     try {
       await flushPromises()
-      wrapper.vm.openScopeViewer({
-        id: 9, name: 'Empty Inventory', enabled: false, selected_host_ids: [],
-        resolved_host_count: 0, health_status: { status: 'empty', label: '空范围', message: '未选择主机' },
-      })
-      await nextTick()
-      expect(wrapper.vm.scopeViewInventory).toMatchObject({ name: 'Empty Inventory', enabled: false })
-      expect(wrapper.vm.scopeViewTitle).toBe('查看 Inventory 详情 - Empty Inventory')
+      getInventory.mockResolvedValue({ data: { data: { name: 'Empty', enabled: false, resolved_hosts: [] } } })
+      await wrapper.vm.openScopeViewer({ id: 9 })
       expect(wrapper.vm.scopeViewSummary).toBe('当前范围：0台主机')
       expect(wrapper.vm.scopeViewTreeData).toEqual([])
       expect(wrapper.vm.modalVisible).toBe(false)
-    } finally {
-      wrapper.unmount()
-    }
+      expect(getAutomationHostOptions).not.toHaveBeenCalled()
+    } finally { wrapper.unmount(); store.state.role_codes = roles }
   })
 
   it.each([true, false])('删除逐项结果 ok=%s 时正确提示', async (ok) => {
@@ -278,9 +270,13 @@ describe('inventory route query auto search', () => {
     const wrapper = mountPage()
     try {
       await flushPromises()
+      await wrapper.vm.loadScopeCandidates()
       expect(wrapper.vm.scopeEditTreeData.map((group) => group.key)).toEqual(['group-1', 'group-2'])
       expect(wrapper.vm.scopeEditTreeData.map((group) => group.children[0].host_id)).toEqual([201, 202])
-      wrapper.vm.openScopeViewer({ name: 'both groups', selected_host_ids: [201, 202] })
+      getInventory.mockResolvedValue({ data: { data: { name: 'both groups', resolved_hosts: wrapper.vm.hostOptions.filter(h => [201, 202].includes(h.id)).map(h => ({
+        host_id: h.id, host_name: h.instance_name, host_ip: h.ip, group_id: h.group_id, group_name: wrapper.vm.groupPathMap[h.group_id],
+      })) } } })
+      await wrapper.vm.openScopeViewer({ id: 9 })
       await nextTick()
       expect(wrapper.vm.scopeViewTreeData.map((group) => group.children[0].host_id)).toEqual([201, 202])
       expect(wrapper.vm.scopeViewSummary).toBe('当前范围：2台主机')
@@ -302,6 +298,7 @@ describe('inventory route query auto search', () => {
     const wrapper = mountPage()
     try {
       await flushPromises()
+      await wrapper.vm.loadScopeCandidates()
       expect(getAutomationHostOptions.mock.calls).toEqual([
         [{ page: 1, page_size: 1000 }], [{ page: 2, page_size: 30 }],
       ])
@@ -323,7 +320,8 @@ describe('inventory route query auto search', () => {
     const wrapper = mountPage()
     try {
       await flushPromises()
-      wrapper.vm.openEditModal({ id: 1, name: 'wuhan', selected_host_ids: [1] })
+      await wrapper.vm.loadScopeCandidates()
+      wrapper.vm.form.name = 'wuhan'
       wrapper.vm.openScopeModal()
       await wrapper.vm.submitForm()
       expect(error).toHaveBeenCalledWith(expect.stringContaining('主机范围加载失败'))
@@ -349,10 +347,14 @@ describe('inventory route query auto search', () => {
     const wrapper = mountPage()
     try {
       await flushPromises()
+      await wrapper.vm.loadScopeCandidates()
       expect(wrapper.vm.scopeEditTreeData[0].children.map((node) => node.title)).toEqual([
         'hak-app-201(10.25.66.201)', '10.25.66.202', '10.25.66.203', 'not-selected(10.25.66.204)',
       ])
-      wrapper.vm.openScopeViewer({ name: 'all', selected_host_ids: [201, 202, 203] })
+      getInventory.mockResolvedValue({ data: { data: { name: 'all', resolved_hosts: wrapper.vm.hostOptions.filter(h => [201, 202, 203].includes(h.id)).map(h => ({
+        host_id: h.id, host_name: h.instance_name, host_ip: h.ip, group_id: h.group_id, group_name: wrapper.vm.groupPathMap[h.group_id],
+      })) } } })
+      await wrapper.vm.openScopeViewer({ id: 9 })
       await nextTick()
       expect(wrapper.vm.scopeViewTreeData[0].title).toBe('wuhan（3台）')
       expect(wrapper.vm.scopeViewTreeData[0].children.map((node) => node.title)).toEqual([

@@ -47,7 +47,9 @@
                   <a-table :columns="macroColumns" :data-source="macroDefinitions" :pagination="false" :scroll="{ x: 900 }" row-key="_uid" size="small" :locale="tableLocale">
                     <template #bodyCell="{ column, record, index }">
                       <template v-if="column.key === 'name'"><a-input v-model:value="record.name" placeholder="例如 ORACLE_SID" /></template>
-                      <template v-else-if="column.key === 'value'"><a-input v-model:value="record.value" placeholder="默认值，可为空" /></template>
+                      <template v-else-if="column.key === 'value'">
+                        <a-input :value="displayMacro(record.name, record.value, readOnly)" placeholder="默认值，可为空" @update:value="value => { if (!readOnly) record.value = value }" />
+                      </template>
                       <template v-else-if="column.key === 'description'"><a-input v-model:value="record.description" placeholder="说明" /></template>
                       <template v-else-if="column.key === 'action'"><a-tooltip title="删除"><a-button class="delBtn" danger size="small" @click="macroDefinitions.splice(index, 1)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip></template>
                     </template>
@@ -170,11 +172,9 @@
             <div v-for="(item, index) in form.logs" :key="`log-${index}`" class="repeat-row log-row">
               <a-input v-model:value="item.name" placeholder="名称" />
               <a-input v-model:value="item.path_pattern" placeholder="例如 ${APP_HOME}/logs/*.log" />
-              <a-input v-if="readOnly" :value="item.processing_rule == null ? '无处理规则' : `处理规则 ID: ${item.processing_rule}`" />
               <a-select
-                v-else
                 v-model:value="item.processing_rule"
-                :options="processingRuleOptions"
+                :options="readOnly ? selectedRule(item, 'processing_rule', '处理规则') : processingRuleOptions"
                 :getPopupContainer="getPopupContainer"
                 :virtual="false"
                 allow-clear
@@ -182,11 +182,9 @@
                 option-filter-prop="label"
                 placeholder="日志处理规则"
               />
-              <a-input v-if="readOnly" :value="item.filter_include_rule == null ? '无保留规则' : `保留规则 ID: ${item.filter_include_rule}`" />
               <a-select
-                v-else
                 v-model:value="item.filter_include_rule"
-                :options="filterRuleOptions('include')"
+                :options="readOnly ? selectedRule(item, 'filter_include_rule', '保留规则') : filterRuleOptions('include')"
                 :getPopupContainer="getPopupContainer"
                 :virtual="false"
                 allow-clear
@@ -194,11 +192,9 @@
                 option-filter-prop="label"
                 placeholder="只保留匹配的记录（可选）"
               />
-              <a-input v-if="readOnly" :value="item.filter_exclude_rule == null ? '无丢弃规则' : `丢弃规则 ID: ${item.filter_exclude_rule}`" />
               <a-select
-                v-else
                 v-model:value="item.filter_exclude_rule"
-                :options="filterRuleOptions('exclude')"
+                :options="readOnly ? selectedRule(item, 'filter_exclude_rule', '丢弃规则') : filterRuleOptions('exclude')"
                 :getPopupContainer="getPopupContainer"
                 :virtual="false"
                 allow-clear
@@ -241,6 +237,7 @@
 </template>
 
 <script setup>
+import { displayMacro, formFields, isSensitiveMacro } from './assetFormValues'
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
@@ -350,6 +347,10 @@ async function loadProcessingRules() {
 
 // 采集过滤规则：**按方向**分桶给两个下拉，白名单不会出现在"丢掉"槽里——反着用会只采噪声。
 // 归属与解析规则同一套约定：属于当前应用 + 不限应用的通用规则。
+function selectedRule(item, field, label) {
+  const id = item[field]
+  return id == null ? [] : [{ value: id, label: item[`${field}_name`] || `${label} ID: ${id}` }]
+}
 function filterRuleOptions(direction) {
   return collectionFilterRules.value
     .filter((item) => item.enabled && (item.rule_type || 'include') === direction)
@@ -372,11 +373,11 @@ async function loadTemplate(id) {
     if (currentLoadToken !== loadToken) return
     const data = response?.data?.data || {}
     const initial = createInitialForm()
-    Object.assign(form, initial, data)
+    Object.assign(form, formFields(initial, data))
     if (props.readOnly) applications.value = [{ id: data.application, name: data.application_name }]
     macroDefinitions.value = (data.macro_definitions || []).map((item) => ({
       _uid: ++macroKeySeq,
-      name: item.name || '', value: item.value || item.default || '', description: item.description || '',
+      name: item.name || '', value: props.copyFromId && isSensitiveMacro(item.name) ? '' : item.value || item.default || '', description: item.description || '',
     }))
     if (props.copyFromId) form.name = `${form.name || '部署模板'}-副本`
     if (!form.docker_config) form.docker_config = initial.docker_config
@@ -481,6 +482,7 @@ async function submitTemplate() {
   payload.docker_config = form.control_type === 'docker' ? form.docker_config : null
   payload.compose_config = form.control_type === 'docker_compose' ? form.compose_config : null
   try {
+    if (props.readOnly) return
     const response = await saveApplicationDeploymentTemplate(payload)
     message.success(props.templateId ? '部署模板保存成功' : props.copyFromId ? '部署模板复制成功' : '部署模板新增成功')
     emit('saved', response?.data?.data)
@@ -517,7 +519,7 @@ watch(() => props.open, (visible) => {
       ? loadTemplate(props.templateId || props.copyFromId)
       : Promise.resolve(),
   ])
-})
+}, { immediate: true })
 </script>
 
 <style scoped>

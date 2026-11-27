@@ -137,6 +137,14 @@ func TestActionPermissionsReachHandlersWithoutAdmin(t *testing.T) {
 		{http.MethodPatch, "/sys/configs/invalid/", []string{"sys:config:update"}},
 		{http.MethodPost, "/sys/configs/invalid/reset-default/", []string{"sys:config:update"}},
 		{http.MethodPost, "/monitor/packages/", []string{"monitor:view", "monitor:create"}},
+		{http.MethodGet, "/monitor/maintenance-windows/", []string{"monitor:view", "monitor:maintenance:view"}},
+		{http.MethodGet, "/monitor/maintenance-windows/detail/", []string{"monitor:view", "monitor:maintenance:view"}},
+		{http.MethodGet, "/monitor/maintenance-windows/preview/", []string{"monitor:view", "monitor:maintenance:view"}},
+		{http.MethodPost, "/monitor/maintenance-windows/create/", []string{"monitor:view", "monitor:maintenance:view", "monitor:maintenance:create"}},
+		{http.MethodPost, "/monitor/maintenance-windows/update/", []string{"monitor:view", "monitor:maintenance:view", "monitor:maintenance:update"}},
+		{http.MethodPost, "/monitor/maintenance-windows/cancel/", []string{"monitor:view", "monitor:maintenance:view", "monitor:maintenance:cancel"}},
+		{http.MethodPost, "/monitor/maintenance-windows/end/", []string{"monitor:view", "monitor:maintenance:view", "monitor:maintenance:end"}},
+		{http.MethodPost, "/monitor/maintenance-windows/batch-delete/", []string{"monitor:view", "monitor:maintenance:view", "monitor:maintenance:delete"}},
 		{http.MethodPatch, "/monitor/targets/1/", []string{"monitor:view", "monitor:update"}},
 		{http.MethodPost, "/monitor/packages/batch-delete/", []string{"monitor:view", "monitor:delete"}},
 		{http.MethodPost, "/monitor/targets/batch-create/", []string{"monitor:view", "monitor:create", "monitor:execute"}},
@@ -165,6 +173,11 @@ func TestActionPermissionsReachHandlersWithoutAdmin(t *testing.T) {
 				wantStatus := http.StatusOK
 				if strings.HasSuffix(test.path, "/webssh/") {
 					wantStatus = http.StatusBadRequest
+				}
+				if index == -1 && test.path == "/monitor/maintenance-windows/" {
+					mock.ExpectQuery("CountMaintenanceWindows").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+					mock.ExpectQuery("ListMaintenanceWindows").WillReturnRows(sqlmock.NewRows([]string{"id"}))
+					wantCode = 200
 				}
 				if index >= 0 {
 					permissions = append(permissions[:index], permissions[index+1:]...)

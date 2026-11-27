@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"autoadmin/internal/agent"
@@ -38,7 +39,10 @@ type Handler struct {
 	// 「配置状态」，但渲染采集配置的实现属于 logcollect。缺省时列表该列显示"未知"。
 	evaluateLogConfigStates func(ctx context.Context, refs []logcollect.LogConfigTargetRef) (map[int64]logcollect.LogConfigState, error)
 	// 告警通知的 SMTP 发信能力，缺省 sendSMTPMedia；单测可注入假实现。
-	smtpSend smtpSender
+	smtpSend          smtpSender
+	maintenanceLookup func(context.Context, alertNotificationTarget, time.Time) ([]maintenanceWindowHit, error)
+	activeDispatch    sync.Map
+	notificationLocks [64]sync.Mutex
 }
 
 // SetHostInfoRefresher 注入主机资产补采能力（assets.Handler.RefreshHostInfoByID）。
@@ -56,6 +60,7 @@ func (handler *Handler) SetLogConfigStateEvaluator(evaluator func(ctx context.Co
 func NewHandler(db *sql.DB, gateway *agent.Gateway, jobs *automation.Handler, secrets *assets.SecretEncryptor, packageRoot string) *Handler {
 	handler := &Handler{db: db, client: &http.Client{Timeout: 8 * time.Second}, gateway: gateway, secrets: secrets, packageRoot: packageRoot, jobs: jobs}
 	handler.smtpSend = handler.handlerSendSMTP
+	handler.maintenanceLookup = handler.matchedMaintenanceWindows
 	// 给历史 Filebeat 软件包补默认安装/卸载 Playbook（没配的补齐到软件包配置里）。
 	handler.backfillFilebeatPackagePlaybooks()
 	// 失联对账 ticker：单实例部署，进程内唯一 goroutine，随进程退出终止（无需优雅停止）。
@@ -215,7 +220,7 @@ func (handler *Handler) attachCurrentAlertNotifications(ctx context.Context, occ
 		results[i]["history_id"] = match.ID
 		results[i]["notification_count"] = match.NotificationCount
 		results[i]["notification_delivery_count"] = match.NotificationDeliveryCount
-		results[i]["notification_status"] = notificationStatusFrom(match.NotificationCount, match.NotificationFailedCount, match.NotificationActiveCount, match.NotificationDeliveryCount)
+		results[i]["notification_status"] = notificationStatusFrom(match.NotificationCount, match.NotificationFailedCount, match.NotificationActiveCount, match.NotificationDeliveryCount, match.NotificationSuppressedCount, match.NotificationSentCount)
 	}
 	return nil
 }

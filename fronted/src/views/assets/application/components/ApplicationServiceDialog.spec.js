@@ -1,6 +1,11 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import Antd from 'ant-design-vue'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import store from '@/store'
+
+const originalRoles = store.state.role_codes
+beforeEach(() => { store.state.role_codes = ['admin'] })
+afterEach(() => { store.state.role_codes = originalRoles })
 
 vi.mock('@/api/assets/application', () => ({
   getApplicationDeploymentList: vi.fn(() => Promise.resolve({
@@ -155,6 +160,47 @@ function plainTemplateDetailPayload(id) {
 }
 
 describe('ApplicationServiceDialog', () => {
+  it('查看服务仅加载已关联资源，宏脱敏，查看成员不保存父服务或打开创建入口', async () => {
+    getApplicationService.mockResolvedValueOnce({ data: { data: {
+      id: 20, name: '订单服务', application: 5, application_name: 'Tomcat', business_system: 3,
+      business_system_name: '订单系统', environment: 31, environment_name: '生产',
+      application_version: 51, application_version_name: '9.1', deployment_template: 62,
+      member_instances: [13], macro_values: { DB_PASSWORD: 'private-override' },
+    } } })
+    getApplicationDeploymentTemplate.mockResolvedValueOnce({ data: { data: {
+      id: 62, name: '订单模板', application: 5, macro_definitions: [{ name: 'DB_PASSWORD', value: 'private-default' }],
+    } } })
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: true, serviceId: 20, readOnly: true },
+      global: { plugins: [Antd], stubs: {
+        AModal: { template: '<div><slot /><footer><slot name="footer" /></footer></div>' },
+        DeploymentDialog: true, FontAwesomeIcon: true,
+      } },
+    })
+    try {
+      await flushPromises()
+      expect(getApplicationDeploymentList).toHaveBeenCalledWith(expect.objectContaining({ application_service: 20 }))
+      expect(getApplicationDeploymentTemplateList).not.toHaveBeenCalled()
+      expect(wrapper.text()).toContain('订单系统')
+      expect(wrapper.text()).toContain('订单模板')
+      expect(wrapper.text()).not.toMatch(/新增部署实例|重置为默认|新建应用|删除|编辑/)
+      expect(wrapper.find('footer').text().replace(/\s/g, '')).toBe('关闭')
+      const values = wrapper.findAll('input').map(input => input.element.value)
+      expect(values).toContain('••••••')
+      expect(values).not.toContain('private-override')
+      expect(wrapper.findAll('input,textarea,button[role="switch"]').every(el => el.element.disabled)).toBe(true)
+      await wrapper.find('.member-row .detail-action').trigger('click')
+      expect(wrapper.findComponent(DeploymentDialog).props()).toMatchObject({ open: true, readOnly: true, deploymentId: 13 })
+      wrapper.vm.confirmDeleteDeployment(13)
+      wrapper.vm.handleDeploymentSaved({ id: 99 })
+      await wrapper.vm.openDeploymentDialog()
+      await wrapper.vm.submit()
+      expect(wrapper.vm.selectedDeploymentIds).toEqual([13])
+      expect(saveApplicationService).not.toHaveBeenCalled()
+    } finally {
+      wrapper.unmount()
+    }
+  })
   it('只提供新增部署实例，切换环境不查询候选且保留已关联成员', async () => {
     const wrapper = mount(ApplicationServiceDialog, {
       props: { open: false, serviceId: 20 },
@@ -226,7 +272,7 @@ describe('ApplicationServiceDialog', () => {
 
   it('copies configuration into a new service without identity, members or collection state', async () => {
     const source = (await getApplicationService()).data.data
-    source.macro_values = { QMGR_NAME: 'QM1' }
+    source.macro_values = { QMGR_NAME: 'QM1', API_TOKEN: 'not-for-copy' }
     source.log_collection_enabled = true
     source.log_settings = [{ log_definition: 82 }]
     getApplicationService.mockResolvedValueOnce({ data: { data: source } })

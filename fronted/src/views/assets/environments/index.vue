@@ -13,16 +13,18 @@
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'enabled'"><EnabledSwitch v-model:checked="record.enabled" :endpoint="`assets/business-environments/${record.id}/`" permission="assets:applications:update" /></template>
         <template v-else-if="column.key === 'action'"><a-space>
-          <a-tooltip title="编辑"><a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openEnvironment(record)"><FontAwesomeIcon :icon="['fa', 'edit']" /></a-button></a-tooltip>
+          <AssetFormAction @open="openEnvironment(record, $event)" />
           <a-tooltip title="删除"><a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDelete(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip>
         </a-space></template>
       </template>
     </a-table>
-    <BusinessEnvironmentDialog :open="dialogOpen" :environment-id="selectedId" @update:open="dialogOpen = $event" @saved="loadEnvironments" />
+    <BusinessEnvironmentDialog :read-only="dialogReadOnly || (selectedId ? !canUpdate : !canCreate)" :open="dialogOpen" :environment-id="selectedId" @update:open="dialogOpen = $event" @saved="loadEnvironments" />
   </section>
 </template>
 
 <script setup>
+import AssetFormAction from '../application/components/AssetFormAction.vue'
+import { canView, canCreate, canUpdate, canDelete } from '../application/components/assetPermissions'
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
@@ -34,6 +36,7 @@ import BusinessEnvironmentDialog from '../application/components/BusinessEnviron
 const environments = ref([])
 const keyword = ref('')
 const loading = ref(false)
+const dialogReadOnly = ref(false)
 const dialogOpen = ref(false)
 const selectedId = ref(null)
 const columns = [
@@ -56,16 +59,24 @@ async function loadEnvironments() {
     loading.value = false
   }
 }
-function openEnvironment(record = null) {
+function openEnvironment(record = null, readOnly = false) {
+  if (record ? !canView.value : !canCreate.value) return
+  dialogReadOnly.value = readOnly
   selectedId.value = record?.id || null
   dialogOpen.value = true
 }
 function confirmDelete(record) {
+  if (!canDelete.value) return
   openDeleteConfirm({
     title: '删除环境',
     summary: '仍被逻辑服务或部署实例引用的环境不能删除。',
     items: [record.name || record.code || record.id],
-    onConfirm: async () => { await batchDeleteBusinessEnvironments([record.id]); message.success('删除成功'); await loadEnvironments() },
+    onConfirm: async () => {
+      if (!canDelete.value) return
+      await batchDeleteBusinessEnvironments([record.id])
+      message.success('删除成功')
+      await loadEnvironments()
+    },
   })
 }
 onMounted(loadEnvironments)

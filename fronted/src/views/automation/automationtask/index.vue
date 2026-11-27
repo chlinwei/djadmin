@@ -7,6 +7,7 @@
       :task-columns="taskColumns"
       :tasks="tasks"
       :task-pagination="taskPagination"
+      :can-view-task="canViewTask"
       :can-edit-task="canEditTask"
       :task-status-updating-id="taskStatusUpdatingId"
       :running-task-id="runningTaskId"
@@ -29,6 +30,7 @@
     />
 
     <TaskFormModal
+      :read-only="taskReadOnly"
       :is-create-mode="isCreateMode"
       :open="taskModalVisible"
       :confirm-loading="modalSubmitting"
@@ -93,6 +95,7 @@ import store from '@/store'
 import {
   getPlaybookList,
   getInventoryList,
+  getTask,
   getTaskList,
   createTask,
   batchDeleteTasks,
@@ -130,6 +133,8 @@ import {
 const route = useRoute()
 const router = useRouter()
 const getTaskModalPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
+const canViewTask = computed(() => checkPermission('automation:tasks:view'))
+const taskReadOnly = computed(() => !isCreateMode.value && !canEditTask.value)
 const canEditTask = computed(() => checkPermission('automation:tasks:update'))
 const tasks = ref([])
 const taskLoading = ref(false)
@@ -313,32 +318,6 @@ async function loadTasks(resetPage = false) {
   }
 }
 
-async function findTaskRecordById(taskId) {
-  const direct = tasks.value.find((item) => Number(item?.id) === taskId)
-  if (direct) {
-    return direct
-  }
-
-  const pageSize = 200
-  let page = 1
-
-  while (page <= 50) {
-    const res = await getTaskList({ page, page_size: pageSize, ordering: '-id' })
-    const data = res?.data?.data || {}
-    const records = Array.isArray(data.results) ? data.results : []
-    const hit = records.find((item) => Number(item?.id) === taskId)
-    if (hit) {
-      return hit
-    }
-    if (!data.next) {
-      break
-    }
-    page += 1
-  }
-
-  return null
-}
-
 async function openTaskFromRouteQuery() {
   const rawTaskId = Array.isArray(route.query.task_id) ? route.query.task_id[0] : route.query.task_id
   const taskId = Number(rawTaskId)
@@ -349,12 +328,7 @@ async function openTaskFromRouteQuery() {
   taskKeyword.value = String(taskId)
   await loadTasks(true)
 
-  const target = await findTaskRecordById(taskId)
-  if (target) {
-    openEditModal(target)
-  } else {
-    message.warning(`未找到任务 #${taskId}`)
-  }
+  await openEditModal({ id: taskId })
 
   const nextQuery = { ...route.query }
   delete nextQuery.task_id
@@ -415,7 +389,9 @@ function resetTaskForm() {
   taskLimitPrecheckMessage.value = '请选择 Inventory 后输入 Limit，系统将实时预检'
 }
 
-function openCreateModal() {
+async function openCreateModal() {
+  if (!checkPermission('automation:tasks:create')) return
+  await Promise.all([loadPlaybooks(), loadInventories()])
   isCreateMode.value = true
   editingTaskId.value = null
   resetTaskForm()
@@ -423,25 +399,27 @@ function openCreateModal() {
   scheduleTaskLimitPrecheck(0)
 }
 
-function openEditModal(record, options = {}) {
-  const showTaskModal = options.showTaskModal !== false
+async function openEditModal(record) {
+  if (!canViewTask.value) return
+  record = (await getTask(record.id)).data.data
+  if (canEditTask.value) {
+    await Promise.all([loadPlaybooks(), loadInventories()])
+  } else {
+    playbookOptions.value = record.playbook_template ? [{ value: record.playbook_template, label: record.template_name }] : []
+    inventoryOptions.value = record.inventory ? [{ value: record.inventory, label: record.inventory_name }] : []
+  }
   isCreateMode.value = false
   editingTaskId.value = record.id
   taskForm.name = record.name || ''
   taskForm.template = Number(record.playbook_template || 0) || null
   taskForm.env_vars_text = JSON.stringify(record.env_vars || {}, null, 2)
   taskForm.inventory = record.inventory || null
-  // 检查已保存的 inventory 是否仍存在（可能已被删除或尚未配置）
-  if (!taskForm.inventory) {
-    if (record.id) {
-      message.warning('该任务未配置 Inventory 或已被删除，请重新选择')
-    }
-  } else if (inventoryOptions.value.length > 0) {
-    const exists = inventoryOptions.value.some((opt) => Number(opt.value) === Number(taskForm.inventory))
-    if (!exists) {
-      message.warning('该任务绑定的 Inventory 已被删除，请重新选择')
-      taskForm.inventory = null
-    }
+  // 分页候选中没有某项并不说明关联已删除；详情才是已选值的依据。
+  if (taskForm.inventory && !inventoryOptions.value.some(opt => opt.value === taskForm.inventory)) {
+    inventoryOptions.value.push({ value: taskForm.inventory, label: record.inventory_name })
+  }
+  if (taskForm.template && !playbookOptions.value.some(opt => opt.value === taskForm.template)) {
+    playbookOptions.value.push({ value: taskForm.template, label: record.template_name })
   }
   taskForm.default_limit = record.default_limit || ''
   taskForm.execution_timeout_seconds = Number(record.execution_timeout_seconds) > 0
@@ -453,13 +431,14 @@ function openEditModal(record, options = {}) {
   taskForm.run_as_user = record.run_as_user || ''
   taskForm.run_as_group = record.run_as_group || ''
   taskForm.work_directory = record.work_directory || '/tmp'
-  taskModalVisible.value = showTaskModal
-  if (showTaskModal) {
+  taskModalVisible.value = true
+  if (!taskReadOnly.value) {
     scheduleTaskLimitPrecheck(0)
   }
 }
 
 async function submitTask() {
+  if (taskReadOnly.value || !checkPermission(isCreateMode.value ? 'automation:tasks:create' : 'automation:tasks:update')) return
   if (!taskForm.name || !String(taskForm.name).trim()) {
     message.error('请输入任务名称')
     return
@@ -590,7 +569,7 @@ const taskLimitPrecheckText = computed(() => {
 })
 
 async function doTaskLimitPrecheck() {
-  if (!taskModalVisible.value) {
+  if (!taskModalVisible.value || taskReadOnly.value) {
     return
   }
 
@@ -857,7 +836,6 @@ function handleTaskTableChange(page, _filters, sorter) {
 }
 
 function reloadAll() {
-  loadPlaybooks()
   loadTasks(false)
 }
 
@@ -872,7 +850,7 @@ watch(runNowLimit, () => {
 watch(
   () => [taskForm.default_limit, taskForm.inventory, taskModalVisible.value],
   () => {
-    if (!taskModalVisible.value) {
+    if (!taskModalVisible.value || taskReadOnly.value) {
       return
     }
     taskLimitPrecheckMessage.value = '正在预检...'
@@ -886,8 +864,6 @@ onBeforeUnmount(() => {
 })
 
 onMounted(async () => {
-  await loadPlaybooks()
-  await loadInventories()
   await loadTasks(true)
   await openTaskFromRouteQuery()
 })

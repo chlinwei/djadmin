@@ -575,6 +575,16 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	monitorRoutes.POST("/media/:id/test/", middleware.RequirePermission("monitor:execute"), monitorHandler.TestAlertMedia)
 	monitorRoutes.POST("/media/batch-delete/", middleware.RequirePermission("monitor:delete"), monitorHandler.BatchDeleteAlertMedia)
 	monitorRoutes.GET("/notification-policies/", monitorHandler.ListNotificationPolicies)
+	// 维护窗口可以静音生产告警；操作权限不能从监控查看权推断。
+	windows := monitorRoutes.Group("/maintenance-windows", middleware.RequirePermission("monitor:maintenance:view"))
+	windows.GET("/", monitorHandler.ListMaintenanceWindows)
+	windows.GET("/detail/", monitorHandler.DetailMaintenanceWindow)
+	windows.GET("/preview/", monitorHandler.PreviewMaintenanceWindow)
+	windows.POST("/create/", middleware.RequirePermission("monitor:maintenance:create"), monitorHandler.CreateMaintenanceWindow)
+	windows.POST("/update/", middleware.RequirePermission("monitor:maintenance:update"), monitorHandler.UpdateMaintenanceWindow)
+	windows.POST("/cancel/", middleware.RequirePermission("monitor:maintenance:cancel"), monitorHandler.CancelMaintenanceWindow)
+	windows.POST("/end/", middleware.RequirePermission("monitor:maintenance:end"), monitorHandler.EndMaintenanceWindow)
+	windows.POST("/batch-delete/", middleware.RequirePermission("monitor:maintenance:delete"), monitorHandler.BatchDeleteMaintenanceWindows)
 	monitorRoutes.POST("/notification-policies/create/", middleware.RequirePermission("monitor:create"), monitorHandler.CreateNotificationPolicy)
 	monitorRoutes.POST("/notification-policies/update/", middleware.RequirePermission("monitor:update"), monitorHandler.UpdateNotificationPolicy)
 	monitorRoutes.POST("/notification-policies/batch-delete/", middleware.RequirePermission("monitor:delete"), monitorHandler.BatchDeleteNotificationPolicies)
@@ -636,7 +646,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	for _, prefix := range []string{"/sys", "/sys/scheduler", "/sys/automation", "/sys/inspection", "/sys/audit", "/assets", "/monitor", "/api/agent"} {
 		engine.Group(prefix)
 	}
-	return engine, batchRunner, &AgentJobs{baseline: baselineHandler, inspection: inspectionHandler, scope: agentScope}, nil
+	return engine, batchRunner, &AgentJobs{baseline: baselineHandler, inspection: inspectionHandler, scope: agentScope, monitor: monitorHandler}, nil
 }
 
 func readiness(database *sql.DB) gin.HandlerFunc {

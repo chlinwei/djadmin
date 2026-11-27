@@ -19,7 +19,10 @@
         :locale="tableLocale"
       >
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'type'">
+          <template v-if="column.key === 'name' && checkPermission('monitor:view')">
+            <a href="#" @click.prevent="openEditModal(record)">{{ record.name }}</a>
+          </template>
+          <template v-else-if="column.key === 'type'">
             <a-tag :color="record.type === 'email' ? 'blue' : 'green'">{{ record.typeLabel }}</a-tag>
           </template>
           <template v-else-if="column.key === 'status'">
@@ -39,8 +42,9 @@
                 </a-tooltip>
               </a-col>
               <a-col>
+                <ViewRecordButton v-if="checkPermission('monitor:view') && !checkPermission('monitor:update')" @click="openEditModal(record)" />
                 <a-tooltip title="编辑" placement="top">
-                  <a-button v-if="checkPermission('monitor:update')" type="primary" @click="openEditModal(record)">编辑</a-button>
+                  <a-button v-if="checkPermission('monitor:view') && checkPermission('monitor:update')" type="primary" @click="openEditModal(record)">编辑</a-button>
                 </a-tooltip>
               </a-col>
               <a-col>
@@ -63,7 +67,7 @@
 
     <a-modal
       v-model:open="createModalVisible"
-      :title="editingId ? '编辑报警媒介类型' : '新增报警媒介类型'"
+      :title="readOnly ? '查看报警媒介类型' : editingId ? '编辑报警媒介类型' : '新增报警媒介类型'"
       width="720px"
       :footer="null"
       cancel-text="取消"
@@ -74,7 +78,7 @@
         <a-tab-pane key="settings" tab="报警媒介类型" />
         <a-tab-pane key="templates" tab="消息模板" />
       </a-tabs>
-      <a-form v-show="mediaTab === 'settings'"
+      <a-form :disabled="readOnly" v-show="mediaTab === 'settings'"
         class="media-form"
         :model="createForm"
         :label-col="{ span: 5 }"
@@ -140,7 +144,7 @@
           <a-textarea v-model:value="createForm.description" :rows="4" />
         </a-form-item>
         <a-form-item label="已启用">
-          <EnabledSwitch v-model:checked="createForm.enabled" />
+          <EnabledSwitch :read-only="readOnly" v-model:checked="createForm.enabled" />
         </a-form-item>
       </a-form>
 
@@ -164,10 +168,10 @@
           </div>
         </a-form-item>
         <a-form-item label="主题">
-          <a-input v-model:value="createForm.templates[templateEvent].subject" placeholder="留空使用默认主题" />
+          <a-input :readonly="readOnly" v-model:value="createForm.templates[templateEvent].subject" placeholder="留空使用默认主题" />
         </a-form-item>
         <a-form-item label="正文">
-          <a-textarea v-model:value="createForm.templates[templateEvent].body" :rows="6" placeholder="留空使用默认正文" />
+          <a-textarea :readonly="readOnly" v-model:value="createForm.templates[templateEvent].body" :rows="6" placeholder="留空使用默认正文" />
         </a-form-item>
         <a-button :loading="previewLoading" @click="loadTemplatePreview">样例预览</a-button>
         <div v-if="templatePreview?.key === templatePreviewKey" class="template-preview">
@@ -177,7 +181,7 @@
       </a-form>
 
       <div class="modal-actions">
-        <a-button @click="closeCreateModal">取消</a-button>
+        <a-button @click="closeCreateModal">{{ readOnly ? '关闭' : '取消' }}</a-button>
         <a-button v-if="checkPermission(editingId ? 'monitor:update' : 'monitor:create')" type="primary" :loading="createLoading" @click="saveMedia">保存</a-button>
       </div>
     </a-modal>
@@ -212,6 +216,7 @@
 </template>
 
 <script setup>
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { checkPermission } from '@/directives/permission/permission'
@@ -257,6 +262,7 @@ const testModalVisible = ref(false)
 const testLoading = ref(false)
 const testingMediaId = ref(null)
 const editingId = ref(null)
+const readOnly = computed(() => Boolean(editingId.value) && !checkPermission('monitor:update'))
 const rowDeleteLoading = reactive({})
 const rowStatusLoading = reactive({})
 const createForm = ref(createDefaultForm())
@@ -356,7 +362,7 @@ function openCreateModal() {
 }
 
 function openEditModal(record) {
-  if (!checkPermission('monitor:update')) return
+  if (!checkPermission('monitor:view')) return
   const config = record.config || {}
   editingId.value = record.id
   createForm.value = {

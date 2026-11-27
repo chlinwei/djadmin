@@ -1,17 +1,18 @@
 <template>
   <a-modal
-    :title="isCreateMode ? '新增任务' : '编辑任务'"
+    :title="readOnly ? '查看任务' : isCreateMode ? '新增任务' : '编辑任务'"
     :open="open"
     :width="820"
     :confirmLoading="confirmLoading"
     @ok="emitSubmit"
     @cancel="emitCancel"
   >
-    <a-form layout="vertical">
+    <template v-if="readOnly" #footer><a-button @click="emitCancel()">关闭</a-button></template>
+      <a-form layout="vertical" :disabled="readOnly">
       <a-row :gutter="12">
         <a-col :span="12">
           <a-form-item label="任务名称" required>
-            <a-input v-model:value="taskForm.name" placeholder="例如：生产环境健康巡检" />
+            <a-input :readonly="readOnly" v-model:value="taskForm.name" placeholder="例如：生产环境健康巡检" />
           </a-form-item>
         </a-col>
       </a-row>
@@ -46,7 +47,7 @@
       </a-row>
 
       <a-form-item label="启用状态">
-        <EnabledSwitch v-model:checked="taskForm.enabled" />
+        <EnabledSwitch :read-only="readOnly" v-model:checked="taskForm.enabled" />
       </a-form-item>
 
       <a-form-item>
@@ -58,11 +59,11 @@
       </a-form-item>
 
       <a-form-item label="默认 Limit（可选）">
-        <a-input
+        <a-input :readonly="readOnly"
           v-model:value="taskForm.default_limit"
           :placeholder="limitInputPlaceholder"
         />
-        <ScopePrecheckPanel
+        <ScopePrecheckPanel v-if="!readOnly"
           :precheck-ok="taskLimitPrecheckOk"
           :prechecking="taskLimitPrechecking"
           :message="taskLimitPrecheckText"
@@ -96,7 +97,7 @@
       </a-form-item>
 
       <a-form-item :label="taskEnvVarsLabel">
-        <a-textarea
+        <a-textarea :readonly="readOnly"
           v-model:value="taskForm.env_vars_text"
           :rows="6"
           :placeholder="taskEnvVarsPlaceholder"
@@ -114,7 +115,7 @@
       <a-row :gutter="12">
         <a-col :span="8">
           <a-form-item label="执行用户" required>
-            <a-input
+            <a-input :readonly="readOnly"
               v-model:value="taskForm.run_as_user"
               placeholder="必填，例如 node_exporter"
             />
@@ -128,7 +129,7 @@
         </a-col>
         <a-col :span="8">
           <a-form-item label="执行组（可选）">
-            <a-input
+            <a-input :readonly="readOnly"
               v-model:value="taskForm.run_as_group"
               placeholder="留空则使用执行用户的主组"
             />
@@ -136,7 +137,7 @@
         </a-col>
         <a-col :span="8">
           <a-form-item label="工作目录">
-            <a-input
+            <a-input :readonly="readOnly"
               v-model:value="taskForm.work_directory"
               placeholder="默认为 /tmp"
             />
@@ -151,7 +152,8 @@
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import ScopePrecheckPanel from '../../../components/ScopePrecheckPanel.vue'
 
-defineProps({
+const props = defineProps({
+  readOnly: Boolean,
   isCreateMode: { type: Boolean, default: true },
   open: { type: Boolean, default: false },
   confirmLoading: { type: Boolean, default: false },
@@ -180,7 +182,7 @@ const emit = defineEmits([
 ])
 
 function emitSubmit() {
-  emit('submit')
+  if (!props.readOnly) emit('submit')
 }
 
 function emitCancel() {

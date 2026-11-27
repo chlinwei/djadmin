@@ -1,15 +1,16 @@
 <template>
   <a-modal
     :open="open"
-    :title="systemId ? `编辑业务系统：${form.name || '加载中'}` : '新增业务系统'"
+    :title="systemId ? `${readOnly ? '查看' : '编辑'}业务系统：${form.name || '加载中'}` : '新增业务系统'"
     :confirm-loading="saving"
     ok-text="保存"
     cancel-text="取消"
     @ok="submit"
     @cancel="emit('update:open', false)"
   >
+    <template v-if="readOnly" #footer><a-button @click="emit('update:open', false)">关闭</a-button></template>
     <a-spin :spinning="loading">
-      <a-form ref="formRef" :model="form" :rules="rules" layout="vertical">
+      <a-form :disabled="readOnly" ref="formRef" :model="form" :rules="rules" layout="vertical">
         <a-row :gutter="16">
           <a-col :span="12">
             <a-form-item name="name" label="业务系统名称">
@@ -41,7 +42,7 @@
           </a-col>
           <a-col :span="12">
             <a-form-item label="启用">
-              <EnabledSwitch v-model:checked="form.enabled" />
+              <EnabledSwitch :read-only="readOnly" v-model:checked="form.enabled" />
             </a-form-item>
           </a-col>
           <a-col :span="24">
@@ -57,12 +58,14 @@
 
 <script setup>
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
+import { formFields } from './assetFormValues'
 import { reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { getBusinessSystem, getProjectList, saveBusinessSystem } from '@/api/assets/application'
 
 const props = defineProps({
+  readOnly: Boolean,
   open: { type: Boolean, required: true },
   systemId: { type: Number, default: null },
   initialProjectId: { type: Number, default: null },
@@ -89,11 +92,18 @@ async function initialize() {
   Object.assign(form, initialForm())
   loading.value = true
   try {
-    const projectsResponse = await getProjectList({ page: 1, page_size: 1000, enabled: true })
-    projectOptions.value = (projectsResponse?.data?.data?.results || []).map((item) => ({ label: item.name, value: item.id }))
+    projectOptions.value = []
+    if (!props.readOnly) {
+      const projectsResponse = await getProjectList({ page: 1, page_size: 1000, enabled: true })
+      projectOptions.value = (projectsResponse?.data?.data?.results || []).map((item) => ({ label: item.name, value: item.id }))
+    }
     if (props.systemId) {
       const response = await getBusinessSystem(props.systemId)
-      Object.assign(form, initialForm(), response?.data?.data || {})
+      const data = response?.data?.data || {}
+      Object.assign(form, formFields(initialForm(), data))
+      if (form.project && !projectOptions.value.some(item => item.value === form.project)) {
+        projectOptions.value.push({ value: form.project, label: data.project_name || `项目 ${form.project}` })
+      }
     } else if (props.initialProjectId && projectOptions.value.some((item) => item.value === props.initialProjectId)) {
       // 服务树选中某个项目节点时直接带过来预填，不用用户再选一遍。
       form.project = props.initialProjectId
@@ -104,12 +114,14 @@ async function initialize() {
 }
 
 async function submit() {
+  if (props.readOnly || loading.value) return
   try {
     await formRef.value.validate()
   } catch {
     // 表单校验失败时 antd 已在字段上标红，不再弹全局提示
     return
   }
+  if (props.readOnly) return
   saving.value = true
   try {
     const response = await saveBusinessSystem({ ...form })
@@ -125,5 +137,5 @@ async function submit() {
 
 watch(() => props.open, (visible) => {
   if (visible) initialize()
-})
+}, { immediate: true })
 </script>

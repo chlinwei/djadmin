@@ -64,7 +64,16 @@ func (handler *Handler) UploadFile(context *gin.Context) {
 	// .yml/.yaml 上传只适用于 Playbook 形态：shell 模板的 content 是裸脚本，用 YAML 覆盖会让
 	// 形态与内容对不上（校验按 format 分流，format 不随上传改变）。前端已对 shell 隐藏上传入口，
 	// 这里再挡一次，避免绕过 UI 造成不一致。
-	if row, rowErr := db.New(handler.db).GetAutomationPlaybook(context, id); rowErr == nil && row.ContentFormat == playbookFormatShell {
+	row, err := db.New(handler.db).GetAutomationPlaybook(context, id)
+	if err != nil {
+		automationResourceError(context, err)
+		return
+	}
+	if row.Category == "software_package" {
+		response.BusinessError(context, 400, packageTemplateReadOnly, nil)
+		return
+	}
+	if row.ContentFormat == playbookFormatShell {
 		response.BusinessError(context, 400, "Shell 类模板不支持 YAML 文件覆盖，请直接在编辑框修改脚本内容", nil)
 		return
 	}

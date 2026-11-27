@@ -256,6 +256,8 @@ WHERE (ah.id = sqlc.narg(id) OR sqlc.narg(id) IS NULL)
   AND (sqlc.arg(skip_notification_status) = TRUE OR CAST(sqlc.arg(notification_status) AS CHAR) = CASE
     WHEN NOT EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id) THEN 'none'
     WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status = 'failed') THEN 'failed'
+    WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('suppressed','skipped','partial_muted','partial_skipped')) THEN
+      CASE WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id = ah.id AND nd.status='success') THEN 'partially_suppressed' ELSE 'suppressed' END
     WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('pending','sending')) THEN 'in_progress'
     WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id = ah.id) THEN 'success'
     ELSE 'failed'
@@ -268,7 +270,9 @@ SELECT ah.id, ah.create_time, ah.update_time, ah.remark, ah.fingerprint, ah.aler
        (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id) AS notification_count,
        (SELECT COUNT(*) FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id = ah.id) AS notification_delivery_count,
        (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status = 'failed') AS notification_failed_count,
-       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('pending','sending')) AS notification_active_count
+       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('pending','sending')) AS notification_active_count,
+       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('suppressed','skipped','partial_muted','partial_skipped')) AS notification_suppressed_count,
+       (SELECT COUNT(*) FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id=ah.id AND nd.status='success') AS notification_sent_count
 FROM monitor_alert_history ah
 WHERE (ah.id = sqlc.narg(id) OR sqlc.narg(id) IS NULL)
   AND (ah.state = sqlc.narg(state) OR sqlc.narg(state) IS NULL)
@@ -280,6 +284,8 @@ WHERE (ah.id = sqlc.narg(id) OR sqlc.narg(id) IS NULL)
   AND (sqlc.arg(skip_notification_status) = TRUE OR CAST(sqlc.arg(notification_status) AS CHAR) = CASE
     WHEN NOT EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id) THEN 'none'
     WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status = 'failed') THEN 'failed'
+    WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('suppressed','skipped','partial_muted','partial_skipped')) THEN
+      CASE WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id = ah.id AND nd.status='success') THEN 'partially_suppressed' ELSE 'suppressed' END
     WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('pending','sending')) THEN 'in_progress'
     WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id = ah.id) THEN 'success'
     ELSE 'failed'
@@ -295,7 +301,9 @@ SELECT ah.id, ah.fingerprint, ah.started_at,
        (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id) AS notification_count,
        (SELECT COUNT(*) FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id = ah.id) AS notification_delivery_count,
        (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status = 'failed') AS notification_failed_count,
-       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('pending','sending')) AS notification_active_count
+       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('pending','sending')) AS notification_active_count,
+       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('suppressed','skipped','partial_muted','partial_skipped')) AS notification_suppressed_count,
+       (SELECT COUNT(*) FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id=ah.id AND nd.status='success') AS notification_sent_count
 FROM monitor_alert_history ah
 WHERE ah.source = 'prometheus' AND ah.state = 'firing'
   AND ah.started_at >= sqlc.arg(earliest_active_at)
@@ -660,7 +668,8 @@ VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(event_type),sq
 -- name: GetAlertNotificationEventDispatch :one
 SELECT e.event_type, e.attempt_count, e.status,
        a.id, a.alertname, a.severity, a.instance, a.state, a.labels,
-       a.annotations, a.started_at, a.resolved_at, a.generator_url
+       a.annotations, a.started_at, a.resolved_at, a.generator_url,
+       (SELECT COUNT(*) FROM monitor_maintenance_suppression s WHERE s.event_id=e.id) AS suppression_count
 FROM monitor_alert_notification_event e
 JOIN monitor_alert_history a ON a.id = e.alert_id
 WHERE e.id = sqlc.arg(id);
@@ -715,10 +724,10 @@ ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id);
 -- name: GetAlertNotificationDeliveryStatus :one
 SELECT status FROM monitor_alert_notification_delivery WHERE id = sqlc.arg(id);
 
--- name: MarkAlertNotificationDeliverySending :exec
+-- name: MarkAlertNotificationDeliverySending :execrows
 UPDATE monitor_alert_notification_delivery
 SET status='sending', attempt_count=attempt_count+1, error_message='', update_time=sqlc.arg(update_time)
-WHERE id=sqlc.arg(id);
+WHERE id=sqlc.arg(id) AND status IN ('pending','failed','suppressed');
 
 -- name: MarkAlertNotificationDeliverySuccess :exec
 UPDATE monitor_alert_notification_delivery

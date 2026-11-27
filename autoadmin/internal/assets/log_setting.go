@@ -78,7 +78,9 @@ type ServiceTemplateLog struct {
 // 总开关放在顶层而不是每行重复：它是"这个服务"的属性，而且逐条开关在总开关关闭时并不生效，
 // 页面必须能区分这两层（否则用户会以为逐条都关了、其实只是总开关关了）。
 type ServiceLogConfig struct {
-	Logs []ServiceTemplateLog `json:"logs"`
+	Logs        []ServiceTemplateLog `json:"logs"`
+	TierNames   map[int64]string     `json:"tier_names"`
+	FilterNames map[int64]string     `json:"filter_names"`
 	// LogCollectionEnabled 服务级日志采集总开关。
 	LogCollectionEnabled bool `json:"log_collection_enabled"`
 	// LogRetentionTier 服务级**默认保留档位**（逐条日志没覆盖时生效；旧记录为 null 时需补选）。
@@ -89,6 +91,44 @@ type ServiceLogConfig struct {
 	// 模板里的日志定义被删光之后，这个服务的存量流仍要能查出来（数据还在 ES 里，
 	// 页面不能因为"没有日志定义"就当作没有流）。
 	ServiceCode string `json:"service_code"`
+}
+
+// 回显只查已选关联（含模板继承和已停用规则），不把编辑候选目录暴露给查看者。
+func (r *Repository) loadSelectedLogNames(ctx context.Context, config *ServiceLogConfig) error {
+	config.TierNames, config.FilterNames = map[int64]string{}, map[int64]string{}
+	var tiers, filters []int64
+	add := func(ids *[]int64, id *int64) {
+		if id != nil && *id > 0 {
+			*ids = append(*ids, *id)
+		}
+	}
+	add(&tiers, config.LogRetentionTier)
+	for _, row := range config.Logs {
+		add(&tiers, row.RetentionTier)
+		add(&filters, row.TemplateFilterIncludeRuleID)
+		add(&filters, row.TemplateFilterExcludeRuleID)
+		add(&filters, row.CollectionFilterRuleID)
+		add(&filters, row.CollectionExcludeFilterRuleID)
+	}
+	if len(tiers) > 0 {
+		rows, err := r.queries.ListSelectedLogTierNames(ctx, normalizedServiceIDs(tiers))
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			config.TierNames[row.ID] = row.Name
+		}
+	}
+	if len(filters) > 0 {
+		rows, err := r.queries.ListSelectedLogFilterNames(ctx, normalizedServiceIDs(filters))
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			config.FilterNames[row.ID] = row.Name
+		}
+	}
+	return nil
 }
 
 // ListServiceTemplateLogs 返回服务所属部署模板的全部日志定义，并合入该服务的覆盖值

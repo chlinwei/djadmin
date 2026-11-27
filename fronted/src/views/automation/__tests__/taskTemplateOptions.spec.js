@@ -10,6 +10,7 @@ vi.mock('@/api/sys/automation', () => ({
     { id: 25, name: 'mem-check', category: 'general', content_format: 'shell' },
   ], count: 2 } } })),
   getInventoryList: vi.fn(() => Promise.resolve({ data: { data: { results: [], count: 0 } } })),
+  getTask: vi.fn(),
   getTaskList: vi.fn(() => Promise.resolve({ data: { data: { results: [], count: 0 } } })),
   createTask: vi.fn(),
   updateTask: vi.fn(),
@@ -24,7 +25,8 @@ vi.mock('@/util/deleteConfirm', async () => ({
 }))
 vi.mock('ant-design-vue', () => ({ message: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }))
 vi.mock('@/store', () => ({ default: { state: { user: { timezone: 'Asia/Shanghai' } } } }))
-vi.mock('@/directives/permission/permission', () => ({ checkPermission: () => true }))
+vi.mock('@/directives/permission/permission', () => ({ checkPermission: vi.fn(() => true) }))
+import { checkPermission } from '@/directives/permission/permission'
 
 import * as automationApi from '@/api/sys/automation'
 import { message } from 'ant-design-vue'
@@ -59,6 +61,7 @@ async function mountPage() {
 describe('自动化任务：模板下拉只取通用模板', () => {
   it('加载模板列表时带 category=general，排除系统托管模板', async () => {
     const wrapper = await mountPage()
+    await wrapper.vm.openCreateModal()
     expect(automationApi.getPlaybookList).toHaveBeenCalledWith(
       expect.objectContaining({ category: 'general' }),
     )
@@ -72,6 +75,28 @@ describe('自动化任务：模板下拉只取通用模板', () => {
     }
     wrapper.unmount()
   })
+})
+
+it('仅查看时从任务详情回显关联名称，不加载模板和 Inventory 候选、不预检或提交', async () => {
+  vi.clearAllMocks()
+  checkPermission.mockImplementation(code => code === 'automation:tasks:view')
+  automationApi.getTask.mockResolvedValue({ data: { data: { id: 7, playbook_template: 2, template_name: '巡检脚本', inventory: 6, inventory_name: '生产机器', default_limit: 'prod-*' } } })
+  const wrapper = await mountPage()
+  try {
+    await wrapper.vm.openEditModal({ id: 7 })
+    await flushPromises()
+    expect(wrapper.vm.taskReadOnly).toBe(true)
+    expect(wrapper.vm.taskTemplateOptions).toEqual([{ value: 2, label: '巡检脚本' }])
+    expect(wrapper.vm.inventoryOptions).toEqual([{ value: 6, label: '生产机器' }])
+    await wrapper.vm.submitTask()
+    expect(automationApi.getPlaybookList).not.toHaveBeenCalled()
+    expect(automationApi.getInventoryList).not.toHaveBeenCalled()
+    expect(automationApi.precheckInventoryLimit).not.toHaveBeenCalled()
+    expect(automationApi.updateTask).not.toHaveBeenCalled()
+  } finally {
+    wrapper.unmount()
+    checkPermission.mockImplementation(() => true)
+  }
 })
 
 describe('自动化任务：删除结果', () => {

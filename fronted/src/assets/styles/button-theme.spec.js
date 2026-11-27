@@ -3,7 +3,8 @@ import { URL as NodeURL } from 'node:url'
 import { h } from 'vue'
 import { parse } from 'vue/compiler-sfc'
 import { mount, flushPromises } from '@vue/test-utils'
-import { Button } from 'ant-design-vue'
+import { Button, Tooltip } from 'ant-design-vue'
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import { faEye } from '@fortawesome/free-solid-svg-icons'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -11,15 +12,13 @@ import { afterEach, describe, expect, it } from 'vitest'
 const theme = readFileSync(new NodeURL('./button-theme.css', import.meta.url), 'utf8')
 
 const pages = [
-  ['assets/application/components/TemplateManagerDialog.vue', 1],
   ['automation/inventory/index.vue', 1],
-  ['monitor/log-retention/index.vue', 1],
-  ['security/baseline/index.vue', 2],
-  ['assets/host/index.vue', 2],
+  ['security/baseline/index.vue', 1],
+  ['assets/host/index.vue', 1],
   ['audit/operationLog/index.vue', 1],
   ['audit/webssh/index.vue', 1],
   ['sys/scheduler/index.vue', 1],
-  ['monitor/log-center/LogQueryPanel.vue', 2],
+  ['monitor/log-center/LogQueryPanel.vue', 2, '详情', '详细日志'],
 ]
 
 function elements(node, parent = null) {
@@ -43,7 +42,7 @@ describe('统一详情按钮', () => {
     style = null
   })
 
-  it.each(pages)('%s 的全部 %i 个入口使用同一图标、文字、样式与顶部提示', (file, count) => {
+  it.each(pages)('%s 的全部 %i 个入口使用同一图标、文字、样式与顶部提示', (file, count, text = '详情', tooltip = '查看详情') => {
     const source = readFileSync(new NodeURL(`../../views/${file}`, import.meta.url), 'utf8')
     const { descriptor, errors } = parse(source)
     expect(errors).toEqual([])
@@ -58,11 +57,28 @@ describe('统一详情按钮', () => {
       const icon = node.children.find((child) => child.tag === 'FontAwesomeIcon')
       expect(icon.props.find((prop) => prop.arg?.content === 'icon').exp.content).toBe("['fas', 'eye']")
       const label = node.children.find((child) => child.tag === 'span')
-      expect(label.children.some((child) => child.content === '详情')).toBe(true)
+      expect(label.children.some((child) => child.content === text)).toBe(true)
       expect(parent.tag).toBe('a-tooltip')
       expect(attribute(parent, 'placement')).toBe('top')
-      expect(attribute(parent, 'title')).toBe(file.includes('LogQueryPanel') ? '详细日志' : '查看详情')
+      expect(attribute(parent, 'title')).toBe(tooltip)
     }
+  })
+
+  it('配置查看使用图文链接和顶部提示，禁用状态传给按钮而非提示层', async () => {
+    wrapper = mount(ViewRecordButton, {
+      attrs: { disabled: true },
+      global: { components: { AButton: Button, ATooltip: Tooltip, FontAwesomeIcon } },
+    })
+    const button = wrapper.get('button')
+    expect(button.text()).toBe('查看')
+    expect(button.classes()).toEqual(expect.arrayContaining(['ant-btn-link', 'ant-btn-sm', 'detail-action']))
+    expect(wrapper.getComponent(FontAwesomeIcon).props('icon')).toEqual(['fas', 'eye'])
+    expect(wrapper.getComponent(Tooltip).props()).toMatchObject({ title: '查看', placement: 'top' })
+    button.element.click()
+    expect(wrapper.emitted('click')).toBeUndefined()
+    await wrapper.setProps({ disabled: false })
+    wrapper.get('button').element.click()
+    expect(wrapper.emitted('click')).toHaveLength(1)
   })
 
   it('公共样式为图文保留空间，只有可用详情按钮显示蓝色和悬停背景', async () => {

@@ -108,7 +108,8 @@ describe('分离读取、修改与执行权限', () => {
     wrapper.vm.toggleEnable(task, false)
     wrapper.vm.submitTask()
     wrapper.vm.runNow(task)
-    expect(wrapper.vm.editVisible).toBe(false)
+    expect(wrapper.vm.editVisible).toBe(true)
+    expect(request.get.mock.calls.some(([url]) => url.includes('getMenuTree'))).toBe(false)
     expect(request.post).not.toHaveBeenCalled()
     expect(request.patch).not.toHaveBeenCalled()
     expect(request.get.mock.calls.some(([url]) => url.includes('sys/configs/by-key/'))).toBe(false)
@@ -129,7 +130,9 @@ describe('分离读取、修改与执行权限', () => {
     expect(buttons('立即执行')).toHaveLength(1)
     expect(buttons('立即执行')[0].attributes('disabled')).toBeUndefined()
     wrapper.vm.openEditModal(task)
-    expect(wrapper.vm.editVisible).toBe(false)
+    expect(wrapper.vm.editVisible).toBe(true)
+    wrapper.vm.submitTask()
+    expect(request.patch).not.toHaveBeenCalled()
     await buttons('立即执行')[0].trigger('click')
     await flushPromises()
     expect(request.post).toHaveBeenCalledWith('sys/scheduler/tasks/1/run_now/', {})
@@ -229,7 +232,7 @@ describe('分离读取、修改与执行权限', () => {
       if (url === 'monitor/packages/') return Promise.resolve(response({
         count: 3,
         results: [
-          { id: 5, name: packageType, package_type: packageType, version: '1.8.2', synced: true, download_url: mediaPath },
+          { id: 5, name: packageType, package_type: packageType, version: '1.8.2', synced: true, download_url: mediaPath, install_playbook_content: '安装步骤', uninstall_playbook_content: '卸载步骤' },
           { id: 6, name: 'unsynced', package_type: packageType, synced: false, download_url: mediaPath },
           { id: 7, name: 'missing-url', package_type: packageType, synced: true, download_url: '' },
         ],
@@ -246,6 +249,14 @@ describe('分离读取、修改与执行权限', () => {
     expect(links.filter((link) => link.isVisible() && link.attributes('disabled') === undefined)).toHaveLength(1)
     expect(wrapper.find(`a[href="${mediaPath}"]`).exists()).toBe(false)
     expect(wrapper.find('a[href=""]').exists()).toBe(false)
+    await wrapper.get('tr[data-row-key="5"]').findAll('button').find(b => b.text() === packageType).trigger('click')
+    await flushPromises()
+    const dialog = document.querySelector('.ant-modal-content')
+    expect(dialog.querySelector('.ant-modal-title').textContent).toBe('查看软件包')
+    expect([...dialog.querySelectorAll('textarea')].map(el => el.value)).toEqual(expect.arrayContaining(['安装步骤', '卸载步骤']))
+    expect([...dialog.querySelectorAll('input,textarea')].every(el => el.disabled)).toBe(true)
+    expect(dialog.querySelector('.ant-modal-footer').textContent.replace(/\s/g, '')).toBe('关闭')
+    await wrapper.vm.submitPackageEdit()
     expect(request.post).not.toHaveBeenCalled()
     expect(request.patch).not.toHaveBeenCalled()
   })

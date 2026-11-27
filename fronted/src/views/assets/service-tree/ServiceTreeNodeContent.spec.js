@@ -60,7 +60,8 @@ describe('ServiceTreeNodeContent', () => {
         await flushPromises()
         const buttons = wrapper.findAll('.node-content-header button')
         expect(buttons).toHaveLength(3)
-        expect(buttons[0].classes()).toContain('ant-btn-primary')
+        expect(buttons[0].classes()).toContain('ant-btn-link')
+        expect(buttons[0].text()).toBe('查看')
         expect(buttons[1].classes()).toContain('ant-btn-default')
         expect(buttons[1].classes()).not.toContain('ant-btn-dangerous')
         expect(buttons[2].classes()).toContain('delBtn')
@@ -75,7 +76,7 @@ describe('ServiceTreeNodeContent', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     store.state.user.timezone = 'Asia/Shanghai'
-    store.state.perms = ['assets:hosts:execute', 'assets:service-tree:manage']
+    store.state.perms = ['assets:hosts:execute', 'assets:service-tree:manage', 'assets:service-tree:view', 'assets:applications:view', 'assets:applications:create', 'assets:applications:delete']
     store.state.role_codes = ['operator']
     applicationApi.refreshApplicationDeploymentRuntimeStatus.mockResolvedValue({ data: { data: { results: [] } } })
     applicationApi.getBusinessSystemList.mockResolvedValue(listResponse([
@@ -227,7 +228,7 @@ describe('ServiceTreeNodeContent', () => {
     await flushPromises()
     expect(applicationApi.getApplicationServiceList).toHaveBeenLastCalledWith(expect.objectContaining({ business_system: 7 }))
     expect(wrapper.text()).toContain('订单 API')
-    expect(wrapper.find('.child-navigation-link').text()).toContain('订单 API')
+    expect(wrapper.find('.child-navigation-link').attributes('aria-label')).toContain('订单 API')
     await wrapper.find('.child-navigation-link').trigger('click')
     expect(wrapper.emitted('navigate').at(-1)).toEqual([{
       nodeType: 'service',
@@ -282,7 +283,9 @@ describe('ServiceTreeNodeContent', () => {
     await flushPromises()
     expect(applicationApi.getBusinessSystemList).toHaveBeenLastCalledWith(expect.objectContaining({ project: 5 }))
     expect(wrapper.text()).toContain('订单系统')
-    expect(wrapper.find('.child-navigation-link').text()).toContain('订单系统')
+    await wrapper.find('td a:not(.child-navigation-link)').trigger('click')
+    expect(wrapper.emitted('edit-business-system').at(-1)[0].id).toBe(7)
+    expect(wrapper.emitted('navigate')).toBeUndefined()
     await wrapper.find('.child-navigation-link').trigger('click')
     expect(wrapper.emitted('navigate').at(-1)).toEqual([{
       nodeType: 'businessSystem',
@@ -517,7 +520,7 @@ describe('ServiceTreeNodeContent', () => {
     const cases = [
       { scope: { nodeType: 'all' }, key: 'business_system_action', visible: canManage, target: 'businessSystem' },
       { scope: { nodeType: 'project', projectId: 5 }, key: 'business_system_action', visible: canManage, target: 'businessSystem' },
-      { scope: { nodeType: 'environment', businessSystemId: 7, environment: 72 }, key: 'service_action', visible: canManage, target: 'service' },
+      { scope: { nodeType: 'environment', businessSystemId: 7, environment: 72 }, key: 'service_action', visible: perms.includes('assets:applications:view') || roles.includes('admin'), target: 'service' },
       { scope: { nodeType: 'service', applicationServiceId: 21 }, key: 'deployment_action', visible: canExecute, target: 'deployment' },
     ]
     const wrapper = mount(ServiceTreeNodeContent, {

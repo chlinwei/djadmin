@@ -56,6 +56,26 @@ function statusSwitch(id = 7) {
 }
 
 describe('邮件消息模板', () => {
+  it('查看可切换事件、预览模板，但配置和模板均不可改，也不能发送测试邮件', async () => {
+    store.state.perms = ['monitor:view']
+    await loadPage()
+    await wrapper.get('tr[data-row-key="7"] a').trigger('click')
+    const dialog = document.querySelector('[role="dialog"]')
+    expect(dialog.querySelector('.ant-form input').disabled).toBe(true)
+    wrapper.vm.mediaTab = 'templates'
+    await flushPromises()
+    dialog.querySelector('input[type="radio"][value="resolved"]').click()
+    await flushPromises()
+    expect(wrapper.vm.templateEvent).toBe('resolved')
+    expect(dialog.querySelector('textarea:not([disabled])').readOnly).toBe(true)
+    expect(dialog.textContent).toContain('样例预览')
+    expect(dialog.querySelector('.modal-actions').textContent.replace(/\s/g, '')).toBe('关闭')
+    await wrapper.vm.saveMedia()
+    wrapper.vm.openTestModal(records[0])
+    expect(wrapper.vm.testModalVisible).toBe(false)
+    expect(updateAlertMedia).not.toHaveBeenCalled()
+    expect(testAlertMedia).not.toHaveBeenCalled()
+  })
   it('两种邮件都提示环境标签，仅恢复邮件提示恢复时间和持续时长', async () => {
     await loadPage()
     wrapper.vm.openEditModal(records[0])

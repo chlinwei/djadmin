@@ -39,6 +39,9 @@
           <span class="tier-code">{{ record.code }}</span>
           <a-tag v-if="record.is_default" color="blue" class="default-tag">默认</a-tag>
         </template>
+        <template v-else-if="column.key === 'name' && checkPermission('monitor:view')">
+          <a-button type="link" @click="openEdit(record)">{{ record.name }}</a-button>
+        </template>
         <template v-else-if="column.key === 'daily_size_gb'">
           <span>{{ record.daily_size_gb }} GB/天</span>
         </template>
@@ -61,14 +64,9 @@
         </template>
         <template v-else-if="column.key === 'action'">
           <a-space :size="6">
-            <a-tooltip title="查看详情" placement="top">
-              <a-button v-if="checkPermission('monitor:view')" type="link" size="small" class="detail-action" data-view-tier @click="openDetails(record)">
-                <FontAwesomeIcon :icon="['fas', 'eye']" />
-                <span>详情</span>
-              </a-button>
-            </a-tooltip>
+            <ViewRecordButton v-if="checkPermission('monitor:view') && !checkPermission('monitor:update')" data-view-tier @click="openEdit(record)" />
             <a-tooltip title="编辑" placement="top">
-              <a-button v-if="checkPermission('monitor:update')" type="primary" @click="openEdit(record)">
+              <a-button v-if="checkPermission('monitor:view') && checkPermission('monitor:update')" type="primary" @click="openEdit(record)">
                 <FontAwesomeIcon :icon="['fa', 'edit']" />
               </a-button>
             </a-tooltip>
@@ -83,33 +81,8 @@
     </a-table>
 
     <a-modal
-      :open="Boolean(detailTier)"
-      :title="`保留档位详情：${detailTier?.name || ''}`"
-      :width="720"
-      :footer="null"
-      centered
-      @cancel="detailTier = null"
-    >
-      <a-descriptions v-if="detailTier" bordered :column="2" size="small">
-        <a-descriptions-item label="档位编码">{{ detailTier.code }}</a-descriptions-item>
-        <a-descriptions-item label="档位名称">{{ detailTier.name }}</a-descriptions-item>
-        <a-descriptions-item label="每天写入量">{{ detailTier.daily_size_gb }} GB/天</a-descriptions-item>
-        <a-descriptions-item label="保留期">{{ retentionText(detailTier) }}</a-descriptions-item>
-        <a-descriptions-item label="预计占用">{{ detailTier.estimated_total_gb }} GB</a-descriptions-item>
-        <a-descriptions-item label="引用服务">{{ detailTier.service_count }}</a-descriptions-item>
-        <a-descriptions-item label="滚动最小时长">{{ detailTier.rollover_min_index_age }}</a-descriptions-item>
-        <a-descriptions-item label="滚动最小主分片大小">{{ detailTier.rollover_min_primary_shard_size }}</a-descriptions-item>
-        <a-descriptions-item label="状态"><EnabledSwitch :checked="detailTier.enabled" read-only /></a-descriptions-item>
-        <a-descriptions-item label="默认档位">{{ detailTier.is_default ? '是' : '否' }}</a-descriptions-item>
-        <a-descriptions-item label="备注" :span="2">
-          <span style="white-space: pre-wrap; overflow-wrap: anywhere">{{ detailTier.remark || '-' }}</span>
-        </a-descriptions-item>
-      </a-descriptions>
-    </a-modal>
-
-    <a-modal
       v-model:open="editorOpen"
-      :title="form.id ? `编辑保留档位：${form.code}` : '新增保留档位'"
+      :title="form.id ? `${readOnly ? '查看' : '编辑'}保留档位：${form.code}` : '新增保留档位'"
       :width="640"
       centered
       :confirm-loading="saving"
@@ -117,7 +90,8 @@
       cancel-text="取消"
       @ok="submit"
     >
-      <a-form ref="formRef" :model="form" :rules="formRules" layout="vertical">
+      <template v-if="readOnly" #footer><a-button @click="editorOpen = false">关闭</a-button></template>
+      <a-form :disabled="readOnly" ref="formRef" :model="form" :rules="formRules" layout="vertical">
         <a-form-item name="code" label="档位编码">
           <a-input
             v-model:value="form.code"
@@ -168,7 +142,7 @@
         <a-row :gutter="16">
           <a-col :span="12">
             <a-form-item label="启用">
-              <EnabledSwitch v-model:checked="form.enabled" />
+              <EnabledSwitch :read-only="readOnly" v-model:checked="form.enabled" />
             </a-form-item>
           </a-col>
           <a-col :span="12">
@@ -180,6 +154,10 @@
         <a-form-item label="备注">
           <a-textarea v-model:value="form.remark" :rows="2" placeholder="适用场景说明" />
         </a-form-item>
+        <a-descriptions v-if="selectedTier" :column="2" size="small">
+          <a-descriptions-item label="引用服务">{{ selectedTier.service_count }}</a-descriptions-item>
+          <a-descriptions-item label="滚动最小主分片大小">{{ selectedTier.rollover_min_primary_shard_size }}</a-descriptions-item>
+        </a-descriptions>
         <a-alert type="info" show-icon :message="`预计占用 ${estimatedTotal} GB`" />
       </a-form>
     </a-modal>
@@ -187,6 +165,7 @@
 </template>
 
 <script setup>
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { checkPermission } from '@/directives/permission/permission'
@@ -202,7 +181,8 @@ import { RETENTION_UNIT_DAY, RETENTION_UNIT_HOUR, RETENTION_UNIT_OPTIONS, estima
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 const tiers = ref([])
-const detailTier = ref(null)
+const selectedTier = ref(null)
+const readOnly = computed(() => Boolean(form.id) && !checkPermission('monitor:update'))
 const loading = ref(false)
 const saving = ref(false)
 const editorOpen = ref(false)
@@ -283,19 +263,16 @@ function resetForm() {
   })
 }
 
-function openDetails(record) {
-  if (!checkPermission('monitor:view')) return
-  detailTier.value = record
-}
-
 function openCreate() {
   if (!checkPermission('monitor:create')) return
+  selectedTier.value = null
   resetForm()
   editorOpen.value = true
 }
 
 function openEdit(record) {
-  if (!checkPermission('monitor:update')) return
+  if (!checkPermission('monitor:view')) return
+  selectedTier.value = record
   resetForm()
   Object.assign(form, {
     id: record.id,

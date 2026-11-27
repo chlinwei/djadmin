@@ -45,7 +45,8 @@
     >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'name'">
-          <span>{{ record.name }}</span>
+          <a-button v-if="checkPermission('monitor:view')" type="link" @click="openDialog(record)">{{ record.name }}</a-button>
+          <span v-else>{{ record.name }}</span>
           <a-tag v-if="record.is_default" color="blue">默认</a-tag>
         </template>
         <template v-else-if="column.key === 'enabled'">
@@ -81,8 +82,9 @@
                 <FontAwesomeIcon :icon="['fas', 'plug']" />
               </a-button>
             </a-tooltip>
+            <ViewRecordButton v-if="checkPermission('monitor:view') && !checkPermission('monitor:update')" @click="openDialog(record)" />
             <a-tooltip title="编辑">
-              <a-button v-if="checkPermission('monitor:update')" type="primary" @click="openDialog(record)">
+              <a-button v-if="checkPermission('monitor:view') && checkPermission('monitor:update')" type="primary" @click="openDialog(record)">
                 <FontAwesomeIcon :icon="['fa', 'edit']" />
               </a-button>
             </a-tooltip>
@@ -122,7 +124,7 @@
 
     <a-modal
       v-model:open="dialogOpen"
-      :title="form.id ? `编辑集群：${form.name}` : '新增集群'"
+      :title="form.id ? `${readOnly ? '查看' : '编辑'}集群：${form.name}` : '新增集群'"
       :width="720"
       centered
       :confirm-loading="saving"
@@ -130,7 +132,8 @@
       cancel-text="取消"
       @ok="submit"
     >
-      <a-form ref="formRef" :model="form" :rules="rules" layout="vertical">
+      <template v-if="readOnly" #footer><a-button @click="dialogOpen = false">关闭</a-button></template>
+      <a-form :disabled="readOnly" ref="formRef" :model="form" :rules="rules" layout="vertical">
         <a-row :gutter="16">
           <a-col :span="12">
             <a-form-item name="name" label="集群名称">
@@ -183,7 +186,7 @@
           </a-col>
           <a-col :span="6">
             <a-form-item label="启用">
-              <EnabledSwitch v-model:checked="form.enabled" />
+              <EnabledSwitch :read-only="readOnly" v-model:checked="form.enabled" />
             </a-form-item>
           </a-col>
           <a-col :span="24">
@@ -235,6 +238,7 @@
 </template>
 
 <script setup>
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
 defineOptions({
   name: 'monitorLogStorage'
@@ -282,6 +286,7 @@ const emptyForm = () => ({
   remark: '',
 })
 const form = reactive(emptyForm())
+const readOnly = computed(() => Boolean(form.id) && !checkPermission('monitor:update'))
 
 const rules = {
   name: [{ required: true, message: '请输入集群名称' }],
@@ -380,7 +385,7 @@ async function loadClusters() {
 }
 
 function openDialog(record = null) {
-  if (!checkPermission(record ? 'monitor:update' : 'monitor:create')) return
+  if (!checkPermission(record ? 'monitor:view' : 'monitor:create')) return
   Object.assign(form, emptyForm())
   if (record) {
     Object.assign(form, record)

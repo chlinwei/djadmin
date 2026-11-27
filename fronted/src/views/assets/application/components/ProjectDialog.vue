@@ -1,15 +1,16 @@
 <template>
   <a-modal
     :open="open"
-    :title="projectId ? `编辑项目：${form.name || '加载中'}` : '新增项目'"
+    :title="projectId ? `${readOnly ? '查看' : '编辑'}项目：${form.name || '加载中'}` : '新增项目'"
     :confirm-loading="saving"
     ok-text="保存"
     cancel-text="取消"
     @ok="submit"
     @cancel="emit('update:open', false)"
   >
+    <template v-if="readOnly" #footer><a-button @click="emit('update:open', false)">关闭</a-button></template>
     <a-spin :spinning="loading">
-      <a-form ref="formRef" :model="form" :rules="rules" layout="vertical">
+      <a-form :disabled="readOnly" ref="formRef" :model="form" :rules="rules" layout="vertical">
         <a-form-item name="name" label="项目名称"><a-input v-model:value="form.name" /></a-form-item>
         <a-form-item name="code" label="项目编码"><a-input v-model:value="form.code" /></a-form-item>
         <a-form-item label="关联业务系统">
@@ -20,7 +21,7 @@
           <div class="field-hint">归属关系在「业务系统」中维护，此处仅展示。</div>
         </a-form-item>
         <a-form-item name="owner" label="负责人"><a-input v-model:value="form.owner" /></a-form-item>
-        <a-form-item label="启用"><EnabledSwitch v-model:checked="form.enabled" /></a-form-item>
+        <a-form-item label="启用"><EnabledSwitch :read-only="readOnly" v-model:checked="form.enabled" /></a-form-item>
         <a-form-item label="备注"><a-textarea v-model:value="form.remark" :rows="3" /></a-form-item>
       </a-form>
     </a-spin>
@@ -29,11 +30,12 @@
 
 <script setup>
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
+import { formFields } from './assetFormValues'
 import { reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { getProject, saveProject } from '@/api/assets/application'
 
-const props = defineProps({ open: { type: Boolean, required: true }, projectId: { type: Number, default: null } })
+const props = defineProps({ readOnly: Boolean, open: { type: Boolean, required: true }, projectId: { type: Number, default: null } })
 const emit = defineEmits(['update:open', 'saved'])
 const formRef = ref(null)
 const loading = ref(false)
@@ -51,19 +53,21 @@ async function initialize() {
   loading.value = true
   try {
     const response = await getProject(props.projectId)
-    Object.assign(form, initialForm(), response?.data?.data || {})
+    Object.assign(form, formFields(initialForm(), response?.data?.data))
   } finally {
     loading.value = false
   }
 }
 
 async function submit() {
+  if (props.readOnly || loading.value) return
   try {
     await formRef.value.validate()
   } catch {
     // 表单校验失败时 antd 已在字段上标红，不再弹全局提示
     return
   }
+  if (props.readOnly) return
   saving.value = true
   try {
     const response = await saveProject({ ...form })
@@ -77,7 +81,7 @@ async function submit() {
   }
 }
 
-watch(() => props.open, (visible) => { if (visible) initialize() })
+watch(() => props.open, (visible) => { if (visible) initialize() }, { immediate: true })
 </script>
 
 <style scoped>

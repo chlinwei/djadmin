@@ -31,6 +31,10 @@ func expectCreatedMonitorTarget(mock sqlmock.Sqlmock, id int64) {
 	mock.ExpectExec("CreateMonitorTargetIfAbsent").WillReturnResult(sqlmock.NewResult(id, 1))
 }
 
+func expectCreatedMaintenanceWindow(mock sqlmock.Sqlmock, id int64) {
+	mock.ExpectExec("CreateMaintenanceWindow").WillReturnResult(sqlmock.NewResult(id, 1))
+}
+
 // expectAlertNotificationEventInsert 登记"建通知事件"的期望。
 // MySQL 侧是 `INSERT IGNORE` + `:execresult`：走 Exec，靠影响行数判断是否被唯一键跳过。
 func expectAlertNotificationEventInsert(mock sqlmock.Sqlmock, eventType, deduplicationKey string, alertID, id int64, inserted bool) {

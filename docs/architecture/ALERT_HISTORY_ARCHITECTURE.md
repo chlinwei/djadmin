@@ -49,7 +49,7 @@ HTML 邮件会转义正文并保留换行，告警值和模板内容不执行为
 
 前端历史告警列表 `rule_details.query` 即规则快照中的 PromQL；`monitor_alert_history.rule_snapshot` 为 JSON 列。
 
-`GET /monitor/alert-histories/` 支持 `notification_status=none|in_progress|success|failed`；不传或传 `all` 时不筛选。通知状态筛选与告警自身的触发/恢复状态独立，在数据库分页前和其他条件一起应用，列表和总数使用同一口径：无通知事件为「无通知」；任一事件失败为「存在失败」；否则有待发或发送中的事件为「发送中」；已结束但没有投递明细也算失败，其余为「全部成功」。
+`GET /monitor/alert-histories/` 支持 `notification_status=none|in_progress|success|failed|suppressed|partially_suppressed`；不传或传 `all` 时不筛选。通知状态与告警的触发/恢复状态独立，在数据库分页前筛选，列表和总数使用同一口径。没有正式投递明细不等于投递失败：维护抑制有独立状态和决策记录。
 
 **「问题」列两处同源**（2026-09-20 修）：列表里的"问题"文案取告警自身的 annotation ——
 `summary`，没写就退回 `description`（`alertSummaryText`，`internal/monitor/handler.go`）。
@@ -85,6 +85,39 @@ UPDATE + `IF()`（`IF(rule_group='',?,rule_group)`、`IF(IFNULL(JSON_LENGTH(rule
 
 ## 通知策略与分发
 
+### 维护窗口：暂停通知，不停止告警
+
+入口为「监控中心 → 通知管理 → 维护窗口」。窗口只影响正式告警媒介投递；不修改
+Prometheus 规则、通知策略或媒介，不删除当前/历史告警，也不拦截媒介测试。
+创建时填写名称、原因，并分别选择开始时间和结束时间，两项均必填。按用户时区编辑，后端以 UTC 比较 `[开始, 结束)`。
+列表不展示匹配条件。名称和操作列打开同一张表单：有修改权限且窗口可编辑时只显示「编辑」，否则只显示「查看」。以详情返回的当前状态判断模式；查看与编辑共用输入框、时间选择器、范围行和标签控件。查看时禁止修改，隐藏增删、预览和保存操作。两种模式均展示创建人、状态及抑制数。详情附带所选资产的名称（主机名和 IP、服务树路径），查看不依赖资产列表权限。
+待生效可编辑或取消；生效中可提前结束，也可修改名称、原因、范围和结束时间，开始时间锁定。编辑只影响后续判定，不修改历史快照。
+各状态均可删除：确认后从管理列表移除、立即退出活动窗口匹配，原告警抑制快照与窗口审计保留；被抑制的通知仍由 API 按当前有效窗口重评。
+
+- 项目、业务系统、环境、逻辑服务按资产服务树匹配，主机按确认的资产 ID 匹配。
+  在同一棵「项目 → 业务系统 → 环境 → 逻辑服务」树上可直接多选任意层级，各分支取并集。
+  选父节点按实时归属覆盖整个子树，包含之后新增的服务，不保存叶子 ID 清单。
+  环境节点同时保存 `business_id` 和环境 ID，只命中该业务下的环境，不跨业务匹配同名环境。
+  可添加多行影响范围，每行多选主机或服务树节点，行内、行间均取并集。主机选项按「主机名(IP)」展示、按 ID 匹配。
+  所有 Label 条件共同限定整个并集；没有范围行时仍可指定 Label。服务树环境和 `environment` 标签不是同一条件。
+  维护窗口仅支持「等于」（`=`，完整值相等）和「包含」（`contains`，字面子串），区分大小写，不解释正则或通配符。缺失标签不命中；标签名称和值均不能为空，禁止空范围。
+- 草稿可用 GET 预览当前 Prometheus 告警，返回命中主机、项目及条件；未命中仍可保存。
+  告警展开详情的创建入口只预填告警名及可确认的主机，不复制其他易变化的标签。
+- 入队及逐地址发送前判断活动窗口。任意一个命中即抑制，在数据库记录事件、窗口快照和决定时间。
+  已发送的地址不会被改成静音；历史列表区分「维护抑制」「部分维护抑制」和投递失败。
+  读取窗口或解析归属出错时记服务端诊断，不把异常当成匹配全部。
+- API 进程重新评估未结束的通知决定，不为每个窗口创建定时器。最后一个匹配窗口结束后，
+  仍在触发的告警按当前策略通知；窗口内触发又恢复、从未投递的告警不补发。
+  补发恢复取当前恢复开关、媒介、组、绑定地址与此前成功触发投递的 `(媒介,用户,地址)` 交集，不向已撤销或新增的接收方发送。
+  恢复扫描依赖数据库中事件和逐地址结果，已记录成功的地址不会重复投递；
+  SMTP 已接受但进程未及写回时，数据库与外部媒介之间无法保证严格的 exactly-once；遗留 `sending` 地址记录「结果未确认，须人工核对」，不盲目重投。
+- 通知详情 `events[].maintenance_windows` 与链诊断顶层 `event.maintenance_windows` 返回首次抑制快照 `{id,title,ends_at,decided_at}`；即使后来策略无出口，也能解释原决定。事件 `suppressed` / `partial_muted` 仍待重评，`skipped` / `partial_skipped` 为已完成且不再补发。
+
+管理接口前缀 `/monitor/maintenance-windows/`：GET 列表、`detail/?id=`、`preview/?matchers=`；
+POST `create/`、`update/`、`cancel/`、`end/`、`batch-delete/`（`{"ids":[...]}`）。查看需要同时具备 `monitor:view` 和
+`monitor:maintenance:view`，写入口还各需对应维护动作权限。迁移 `000071` 增加独立的 `monitor:maintenance:delete` 权限，不自动授予查看角色；
+更新权限后重新加载会话菜单。变更与操作者审计快照同事务，失败时不生效。
+
 描述告警通知"策略路由 → 建事件 → 异步投递 → 失联对账"的最终逻辑（Go 实现）。范围路由由管理员维护的**通知策略树**（对齐 Grafana notification policy）决定，用户绑定只是收件配置。链路诊断接口见 [通知链路诊断](#notification-chain)。
 
 ### 入口与文件
@@ -116,7 +149,7 @@ UPDATE + `IF()`（`IF(rule_group='',?,rule_group)`、`IF(IFNULL(JSON_LENGTH(rule
 `MarkAlertNotificationDelivery*` 查询定义，Go 层调用对应状态操作并判断已成功记录以避免重复投递。
 
 1. **摄取**：`AlertWebhook` 解析 Prometheus webhook 载荷（含规则快照解析），事务内写入 `monitor_alert_history`。对新 created 的 firing 告警与 resolved 更新的告警收集"通知目标"（alert_id、alertname、severity、instance、labels、event_type）。
-2. **入队（事务提交后，响应前同步执行）**：对每个目标先做"有无可投递媒介"预判（策略树路由 + 事件开关 + 出口为空则不建事件）；有命中则建 `monitor_alert_notification_event`（`deduplication_key={alert_id}:{event_type}` 唯一键幂等去重，"已入队"即影响行数 0 / 不返回行），**事件 id 由插入语句直接取回**（MySQL 的 `LastInsertId` / PG 的 `RETURNING`，不再"插完再按去重键查一次"），webhook 响应不等待后续发送。
+2. **入队**：与历史转态同事务记录 `monitor_notification_intent(alert_id,event_type)`，提交后响应前检查维护及策略。普通事件无可投递媒介不建事件；命中维护则原子创建事件与抑制快照。事件按 `{alert_id}:{event_type}` 唯一键去重，入队完成或确认无需通知才清理意图。webhook 不等待 SMTP。API 角色启动时恢复未完成意图/事件，随后每 30 秒扫描待办，含超过六分钟未更新的 `pending`/`sending`。
 3. **匹配（`matchedPolicyMedias`）**：加载策略树 → 合并 alertname/severity/instance 便捷键进 labels → `alertScopeNodes` 解析告警主机的服务树归属节点集合 → 策略树路由 → 事件开关判断 → 出口媒介按 `enabled=TRUE AND id IN (...)` 过滤，同时返回生效的接收组限制（nil=不限组）。
 4. **发送（提交事务后的 goroutine，异步）**：`dispatchAlertNotificationEvent` 循环调用 `sendAlertNotificationEvent`：
    - 事件置 `sending`、`attempt_count+1`；媒介在入队后被停用/策略树变更（预判为空）→ 事件直接 `failed`（"媒介在入队后被停用或策略树已变更"，不重试）。
@@ -131,15 +164,15 @@ UPDATE + `IF()`（`IF(rule_group='',?,rule_group)`、`IF(IFNULL(JSON_LENGTH(rule
 
 ### 失败语义
 
-- 入队预判（策略树加载或媒介查询）失败：该目标不建事件（webhook 响应不受影响）。
-- 发送过程中 SQL 错误：本次尝试中止（事件停留在 sending，等下次触发或对账；当前无看门狗重扫 pending/sending，见"保守处理点"）。
+- 入队预判（策略树加载或媒介查询）失败：记录日志，保留持久化意图稍后重试。
+- 发送过程中 SQL 错误：本次尝试中止，未完成事件由后台扫描重新评估，不把异常写成发送成功。
 - SMTP 失败计入 delivery `failed` 并触发事件级退避重试；重试只重投非 success 的 delivery。
 - 策略节点 matchers JSON 损坏（理论不会出现，写入前强校验）：按无条件命中处理，不因数据问题静默吞掉通知。
 
 ### 保守处理点（有意为之）
 
 - 失联阈值简化为固定 10 分钟（未解析 Prometheus 规则的 for/duration）。
-- 无 pending/sending 事件的进程重启后重扫；重启丢 sending 事件属可接受降级。
+- API 重启后重新扫描尚未结束的维护抑制与遗留的 pending/sending 事件，单实例内同一事件不并行投递。
 - 非 email 媒介在发送阶段跳过（webhook 等类型待后续实现）。
 - 路由每层只取第一条命中的子策略（Grafana 默认行为），未实现 `continue matching siblings`。
 - 策略树每次派发全量加载（表很小、告警频率低，不做缓存）。

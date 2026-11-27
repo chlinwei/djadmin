@@ -1,6 +1,7 @@
 package logcollect
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http/httptest"
 	"regexp"
@@ -11,6 +12,27 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 )
+
+func TestFilterRuleResponseRetainsExcludeDirectionAndApplication(t *testing.T) {
+	pool, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	mock.ExpectQuery("GetApplicationNameCode").WithArgs(int64(8)).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "code"}).AddRow("网关", "gw"))
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("GET", "/", nil)
+	got := (&Handler{db: pool}).filterRuleResponse(c, db.MonitorLogCollectionFilterRule{
+		RuleType: "exclude", ApplicationID: sql.NullInt64{Int64: 8, Valid: true},
+	})
+	if got.RuleType != "exclude" || got.ApplicationName != "网关" {
+		t.Fatal(got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // 回归用例：pipeline_body 现在是 sqlc 生成的 json.RawMessage，序列化到 JSON 响应里必须是
 // 真正的对象（{"processors":[...]}），不能像旧的 map[string]any 手写扫描那样被 Gin 二次转义

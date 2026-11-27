@@ -2,6 +2,10 @@ import requestUtil from '@/util/request'
 
 const prefix = 'sys/automation/'
 
+export const getPlaybook = (id) => requestUtil.get(`${prefix}playbooks/${id}/`)
+export const getInventory = (id) => requestUtil.get(`${prefix}inventories/${id}/`)
+export const getTask = (id) => requestUtil.get(`${prefix}tasks/${id}/`)
+
 export function getPlaybookList(params) {
   return requestUtil.get(prefix + 'playbooks/', params)
 }

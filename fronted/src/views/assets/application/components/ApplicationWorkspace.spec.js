@@ -58,7 +58,7 @@ vi.mock('@/api/monitor', () => ({
 }))
 
 vi.mock('@/store', () => ({
-  default: { state: { user: { timezone: 'Asia/Shanghai' }, perms: [], role_codes: [] } },
+  default: { state: { user: { timezone: 'Asia/Shanghai' }, perms: [], role_codes: ['admin'] } },
 }))
 
 vi.mock('@/util/timezone', () => ({
@@ -325,6 +325,12 @@ describe('ApplicationWorkspace tab switching', () => {
     await flushPromises()
     await clickTab(wrapper, '集群模型')
 
+    const actions = wrapper.findAllComponents({ name: 'ATooltip' }).filter(item => ['查看', '编辑'].includes(item.props('title')))
+    expect(actions.map(item => item.props('title'))).toEqual(['查看'])
+    await actions[0].find('button').trigger('click')
+    const profileDialog = wrapper.findComponent({ name: 'ClusterProfileDialog' })
+    expect(profileDialog.props()).toMatchObject({ open: true, profileId: 9, readOnly: true })
+    profileDialog.vm.$emit('update:open', false)
     await wrapper.find('[data-create-cluster-profile]').trigger('click')
     const serviceDialog = wrapper.findComponent({ name: 'ApplicationServiceDialog' })
     expect(serviceDialog.props('open')).toBe(true)

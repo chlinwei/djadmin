@@ -21,6 +21,22 @@ beforeEach(() => {
 })
 afterEach(() => { wrapper?.unmount(); document.body.innerHTML = ''; vi.restoreAllMocks() })
 describe('user status form', () => {
+  it('只读用户详情加载同一表单，不能修改启用状态或提交', async () => {
+    wrapper = mount(Dialog, {
+      props: { open: false, title: '查看用户', user_id: 7, readOnly: true },
+      attachTo: document.body, global: { plugins: [Antd] },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+    expect(getUserById).toHaveBeenCalledWith(7)
+    expect(document.querySelector('.ant-modal input').value).toBe('view')
+    expect(document.querySelector('.ant-modal [role="switch"]').disabled).toBe(true)
+    expect(document.querySelector('.ant-modal-footer .ant-btn-primary')).toBeNull()
+    wrapper.vm.handleOk()
+    await flushPromises()
+    expect(saveUserInfo).not.toHaveBeenCalled()
+    expect(checkUserName).not.toHaveBeenCalled()
+  })
   it.each([
     [-1, false, 1, addUser],
     [7, true, 0, saveUserInfo],

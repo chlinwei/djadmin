@@ -20,11 +20,12 @@
           </a-tooltip>
         </span>
         <template v-if="scope.nodeType === 'businessSystem' && entity">
-          <a-tooltip title="编辑">
-            <a-button v-permission="'assets:service-tree:manage'" size="small" type="primary" @click="emit('edit-business-system', entity)">
+          <a-tooltip v-if="canViewBusiness() && canManageTree()" title="编辑">
+            <a-button size="small" type="primary" @click="emit('edit-business-system', entity)">
               <FontAwesomeIcon :icon="['fa', 'edit']" />
             </a-button>
           </a-tooltip>
+          <ViewRecordButton v-else-if="canViewBusiness()" @click="emit('edit-business-system', entity)" />
           <a-tooltip title="删除">
             <a-button v-permission="'assets:service-tree:manage'" class="delBtn" size="small" type="primary" danger @click="emit('delete-business-system', entity)">
               <FontAwesomeIcon :icon="['fas', 'trash-can']" />
@@ -32,17 +33,18 @@
           </a-tooltip>
         </template>
         <template v-else-if="scope.nodeType === 'service' && entity">
-          <a-tooltip title="编辑">
-            <a-button v-permission="'assets:service-tree:manage'" size="small" type="primary" @click="emit('edit-service', entity)">
+          <a-tooltip v-if="canViewService() && canManageService('update')" title="编辑">
+            <a-button size="small" type="primary" @click="emit('edit-service', entity)">
               <FontAwesomeIcon :icon="['fa', 'edit']" />
             </a-button>
           </a-tooltip>
-          <a-tooltip title="复制" placement="top">
+          <ViewRecordButton v-else-if="canViewService()" @click="emit('edit-service', entity)" />
+          <a-tooltip v-if="canViewService() && canManageService('create')" title="复制" placement="top">
             <a-button v-permission="'assets:service-tree:manage'" size="small" @click="emit('copy-service', entity)">
               <FontAwesomeIcon :icon="['fas', 'copy']" />
             </a-button>
           </a-tooltip>
-          <a-tooltip title="删除">
+          <a-tooltip v-if="canManageService('delete')" title="删除">
             <a-button v-permission="'assets:service-tree:manage'" class="delBtn" size="small" type="primary" danger @click="emit('delete-service', entity)">
               <FontAwesomeIcon :icon="['fas', 'trash-can']" />
             </a-button>
@@ -178,8 +180,9 @@
         <a-table row-key="key" :columns="columns" :data-source="rows" :pagination="false" :scroll="{ x: tableWidth }" :custom-row="getChildRowProps" size="small" :locale="tableLocale">
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'child_link'">
-              <a class="child-navigation-link" href="#" @click.prevent.stop="navigateToChild(record)">
-                <span>{{ childLabel(record) }}</span>
+              <a v-if="childConfigEvent" href="#" @click.prevent.stop="emit(childConfigEvent, record)">{{ childLabel(record) }}</a>
+              <a class="child-navigation-link" href="#" :aria-label="`进入${childLabel(record)}`" @click.prevent.stop="navigateToChild(record)">
+                <span v-if="!childConfigEvent">{{ childLabel(record) }}</span>
                 <RightOutlined />
               </a>
             </template>
@@ -188,7 +191,7 @@
               <EnabledSwitch
                 v-model:checked="record.enabled"
                 :endpoint="`assets/${['all', 'project'].includes(scope.nodeType) ? 'business-systems' : scope.nodeType === 'service' ? 'application-deployments' : 'application-services'}/${record.id}/`"
-                :permission="['all', 'project'].includes(scope.nodeType) ? 'assets:service-tree:manage' : 'assets:applications:update'"
+                :permission="['all', 'project'].includes(scope.nodeType) ? 'assets:service-tree:manage' : scope.nodeType === 'environment' ? ['assets:service-tree:manage', 'assets:applications:update'] : 'assets:applications:update'"
               />
             </template>
             <template v-else-if="column.key === 'runtime_status'">
@@ -212,11 +215,12 @@
             </template>
             <template v-else-if="column.key === 'business_system_action'">
               <a-space :size="6">
-                <a-tooltip title="编辑">
-                  <a-button v-permission="'assets:service-tree:manage'" size="small" type="primary" @click.stop="emit('edit-business-system', record)">
+                <a-tooltip v-if="canViewBusiness() && canManageTree()" title="编辑">
+                  <a-button size="small" type="primary" @click.stop="emit('edit-business-system', record)">
                     <FontAwesomeIcon :icon="['fa', 'edit']" />
                   </a-button>
                 </a-tooltip>
+                <ViewRecordButton v-else-if="canViewBusiness()" @click.stop="emit('edit-business-system', record)" />
                 <a-tooltip title="删除">
                   <a-button v-permission="'assets:service-tree:manage'" class="delBtn" size="small" type="primary" danger @click.stop="emit('delete-business-system', record)">
                     <FontAwesomeIcon :icon="['fas', 'trash-can']" />
@@ -226,17 +230,18 @@
             </template>
             <template v-else-if="column.key === 'service_action'">
               <a-space :size="6">
-                <a-tooltip title="编辑">
-                  <a-button v-permission="'assets:service-tree:manage'" size="small" type="primary" @click.stop="emit('edit-service', record)">
+                <a-tooltip v-if="canViewService() && canManageService('update')" title="编辑">
+                  <a-button size="small" type="primary" @click.stop="emit('edit-service', record)">
                     <FontAwesomeIcon :icon="['fa', 'edit']" />
                   </a-button>
                 </a-tooltip>
-                <a-tooltip title="复制" placement="top">
+                <ViewRecordButton v-else-if="canViewService()" @click.stop="emit('edit-service', record)" />
+                <a-tooltip v-if="canViewService() && canManageService('create')" title="复制" placement="top">
                   <a-button v-permission="'assets:service-tree:manage'" size="small" @click.stop="emit('copy-service', record)">
                     <FontAwesomeIcon :icon="['fas', 'copy']" />
                   </a-button>
                 </a-tooltip>
-                <a-tooltip title="删除">
+                <a-tooltip v-if="canManageService('delete')" title="删除">
                   <a-button v-permission="'assets:service-tree:manage'" class="delBtn" size="small" type="primary" danger @click.stop="emit('delete-service', record)">
                     <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                   </a-button>
@@ -285,6 +290,7 @@
 </template>
 
 <script setup>
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -308,6 +314,7 @@ import {
 import { getHostById } from '@/api/assets/host'
 import { buildDeploymentWebSSHRoute, buildServiceTreeBreadcrumbs } from './navigation'
 import { checkPermission } from '@/directives/permission/permission'
+import { canManageTree, canManageService, canViewService, canViewBusiness } from './configPermissions'
 
 const props = defineProps({
   scope: { type: Object, required: true },
@@ -418,6 +425,11 @@ const abnormalColumns = [
   { title: '上次检查时间', key: 'last_status_check_time', width: 190 },
   { title: '诊断输出', key: 'runtime_status_output', width: 560 },
 ]
+const childConfigEvent = computed(() => {
+  if (['all', 'project'].includes(props.scope.nodeType) && canViewBusiness()) return 'edit-business-system'
+  if (props.scope.nodeType === 'environment' && canViewService()) return 'edit-service'
+  return null
+})
 const columns = computed(() => {
   const baseColumns = ({
     all: [
@@ -432,9 +444,8 @@ const columns = computed(() => {
   return baseColumns.filter((column) => {
     if (column.key === 'ha_role') return entity.value?.cluster_type === 'ha'
     if (column.key === 'deployment_action') return checkPermission('assets:hosts:execute')
-    if (column.key === 'business_system_action' || column.key === 'service_action') {
-      return checkPermission('assets:service-tree:manage')
-    }
+    if (column.key === 'business_system_action') return canViewBusiness() || canManageTree()
+    if (column.key === 'service_action') return canViewService() || canManageService('delete')
     return true
   })
 })
@@ -601,7 +612,7 @@ function getChildRowProps(record) {
     tabindex: 0,
     onClick: () => navigateToChild(record),
     onKeydown: (event) => {
-      if (event.key === 'Enter' || event.key === ' ') {
+      if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
         event.preventDefault()
         navigateToChild(record)
       }

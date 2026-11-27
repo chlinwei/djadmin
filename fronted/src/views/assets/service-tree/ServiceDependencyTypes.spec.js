@@ -3,12 +3,14 @@ import Antd, { Form, Input, Table, Tooltip } from 'ant-design-vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('@/api/assets/serviceDependencies', () => ({
   getServiceDependencyTypes: vi.fn(),
+  getServiceDependencyType: vi.fn(),
   saveServiceDependencyType: vi.fn(),
   deleteServiceDependencyTypes: vi.fn(),
 }))
-vi.mock('@/directives/permission/permission', () => ({ checkPermission: () => true }))
+vi.mock('@/directives/permission/permission', () => ({ checkPermission: vi.fn(() => true) }))
 vi.mock('@/util/deleteConfirm', async (original) => ({ ...await original(), openDeleteConfirm: vi.fn() }))
 import * as api from '@/api/assets/serviceDependencies'
+import { checkPermission } from '@/directives/permission/permission'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import Types from './ServiceDependencyTypes.vue'
 
@@ -20,6 +22,8 @@ beforeEach(() => {
   const computedStyle = window.getComputedStyle
   vi.spyOn(window, 'getComputedStyle').mockImplementation((element) => computedStyle(element))
   api.getServiceDependencyTypes.mockResolvedValue(envelope({ results: [record], totalPages: 1 }))
+  api.getServiceDependencyType.mockResolvedValue(envelope(record))
+  checkPermission.mockReturnValue(true)
   api.saveServiceDependencyType.mockResolvedValue(envelope(record))
 })
 afterEach(() => { wrapper?.unmount(); vi.restoreAllMocks(); document.body.innerHTML = '' })
@@ -35,6 +39,18 @@ async function clickText(text) {
   await flushPromises()
 }
 describe('dependency interaction dictionary', () => {
+  it('opens the current type from its name without enabling updates', async () => {
+    checkPermission.mockImplementation(code => code.endsWith(':view'))
+    api.getServiceDependencyType.mockResolvedValue(envelope({ ...record, description: '最新说明' }))
+    await create()
+    await wrapper.find('td a').trigger('click')
+    await flushPromises()
+    expect(wrapper.findComponent(Form).props('model').description).toBe('最新说明')
+    expect(wrapper.findComponent(Form).get('button[role="switch"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).not.toContain('保存')
+    await wrapper.vm.$.setupState.save()
+    expect(api.saveServiceDependencyType).not.toHaveBeenCalled()
+  })
   it('supports creating a custom type with validated stable code and optional description', async () => {
     await create()
     await clickText('新增类型')

@@ -107,11 +107,12 @@
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
-              <a-tooltip title="编辑">
-                <a-button v-if="checkPermission('system:scheduler:update')" size="small" type="primary" @click="openEditModal(record)">
+              <a-tooltip v-if="canEditTask" title="编辑">
+                <a-button size="small" type="primary" @click="openEditModal(record)">
                   <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                 </a-button>
               </a-tooltip>
+              <ViewRecordButton v-else-if="checkPermission('system:scheduler:view')" @click="openEditModal(record)" />
               <a-tooltip title="历史记录">
                 <a-button size="small" @click="viewLogs(record)">
                   <FontAwesomeIcon :icon="['fas', 'eye']" />
@@ -149,14 +150,15 @@
     </a-card>
 
     <a-modal
-      title="编辑调度任务"
+      :title="canEditTask ? '编辑调度任务' : '查看调度任务'"
       :open="editVisible"
       :width="520"
       :confirmLoading="editLoading"
       @ok="submitTask"
       @cancel="editVisible = false"
     >
-      <a-form layout="vertical">
+      <template v-if="!canEditTask" #footer><a-button @click="editVisible = false">关闭</a-button></template>
+      <a-form layout="vertical" :disabled="!canEditTask">
         <a-form-item label="任务名称" required>
           <a-input v-model:value="editForm.name" disabled />
         </a-form-item>
@@ -167,7 +169,7 @@
           <a-select
             v-model:value="editForm.menu"
             :getPopupContainer="getPopupContainer"
-            :options="menuOptions"
+            :options="editForm.menu ? [{ label: editForm.menu_name, value: editForm.menu }] : []"
             :virtual="false"
             disabled
             placeholder="可选：关联一个菜单页面"
@@ -177,7 +179,7 @@
           />
         </a-form-item>
         <a-form-item label="启用状态">
-          <EnabledSwitch v-model:checked="editForm.enabled" />
+          <EnabledSwitch v-model:checked="editForm.enabled" :disabled="!canEditTask" />
         </a-form-item>
         <a-form-item label="Cron 表达式" required>
           <a-input
@@ -338,7 +340,7 @@ import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { getTaskList, getTaskLogList, enableTask, disableTask, updateTask, runTaskNow, getTaskStatus } from '@/api/sys/scheduler'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig'
-import { getMenuTree } from '@/api/menu'
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
 import { checkPermission } from '@/directives/permission/permission'
@@ -371,7 +373,7 @@ const statusUpdating = reactive({})
 // 判据只有后端有（supported 字段来自 handler 注册表），前端不自己猜编码清单。
 const unsupportedTaskCount = computed(() => tasks.value.filter((task) => task.supported === false).length)
 const logs = ref([])
-const menuOptions = ref([])
+const canEditTask = computed(() => checkPermission('system:scheduler:update'))
 const logFilterVisible = ref(false)
 const logFilters = reactive({
   status: undefined,
@@ -433,32 +435,6 @@ const resolveTaskOrdering = () => {
   }
   const sortPrefix = taskSort.order === 'descend' ? '-' : ''
   return `${sortPrefix}${taskSort.field}`
-}
-
-const buildMenuOptions = (nodes, collector = []) => {
-  nodes.forEach((item) => {
-    if (item.menu_type === 'C') {
-      collector.push({
-        label: item.name,
-        value: item.id,
-      })
-    }
-    if (item.children && item.children.length) {
-      buildMenuOptions(item.children, collector)
-    }
-  })
-  return collector
-}
-
-const loadMenuOptions = () => {
-  getMenuTree()
-    .then((res) => {
-      const tree = res?.data?.data || []
-      menuOptions.value = buildMenuOptions(tree)
-    })
-    .catch(() => {
-      menuOptions.value = []
-    })
 }
 
 const logColumns = ref([
@@ -787,7 +763,7 @@ const goToMenu = (record) => {
 }
 
 const openEditModal = (record) => {
-  if (!checkPermission('system:scheduler:update')) return
+  if (!checkPermission('system:scheduler:view')) return
   editForm.id = record.id
   editForm.name = record.name
   editForm.code = record.code
@@ -975,7 +951,6 @@ const runNow = (record) => {
 }
 
 onMounted(() => {
-  loadMenuOptions()
   loadTasks()
 })
 onBeforeUnmount(stopAllTaskPolling)

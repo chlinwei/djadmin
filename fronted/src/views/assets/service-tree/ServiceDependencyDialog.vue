@@ -1,7 +1,7 @@
 <template>
-  <a-modal :open="open" :title="record ? '编辑依赖关系' : '新增依赖关系'" :width="720" centered :mask-closable="false" :closable="!saving" @cancel="close">
+  <a-modal :open="open" :title="readOnly ? '查看依赖关系' : record ? '编辑依赖关系' : '新增依赖关系'" :width="720" centered :mask-closable="false" :closable="!saving" @cancel="close">
     <a-alert type="info" show-icon message="A → B 表示 A 依赖 B；双向不是请求与响应，而是两个方向都存在业务依赖。" style="margin-bottom: 16px" />
-    <a-form ref="formRef" :model="form" layout="vertical">
+    <a-form ref="formRef" :model="form" :disabled="readOnly" layout="vertical">
       <a-row :gutter="16">
         <a-col :span="12"><a-form-item label="依赖方（谁需要对方）" name="source_service_id" :rules="[{ required: true, message: '请选择依赖方' }]">
           <a-select v-model:value="form.source_service_id" show-search :options="serviceOptions" option-filter-prop="label" :getPopupContainer="getPopupContainer" placeholder="请选择服务" />
@@ -18,7 +18,7 @@
       </section>
     </a-form>
     <a-alert v-if="error" type="error" show-icon :message="error" />
-    <template #footer><a-button :disabled="saving" @click="close">取消</a-button><a-button type="primary" :loading="saving" @click="save">保存</a-button></template>
+    <template #footer><a-button :disabled="saving" @click="close">{{ readOnly ? '关闭' : '取消' }}</a-button><a-button v-if="!readOnly" type="primary" :loading="saving" @click="save">保存</a-button></template>
   </a-modal>
 </template>
 
@@ -32,6 +32,7 @@ import { dependencyData } from './dependencyGraph'
 
 const props = defineProps({
   open: Boolean,
+  readOnly: Boolean,
   record: { type: Object, default: null },
   services: { type: Array, required: true },
   types: { type: Array, required: true },
@@ -45,9 +46,22 @@ const formRef = ref()
 const saving = ref(false)
 const error = ref('')
 let generation = 0
-const serviceOptions = computed(() => props.services.map((node) => ({ value: node.id, label: `${node.name} · ${node.business_system_name} / ${node.code}` })))
+const serviceOptions = computed(() => {
+  if (props.readOnly && props.record) {
+    return ['source', 'target'].map(side => {
+      const value = props.record[`${side}_service_id`]
+      const node = props.services.find(item => item.id === value)
+      const name = props.record[`${side}_name`]
+      return { value, label: node ? `${name} · ${node.business_system_name} / ${node.code}` : name }
+    })
+  }
+  return props.services.map((node) => ({ value: node.id, label: `${node.name} · ${node.business_system_name} / ${node.code}` }))
+})
 const enabledTypeOptions = computed(() => props.types.filter((item) => item.enabled).map((item) => ({ value: item.id, label: item.name })))
-const typeOptions = computed(() => props.types.filter((item) => item.enabled || item.id === props.record?.interaction_type_id).map((item) => ({ value: item.id, label: `${item.name}${item.enabled ? '' : '（已停用，仅保留原关系）'}` })))
+const typeOptions = computed(() => {
+  if (props.readOnly && props.record) return [{ value: props.record.interaction_type_id, label: `${props.record.interaction_type_name}${props.record.interaction_type_enabled === false ? '（已停用）' : ''}` }]
+  return props.types.filter((item) => item.enabled || item.id === props.record?.interaction_type_id).map((item) => ({ value: item.id, label: `${item.name}${item.enabled ? '' : '（已停用，仅保留原关系）'}` }))
+})
 const serviceName = (id) => props.services.find((node) => node.id === id)?.name || '未选择服务'
 
 watch(() => [props.open, props.record], () => {
@@ -70,13 +84,14 @@ function close() {
 }
 
 async function save() {
-  if (saving.value) return
+  if (props.readOnly || saving.value || !props.open) return
   try { await formRef.value.validate() } catch (validation) {
     if (validation?.errorFields) return
     error.value = validation?.message || '表单校验失败'
     return
   }
   if (form.source_service_id === form.target_service_id) { error.value = '不能让服务依赖自身'; return }
+  if (props.readOnly || !props.open) return
   const payload = {
     source_service_id: form.source_service_id,
     target_service_id: form.target_service_id,

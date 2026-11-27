@@ -385,6 +385,9 @@
                   {{ record.package_type === 'filebeat' ? 'Filebeat' : 'Exporter' }}
                 </a-tag>
               </template>
+              <template v-else-if="column.key === 'name' && checkPermission('monitor:view')">
+                <a-button type="link" @click="openPackageEditModal(record)">{{ record.name }}</a-button>
+              </template>
               <template v-else-if="column.key === 'enabled'">
                 <EnabledSwitch v-model:checked="record.enabled" :endpoint="`monitor/packages/${record.id}/`" permission="monitor:update" />
               </template>
@@ -396,8 +399,9 @@
               </template>
               <template v-else-if="column.key === 'action'">
                 <a-space>
+                  <ViewRecordButton v-if="checkPermission('monitor:view') && !checkPermission('monitor:update')" @click="openPackageEditModal(record)" />
                   <a-tooltip title="编辑">
-                    <a-button v-if="checkPermission('monitor:update')" type="primary" ghost @click="openPackageEditModal(record)">
+                    <a-button v-if="checkPermission('monitor:view') && checkPermission('monitor:update')" type="primary" ghost @click="openPackageEditModal(record)">
                       <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                     </a-button>
                   </a-tooltip>
@@ -681,7 +685,7 @@
     </a-modal>
 
     <a-modal
-      title="编辑软件包"
+      :title="packageReadOnly ? '查看软件包' : '编辑软件包'"
       :open="packageEditModalVisible"
       :confirm-loading="packageEditModalSubmitting"
       ok-text="保存"
@@ -690,7 +694,8 @@
       @ok="submitPackageEdit"
       @cancel="packageEditModalVisible = false"
     >
-      <a-form layout="vertical">
+      <template v-if="packageReadOnly" #footer><a-button @click="packageEditModalVisible = false">关闭</a-button></template>
+      <a-form :disabled="packageReadOnly" layout="vertical">
         <a-form-item label="软件包">
           <span>{{ packageEditTarget ? `${packageEditTarget.name} (${packageEditTarget.os}-${packageEditTarget.arch})` : '-' }}</span>
         </a-form-item>
@@ -850,6 +855,7 @@
 </template>
 
 <script setup>
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { createPagination, tableLocale } from '@/util/tableStyle'
@@ -1073,6 +1079,7 @@ const syncModalVisible = ref(false)
 const syncModalSubmitting = ref(false)
 const syncModalTarget = ref(null)
 const syncModalVersion = ref('')
+const packageReadOnly = computed(() => !checkPermission('monitor:update'))
 const packageEditModalVisible = ref(false)
 const packageEditModalSubmitting = ref(false)
 const packageEditTarget = ref(null)
@@ -1354,7 +1361,7 @@ function openSyncOfficialModal(record) {
 }
 
 function openPackageEditModal(record) {
-  if (!checkPermission('monitor:update')) return
+  if (!checkPermission('monitor:view')) return
   packageEditTarget.value = record
   packageEditForm.default_port = Number(record.default_port || 9100)
   // 平台元数据与新增表单对齐：RPM/DEB 按平台隔离建多条记录，建错平台这里可以直接修正，

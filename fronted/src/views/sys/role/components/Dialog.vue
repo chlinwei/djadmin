@@ -1,14 +1,15 @@
 <template>
     <div>
       <a-modal cancelText="取消" okText="保存" destroyOnClose :open="props.open" v-model:title="props.title" v-model:role_id="props.role_id" @ok="handleOk" @cancel="handleCancel">
-        <a-form
+        <template v-if="readOnly" #footer><a-button @click="handleCancel">关闭</a-button></template>
+        <a-form :disabled="readOnly"
     :model="form"
     ref="formRef"
     name="basic"
     :label-col="{ span: 8 }"
     :wrapper-col="{ span: 16 }"
     autocomplete="off"
-    :rules="props.user_id === -1 ? userAdd_rules:userEdit_rules"
+    :rules="props.role_id === -1 ? userAdd_rules:userEdit_rules"
   >
   <!-- :validate-messages="validateMessages" -->
     <a-form-item
@@ -36,6 +37,7 @@
   const formRef = ref(null)
   const props = defineProps(
     {
+        readOnly: Boolean,
         open: {
             type: Boolean,
             default:false,
@@ -86,6 +88,7 @@ const emits = defineEmits(['update:open','initList'])
 
 import { savOrCreateRole,getRoleById } from '@/api/role/index.js';
 const handleOk = e => {
+    if (props.readOnly) return
     // 校验
     const res = formRef.value?.validate().then((r1)=>{
         let role = form.value;

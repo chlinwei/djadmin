@@ -45,7 +45,7 @@
           <template v-if="column.key === 'name'">
             <a-tooltip :title="record.name || '-'" placement="top">
               <a-button
-                v-if="canEditTask"
+                v-if="canViewTask"
                 type="link"
                 size="small"
                 class="task-name-link task-label-link"
@@ -120,11 +120,12 @@
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
-              <a-tooltip title="编辑">
-                <a-button size="small" type="primary" @click="emitEdit(record)" v-permission="'automation:tasks:update'">
+              <a-tooltip v-if="canViewTask && canEditTask" title="编辑" placement="top">
+                <a-button size="small" type="primary" @click="emitEdit(record)">
                   <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                 </a-button>
               </a-tooltip>
+              <ViewRecordButton v-else-if="canViewTask" @click="emitEdit(record)" />
               <a-tooltip title="运行">
                 <a-button
                   size="small"
@@ -165,6 +166,7 @@
 </template>
 
 <script setup>
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed } from 'vue'
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
@@ -196,6 +198,7 @@ const props = defineProps({
   taskColumns: { type: Array, required: true },
   tasks: { type: Array, required: true },
   taskPagination: { type: Object, required: true },
+  canViewTask: Boolean,
   canEditTask: { type: Boolean, default: false },
   taskStatusUpdatingId: { type: Number, default: null },
   runningTaskId: { type: Number, default: null },

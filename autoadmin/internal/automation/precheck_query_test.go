@@ -45,6 +45,47 @@ func TestBindPrecheckQuery(t *testing.T) {
 	}
 }
 
+func TestInventoryDetailSeparatesConfiguredAndResolvedHosts(t *testing.T) {
+	pool, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	now := time.Now()
+	mock.ExpectQuery("FROM automation_inventory").WithArgs(int64(9)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "create_time", "update_time", "remark", "name", "selected_host_ids", "enabled",
+			"last_sync_host_count", "last_sync_message", "last_sync_status", "last_sync_time",
+			"update_cache_timeout", "update_on_launch",
+		}).AddRow(9, now, now, nil, "disabled inventory", []byte(`[10,11]`), false, 0, "", "", nil, 300, false))
+	mock.ExpectQuery("COUNT\\(\\*\\) AS existing").WithArgs(hostIDArgs(10, 11)...).
+		WillReturnRows(sqlmock.NewRows([]string{"existing", "resolved", "group_count"}).AddRow(2, 1, 1))
+	mock.ExpectQuery("FROM assets_host h").WithArgs(hostIDArgs(10, 11)...).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "instance_name", "ip", "group_id", "group_name", "agent_online"}).
+			AddRow(10, "host-a", "10.0.0.1", 2, "production", false))
+	mock.ExpectQuery("FROM assets_host WHERE id").WithArgs(hostIDArgs(11)...).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "instance_name"}).AddRow(11, "no-ip"))
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/inventories/9/", nil)
+	ctx.Params = gin.Params{{Key: "id", Value: "9"}}
+	(&Handler{db: pool}).GetInventory(ctx)
+	var result struct {
+		Code int
+		Data struct {
+			Resolved []hostSnapshot   `json:"resolved_hosts"`
+			Names    map[int64]string `json:"selected_host_names"`
+		}
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil || result.Code != 200 ||
+		len(result.Data.Resolved) != 1 || result.Data.Resolved[0].GroupName != "production" || result.Data.Names[11] != "no-ip" {
+		t.Fatalf("inventory detail: %s", recorder.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPrecheckGETQueries(t *testing.T) {
 	for _, task := range []bool{false, true} {
 		t.Run(map[bool]string{false: "inventory", true: "task default limit"}[task], func(t *testing.T) {
@@ -68,7 +109,7 @@ func TestPrecheckGETQueries(t *testing.T) {
 					"last_sync_host_count", "last_sync_message", "last_sync_status", "last_sync_time",
 					"update_cache_timeout", "update_on_launch",
 				}).AddRow(9, now, now, nil, "inventory", []byte(`[]`), true, 0, "", "", nil, 300, false))
-			mock.ExpectQuery("FROM assets_host h").WithArgs(int64(10), int64(11)).
+			mock.ExpectQuery("FROM assets_host h").WithArgs(hostIDArgs(10, 11)...).
 				WillReturnRows(sqlmock.NewRows([]string{"id", "instance_name", "ip", "group_id", "group_name", "agent_online"}).
 					AddRow(10, "host-a", "10.0.0.1", nil, "", false).
 					AddRow(11, "host-b", "10.0.0.2", nil, "", false))

@@ -28,19 +28,20 @@
             <div class="policy-node">
               <span class="policy-node-name">
                 <FontAwesomeIcon v-if="wrapper.raw.isRoot" :icon="['fas', 'house']" class="policy-root-icon" />
-                {{ wrapper.raw.name }}
+                <a-button v-if="checkPermission('monitor:view')" type="link" @click.stop="openEditModal(wrapper.raw)">{{ wrapper.raw.name }}</a-button>
+                <span v-else>{{ wrapper.raw.name }}</span>
               </span>
               <a-tag v-if="wrapper.raw.isRoot" color="purple">默认策略（恒命中）</a-tag>
               <a-tag v-if="wrapper.raw.position" color="default">#{{ wrapper.raw.position }}</a-tag>
               <template v-if="wrapper.raw.matchers.length">
-                <a-tag v-for="(matcher, index) in wrapper.raw.matchers" :key="index" color="blue">{{ formatMatcher(matcher) }}</a-tag>
+                <a-tag v-for="(matcher, index) in wrapper.raw.matchers" :key="index" color="blue">{{ formatMatcher(matcher, wrapper.raw.scopeNames) }}</a-tag>
               </template>
               <a-tag v-else-if="!wrapper.raw.isRoot" color="cyan">无条件命中</a-tag>
               <a-tag :color="wrapper.raw.notifyOnFiring ? 'red' : 'default'">firing {{ wrapper.raw.notifyOnFiring ? '开' : '关' }}</a-tag>
               <a-tag :color="wrapper.raw.notifyOnResolved ? 'green' : 'default'">resolved {{ wrapper.raw.notifyOnResolved ? '开' : '关' }}</a-tag>
               <a-tag v-if="wrapper.raw.mediaInherited" color="default">出口：继承</a-tag>
               <template v-else-if="wrapper.raw.mediaIds.length">
-                <a-tag v-for="mediaId in wrapper.raw.mediaIds" :key="mediaId">{{ mediaNameMap[mediaId] || `媒介 #${mediaId}` }}</a-tag>
+                <a-tag v-for="(mediaId, index) in wrapper.raw.mediaIds" :key="mediaId">{{ wrapper.raw.mediaNames[index] || `媒介 #${mediaId}` }}</a-tag>
               </template>
               <a-tag v-else color="orange">静音（不投递）</a-tag>
               <span class="policy-node-actions">
@@ -49,8 +50,9 @@
                     <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
                   </a-button>
                 </a-tooltip>
+                <ViewRecordButton v-if="checkPermission('monitor:view') && !checkPermission('monitor:update')" @click="openEditModal(wrapper.raw)" />
                 <a-tooltip title="编辑" placement="top">
-                  <a-button v-if="checkPermission('monitor:update')" size="small" type="primary" @click="openEditModal(wrapper.raw)">编辑</a-button>
+                  <a-button v-if="checkPermission('monitor:view') && checkPermission('monitor:update')" size="small" type="primary" @click="openEditModal(wrapper.raw)">编辑</a-button>
                 </a-tooltip>
                 <a-tooltip v-if="!wrapper.raw.isRoot" title="删除（含子树）" placement="top">
                   <a-button v-if="checkPermission('monitor:delete')" size="small" type="primary" danger class="delBtn" @click="handleDelete(wrapper.raw)">删除</a-button>
@@ -69,13 +71,13 @@
       :footer="null"
       @cancel="closeModal"
     >
-      <a-form :model="policyForm" :label-col="{ span: 5 }" :wrapper-col="{ span: 17 }">
+      <a-form :disabled="readOnly" :model="policyForm" :label-col="{ span: 5 }" :wrapper-col="{ span: 17 }">
         <a-form-item label="父策略" required>
           <a-select
             v-model:value="policyForm.parent_id"
             :options="parentOptions"
             :virtual="false"
-            :disabled="Boolean(editingId) && editingIsRoot"
+            :disabled="readOnly || editingIsRoot"
             :getPopupContainer="getPopupContainer"
             placeholder="选择父策略"
           />
@@ -108,9 +110,9 @@
                   style="flex: 1"
                 />
               </template>
-              <a-button danger @click="removeMatcher(index)">移除</a-button>
+              <a-button v-if="!readOnly" danger @click="removeMatcher(index)">移除</a-button>
             </div>
-            <a-button @click="addMatcher">
+            <a-button v-if="!readOnly" @click="addMatcher">
               <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
               <span>&nbsp;添加条件</span>
             </a-button>
@@ -118,7 +120,7 @@
           </div>
         </a-form-item>
         <a-form-item label="出口媒介" required>
-          <a-checkbox v-model:checked="policyForm.mediaInherited" :disabled="editingIsRoot">继承父节点出口</a-checkbox>
+          <a-checkbox v-model:checked="policyForm.mediaInherited" :disabled="readOnly || editingIsRoot">继承父节点出口</a-checkbox>
           <a-select
             v-if="!policyForm.mediaInherited"
             v-model:value="policyForm.mediaIds"
@@ -156,7 +158,7 @@
       </a-form>
 
       <div class="modal-actions">
-        <a-button @click="closeModal">取消</a-button>
+        <a-button @click="closeModal">{{ readOnly ? '关闭' : '取消' }}</a-button>
         <a-button v-if="checkPermission(editingId ? 'monitor:update' : 'monitor:create')" type="primary" :loading="saveLoading" @click="savePolicy">保存</a-button>
       </div>
     </a-modal>
@@ -164,6 +166,7 @@
 </template>
 
 <script setup>
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import { computed, onMounted, ref } from 'vue'
 import { checkPermission } from '@/directives/permission/permission'
 import { message } from 'ant-design-vue'
@@ -177,14 +180,7 @@ import {
 import { getUserGroupList } from '@/api/userGroup'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
-import { fetchAllPages } from '@/util/fetchAllPages'
-import {
-  getApplicationServiceList,
-  getBusinessEnvironmentList,
-  getBusinessSystemList,
-  getProjectList,
-} from '@/api/assets/application'
-import { buildAlertScopeTreeData } from '@/util/alertScope'
+import { buildAlertScopeTreeData, loadAlertScopeAssets } from '@/util/alertScope'
 
 defineOptions({
   name: 'NotificationPoliciesPage',
@@ -218,22 +214,35 @@ const editingIsRoot = ref(false)
 let matcherSequence = 0
 const policyForm = ref(createDefaultForm())
 const scopeTreeData = ref([])
-const scopeNodeNameMap = ref({})
+const scopeTreeValues = computed(() => {
+  const values = new Set()
+  const visit = nodes => nodes.forEach(node => {
+    values.add(node.value)
+    if (node.children) visit(node.children)
+  })
+  visit(scopeTreeData.value)
+  return values
+})
+const readOnly = computed(() => Boolean(editingId.value) && !checkPermission('monitor:update'))
+const selectedPolicy = computed(() => policyItems.value.find((item) => item.id === editingId.value))
+function policyOptions(ids, names, candidates) {
+  // 选中项可能已停用，或不在当前用户可加载的目录中；候选不能覆盖掉已选名称。
+  const options = new Map((ids || []).map((value, index) => [value, { value, label: names?.[index] || `#${value}` }]))
+  if (!readOnly.value) for (const option of candidates) options.set(option.value, option)
+  return [...options.values()]
+}
 
 const rootPolicy = computed(() => policyItems.value.find((item) => item.is_root) || null)
-const mediaNameMap = computed(() => Object.fromEntries(mediaList.value.map((item) => [item.id, item.name])))
-const userGroupOptions = computed(() => userGroupList.value.map((group) => ({
-  label: group.name,
-  value: group.id,
-})))
-const mediaOptions = computed(() => mediaList.value
-  .filter((item) => item.media_type === 'email')
-  .map((item) => ({ label: item.enabled ? item.name : `${item.name}（已停用）`, value: item.id })))
+const userGroupOptions = computed(() => policyOptions(selectedPolicy.value?.user_group_ids,
+  selectedPolicy.value?.user_group_names, userGroupList.value.map((group) => ({ value: group.id, label: group.name }))))
+const mediaOptions = computed(() => policyOptions(selectedPolicy.value?.media_ids, selectedPolicy.value?.media_names,
+  mediaList.value.filter((item) => item.media_type === 'email')
+    .map((item) => ({ value: item.id, label: item.enabled ? item.name : `${item.name}（已停用）` }))))
 const parentOptions = computed(() => policyItems.value.map((item) => ({
   label: item.is_root ? `${item.name}（根）` : item.name,
   value: item.id,
 })))
-const modalTitle = computed(() => (editingId.value ? '编辑策略' : '新增策略'))
+const modalTitle = computed(() => (readOnly.value ? '查看策略' : editingId.value ? '编辑策略' : '新增策略'))
 
 // 扁平列表 → 树控件数据。
 const treeData = computed(() => {
@@ -248,6 +257,8 @@ const treeData = computed(() => {
       matchers: Array.isArray(item.matchers) ? item.matchers : [],
       mediaInherited: item.media_ids == null,
       mediaIds: item.media_ids || [],
+      mediaNames: item.media_names || [],
+      scopeNames: item.scope_names || {},
       userGroupInherited: item.user_group_ids == null,
       userGroupIds: item.user_group_ids || [],
       userGroupNames: item.user_group_names || [],
@@ -293,10 +304,10 @@ function createDefaultForm() {
   }
 }
 
-function formatMatcher(matcher) {
+function formatMatcher(matcher, names) {
   if (matcher.type === 'tree') {
     const key = `${matcher.node_type}:${matcher.id}`
-    const name = scopeNodeNameMap.value[key]
+    const name = names[key]
     const typeLabel = { service: '服务', environment: '环境', business: '业务', project: '项目' }[matcher.node_type] || matcher.node_type
     return `服务树 ${typeLabel}：${name || `#${matcher.id}`}`
   }
@@ -310,12 +321,16 @@ function parseApiData(response) {
 // 服务树选择数据：已被其他条件行选中的节点置 disabled，且其整个子树一并禁用——
 // 服务树条件命中告警主机的全部归属节点（含祖先），选父节点已覆盖子树，再选子节点属于冗余条件。
 function matcherTreeData(current) {
+  const currentOption = current.treeNode ? [{ value: current.treeNode, title: selectedPolicy.value?.scope_names?.[current.treeNode] || current.treeNode }] : []
+  if (readOnly.value) return currentOption
+  const nodes = current.treeNode && !scopeTreeValues.value.has(current.treeNode)
+    ? [...currentOption, ...scopeTreeData.value] : scopeTreeData.value
   const selected = new Set(
     policyForm.value.matchers
       .filter((matcher) => matcher !== current && matcher.type === 'tree')
       .map((matcher) => matcher.treeNode),
   )
-  if (!selected.size) return scopeTreeData.value
+  if (!selected.size) return nodes
   const clone = (nodes, covered) => (nodes || []).map((node) => {
     const isCovered = covered || (node.value && selected.has(node.value))
     const next = {
@@ -325,7 +340,7 @@ function matcherTreeData(current) {
     if (node.children?.length) next.children = clone(node.children, isCovered)
     return next
   })
-  return clone(scopeTreeData.value, false)
+  return clone(nodes, false)
 }
 
 function addMatcher() {
@@ -339,20 +354,14 @@ function removeMatcher(index) {
 
 async function loadScopeTreeData() {
   if (scopeTreeData.value.length) return
-  const [projects, systems, services, environments] = await Promise.all([
-    fetchAllPages(getProjectList),
-    fetchAllPages(getBusinessSystemList),
-    fetchAllPages(getApplicationServiceList),
-    fetchAllPages(getBusinessEnvironmentList),
-  ])
-  const environmentNames = new Map(environments.map((item) => [String(item.id), item.name]))
-  scopeTreeData.value = buildAlertScopeTreeData({ projects, systems, services, environmentNames })
-  scopeNodeNameMap.value = {
-    ...Object.fromEntries(projects.map((item) => [`project:${item.id}`, item.name])),
-    ...Object.fromEntries(systems.map((item) => [`business:${item.id}`, item.name])),
-    ...Object.fromEntries(environments.map((item) => [`environment:${item.id}`, item.name])),
-    ...Object.fromEntries(services.map((item) => [`service:${item.id}`, item.name])),
-  }
+  const assets = await loadAlertScopeAssets()
+  scopeTreeData.value = buildAlertScopeTreeData(assets)
+}
+
+function loadEditorOptions() {
+  // 候选接口有各自的目录权限；查看配置或展示策略树时不调用。
+  Promise.all([loadMedia(), loadUserGroups(), loadScopeTreeData()])
+    .catch((error) => message.error(error?.response?.data?.msg || '加载策略编辑候选失败'))
 }
 
 function openCreateModal(parentId) {
@@ -362,11 +371,11 @@ function openCreateModal(parentId) {
   policyForm.value = createDefaultForm()
   policyForm.value.parent_id = parentId || rootPolicy.value?.id
   modalVisible.value = true
-  loadScopeTreeData().catch((error) => console.error('加载服务树失败:', error))
+  loadEditorOptions()
 }
 
 function openEditModal(node) {
-  if (!checkPermission('monitor:update')) return
+  if (!checkPermission('monitor:view')) return
   editingId.value = node.id
   editingIsRoot.value = node.isRoot
   const item = policyItems.value.find((entry) => entry.id === node.id) || {}
@@ -396,7 +405,7 @@ function openEditModal(node) {
     remark: item.remark || '',
   }
   modalVisible.value = true
-  loadScopeTreeData().catch((error) => console.error('加载服务树失败:', error))
+  if (!readOnly.value) loadEditorOptions()
 }
 
 function closeModal() {
@@ -515,8 +524,7 @@ async function handleDelete(node) {
 
 onMounted(async () => {
   try {
-    await Promise.all([loadPolicies(), loadMedia(), loadUserGroups()])
-    loadScopeTreeData().catch((error) => console.error('加载服务树失败:', error))
+    await loadPolicies()
   } catch (error) {
     message.error(error?.response?.data?.msg || '通知策略数据加载失败')
   }

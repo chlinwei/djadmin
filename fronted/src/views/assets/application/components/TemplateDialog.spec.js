@@ -57,6 +57,18 @@ afterEach(() => {
 })
 
 describe('部署模板只读详情', () => {
+  it('查看不向输入框传入敏感宏原值，复制不会把源值放进新模板', async () => {
+    const data = { data: { data: {
+      id: 2, name: 'demo', macro_definitions: [{ name: 'API_KEY', value: 'private-value' }],
+    } } }
+    getApplicationDeploymentTemplate.mockResolvedValueOnce(data).mockResolvedValueOnce(data)
+    const view = await openDialog({ templateId: 2, readOnly: true })
+    const values = view.findAll('input').map(input => input.element.value)
+    expect(values).toContain('••••••')
+    expect(values).not.toContain('private-value')
+    const copy = await openDialog({ copyFromId: 2 })
+    expect(copy.vm.macroDefinitions[0]).toMatchObject({ name: 'API_KEY', value: '' })
+  })
   it('只读输入框和下拉框使用深色文字、浅色背景，同时保持禁用', async () => {
     const wrapper = await openDialog({ templateId: 2, readOnly: true })
     const form = wrapper.find('.template-readonly')
@@ -115,8 +127,10 @@ describe('部署模板只读详情', () => {
     const values = wrapper.findAll('input').map((input) => input.element.value)
     expect(values).toEqual(expect.arrayContaining([
       '${HTTP_PORT}', '${APP_HOME}/logs', '${APP_HOME}/app.yaml', '${APP_HOME}/logs/*.log',
-      '处理规则 ID: 7', '保留规则 ID: 8', '丢弃规则 ID: 9',
     ]))
+    for (const label of ['处理规则 ID: 7', '保留规则 ID: 8', '丢弃规则 ID: 9']) {
+      expect(wrapper.findAll('.ant-select-disabled .ant-select-selection-item').some(item => item.text() === label)).toBe(true)
+    }
     const warning = vi.spyOn(message, 'warning').mockImplementation(() => {})
     await wrapper.vm.saveTemplate()
     expect(warning).toHaveBeenCalledWith('只读模式不能保存部署模板')

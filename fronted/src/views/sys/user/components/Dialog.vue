@@ -1,7 +1,8 @@
 <template>
     <div>
       <a-modal cancelText="取消" okText="保存" destroyOnClose :open="props.open" v-model:title="props.title" v-model:user_id="props.user_id" @ok="handleOk" @cancel="handleCancel">
-        <a-form
+        <template v-if="readOnly" #footer><a-button @click="handleCancel">关闭</a-button></template>
+        <a-form :disabled="readOnly"
     :model="form"
     ref="formRef"
     name="basic"
@@ -23,7 +24,7 @@
       <a-input v-model:value="form.phonenumber" />
     </a-form-item>
     <a-form-item name="status" label="状态">
-      <EnabledSwitch :checked="Number(form.status) === 1" @update:checked="checked => form.status = checked ? 1 : 0" />
+      <EnabledSwitch :checked="Number(form.status) === 1" :disabled="readOnly" @update:checked="checked => form.status = checked ? 1 : 0" />
     </a-form-item>
     <a-form-item name="remark" label="备注">
       <a-textarea v-model:value="form.remark" />
@@ -41,6 +42,7 @@
   const formRef = ref(null)
   const props = defineProps(
     {
+        readOnly: Boolean,
         open: {
             type: Boolean,
             default:false,
@@ -100,6 +102,7 @@ const emits = defineEmits(['update:open','initUserList'])
 
 import { saveUserInfo,addUser } from '@/api/user/index.js';
 const handleOk = e => {
+    if (props.readOnly) return
     // 校验
     const res = formRef.value?.validate().then((r1)=>{
         let userInfo = form.value;

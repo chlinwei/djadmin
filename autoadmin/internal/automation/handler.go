@@ -171,6 +171,8 @@ func messageOrNil(err error) string {
 // 禁止在模板管理中新建、删除或改回其他分类。
 const playbookCategoryAgent = "agent"
 
+const packageTemplateReadOnly = "软件包专用模板由监控软件仓库管理，不能在自动化模板中修改"
+
 func bindPlaybook(context *gin.Context) (playbookInput, bool) {
 	var input playbookInput
 	if context.ShouldBindJSON(&input) != nil || strings.TrimSpace(input.Name) == "" {
@@ -200,6 +202,10 @@ func (handler *Handler) playbookCategoryByID(context *gin.Context, id int64) (st
 func (handler *Handler) Create(context *gin.Context) {
 	input, ok := bindPlaybook(context)
 	if !ok {
+		return
+	}
+	if input.Category == "software_package" {
+		response.BusinessError(context, 400, packageTemplateReadOnly, nil)
 		return
 	}
 	if input.Category == playbookCategoryAgent {
@@ -235,7 +241,10 @@ func (handler *Handler) Update(context *gin.Context) {
 	}
 	if category, exists := handler.playbookCategoryByID(context, id); !exists {
 		return
-	} else if category == playbookCategoryAgent && input.Category != playbookCategoryAgent {
+	} else if category == "software_package" || input.Category == "software_package" {
+		response.BusinessError(context, 400, packageTemplateReadOnly, nil)
+		return
+	} else if (category == playbookCategoryAgent) != (input.Category == playbookCategoryAgent) {
 		context.JSON(200, gin.H{"code": 400, "msg": "该模板是 Agent 安装/更新的唯一配置源，无法改为其他分类", "data": nil})
 		return
 	}

@@ -6,7 +6,7 @@
     :footer="null"
     @cancel="emit('update:open', false)"
   >
-    <a-form layout="inline" class="version-form" @submit.prevent="saveVersion">
+    <a-form v-if="!readOnly && canCreate" layout="inline" class="version-form" @submit.prevent="saveVersion">
       <a-form-item label="版本号" required>
         <a-input v-model:value="versionForm.version" placeholder="例如 9.0.93" />
       </a-form-item>
@@ -28,7 +28,7 @@
     >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'enabled'">
-          <EnabledSwitch v-model:checked="record.enabled" :endpoint="`assets/application-versions/${record.id}/`" permission="assets:applications:update" @changed="emit('changed')" />
+          <EnabledSwitch v-model:checked="record.enabled" :read-only="readOnly" :endpoint="`assets/application-versions/${record.id}/`" permission="assets:applications:update" @changed="emit('changed')" />
         </template>
         <template v-else-if="column.key === 'action'">
           <a-tooltip title="删除">
@@ -44,7 +44,8 @@
 
 <script setup>
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
+import { canCreate, canDelete } from './assetPermissions'
 import { message } from 'ant-design-vue'
 import { tableLocale } from '@/util/tableStyle'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
@@ -55,18 +56,19 @@ import {
 } from '@/api/assets/application'
 
 const props = defineProps({
+  readOnly: Boolean,
   open: { type: Boolean, required: true },
   application: { type: Object, default: null },
 })
 const emit = defineEmits(['update:open', 'changed', 'created'])
 
-const columns = [
+const columns = computed(() => [
   { title: '版本号', dataIndex: 'version', key: 'version' },
   { title: '停止支持日期', dataIndex: 'end_of_support', key: 'end_of_support', width: 150 },
   { title: '状态', key: 'enabled', width: 110 },
   { title: '备注', dataIndex: 'remark', key: 'remark' },
-  { title: '操作', key: 'action', width: 90, fixed: 'right' },
-]
+  ...(!props.readOnly && canDelete.value ? [{ title: '操作', key: 'action', width: 90, fixed: 'right' }] : []),
+])
 const versions = ref([])
 const loading = ref(false)
 const saving = ref(false)
@@ -84,6 +86,7 @@ async function loadVersions() {
 }
 
 async function saveVersion() {
+  if (props.readOnly || !canCreate.value) return
   const version = String(versionForm.version || '').trim()
   if (!version) {
     message.error('版本号为必填项')
@@ -111,11 +114,13 @@ async function saveVersion() {
 }
 
 function confirmDelete(record) {
+  if (props.readOnly || !canDelete.value) return
   openDeleteConfirm({
     title: '确认删除应用版本',
     summary: '已被部署实例引用的版本不能删除。',
     items: [`${props.application?.name || '应用'} ${record.version}`],
     onConfirm: async () => {
+      if (props.readOnly || !canDelete.value) return
       await batchDeleteApplicationVersions([record.id])
       message.success('版本删除成功')
       await loadVersions()
@@ -126,7 +131,7 @@ function confirmDelete(record) {
 
 watch(() => props.open, (visible) => {
   if (visible) loadVersions()
-})
+}, { immediate: true })
 </script>
 
 <style scoped>

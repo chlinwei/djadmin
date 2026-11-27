@@ -33,8 +33,8 @@ vi.mock('@/api/assets/application', () => ({
     { id: 10, code: 'poc', name: 'poc' },
   ], count: 1, totalPages: 1 } } })),
   getApplicationServiceList: vi.fn(() => Promise.resolve({ data: { data: { results: [
-    { id: 15, code: 'nginx', name: 'nginx', business_system: 7, environment: 10, environment_name: 'poc', log_collection_enabled: true, log_retention_tier_id: 3 },
-    { id: 16, code: 'redis', name: 'redis', business_system: 7, environment: 10, environment_name: 'poc', log_collection_enabled: false, log_retention_tier_id: null },
+    { id: 15, code: 'nginx', name: 'nginx', business_system: 7, environment: 10, environment_name: 'poc', log_collection_enabled: true, log_retention_tier: 3 },
+    { id: 16, code: 'redis', name: 'redis', business_system: 7, environment: 10, environment_name: 'poc', log_collection_enabled: false, log_retention_tier: null },
   ], count: 2, totalPages: 1 } } })),
   // 一批服务的日志状态汇总：日志定义分桶 + 配置态（待下发）。pending 为 null 表示"没算出来"。
   // 载荷抽成函数是因为有的用例要临时改它，改完还得能还原（clearAllMocks 不清实现）。
@@ -44,6 +44,7 @@ vi.mock('@/api/assets/application', () => ({
     service_code: 'nginx',
     // 服务级默认保留档位：界面上的"继承服务默认（…）"靠它写清继承的是哪一档。
     log_retention_tier: 3,
+    tier_names: { 3: '标准 30 天' }, filter_names: { 17: '匹配异常' },
     logs: [
     {
       log_definition: 81, name: 'access.log', resolved_path: '/srv/tomcat/logs/application.log',
@@ -284,6 +285,20 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     await flushPromises()
 
     expect(wrapper.vm.logRows.length).toBeGreaterThan(0)
+    const api = await import('@/api/monitor')
+    expect(api.getLogCollectionFilterRules).not.toHaveBeenCalled()
+    expect(api.getLogRetentionTiers).not.toHaveBeenCalled()
+    expect((await import('@/api/assets/application')).getApplicationDeploymentList).not.toHaveBeenCalled()
+    const row = { ...wrapper.vm.logRows[0], collection_filter_rule_id: 17 }
+    expect(wrapper.vm.filterOptionsForRow(row, 'include')).toContainEqual({ value: 17, label: '匹配异常' })
+    expect(wrapper.vm.tierOptionsForRow(row)).toContainEqual({ value: 3, label: '标准 30 天' })
+    wrapper.vm.openExtraProcessors({ ...row, extra_processors: [{ convert: { field: 'count', type: 'long' } }] })
+    await flushPromises()
+    const dialog = document.querySelector('.ant-modal-content')
+    expect(dialog.querySelector('textarea').disabled).toBe(true)
+    expect(dialog.querySelector('textarea').value).toContain('convert')
+    expect(dialog.querySelector('.ant-modal-footer').textContent.replace(/\s/g, '')).toBe('关闭')
+    await wrapper.vm.saveExtraProcessors()
     expect(wrapper.vm.canApply).toBe(false)
     expect(wrapper.vm.canEditConfig).toBe(false)
     expect(wrapper.findAll('button').some((button) => /下发|清理数据/.test(button.text()))).toBe(false)

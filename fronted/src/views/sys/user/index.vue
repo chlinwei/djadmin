@@ -1,6 +1,6 @@
 <template>
     <Dialog :open="open" @update:open="(value) => { open = value }" :user_id="user_id" :title="title"
-        @initUserList="HandleInitUserList" />
+        :read-only="user_id !== -1 && (protectedUser || user_status)" @initUserList="HandleInitUserList" />
 
     <RoleAssign :open2="open2" @update:open2="(value) => { open2 = value }" :user_id2="user_id2" :title="roleassign_title"
         @initUserList="HandleInitUserList" />
@@ -80,13 +80,14 @@
                                     <a-button @click="openNotificationChain(record.id, record.username)">通知链路</a-button>
                                 </a-tooltip>
                             </a-col>
-                            <a-col v-if="record.username != 'admin'" v-permission.remove="'system:users:update'">
+                            <a-col v-if="record.username !== 'admin' && !user_status">
                                 <a-tooltip title="编辑">
-                                    <a-button type="primary" @click="onSaveorChanageUser(record.id)">
+                                    <a-button type="primary" @click="openUser(record)">
                                         <FontAwesomeIcon :icon="['fa','edit']" />
                                     </a-button>
                                 </a-tooltip>
                             </a-col>
+                            <a-col v-else-if="checkPermission('system:users:view')"><ViewRecordButton @click="openUser(record)" /></a-col>
                             <a-col v-if="record.username != 'admin'" v-permission.remove="'system:users:delete'">
                                 <a-tooltip title="删除">
                                     <a-button class="delBtn" :loading="rowLoadingStates[record.id]" danger type="primary"
@@ -107,6 +108,7 @@
 
 <script setup>
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 
 // 缓存
 defineOptions({
@@ -139,11 +141,8 @@ const columns = [
     { title: '状态', dataIndex: 'status', key: 'status', width: 80 },
     { title: '创建时间', dataIndex: 'create_time', key: 'create_time', width: 80 ,sorter:true,sortDirections: ['ascend', 'descend']},
     { title: '备注', dataIndex: 'remark', key: 'remark', width: 200 },
-    // { title: '操作', key: 'action', fixed: 'right', width: 330,disabled:checkPermission(['1']) }
+    { title: '操作', key: 'action', fixed: 'right', width: 400 },
 ]
-if(checkPermission(['system:users:update','system:users:delete'])) {
-    columns.push({ title: '操作', key: 'action', fixed: 'right', width: 400})
-}
 
 const normalizeUtcTime = (value) => {
     if (!value || typeof value !== 'string') {
@@ -282,10 +281,12 @@ const onSearch = (keyword) => {
 const title = ref("")
 const user_id = ref(-1)
 const open = ref(false)
-const onSaveorChanageUser = (id) => {
+const protectedUser = ref(false)
+const openUser = (record) => {
+    protectedUser.value = record.username === 'admin'
     open.value = true;
-    title.value = "用户修改"
-    user_id.value = id
+    title.value = protectedUser.value || user_status.value ? '查看用户' : '用户修改'
+    user_id.value = record.id
 }
 const HandleInitUserList = (res) => {
     run({ page: current, size: pageSize.value, search: lastSearchKeyword })

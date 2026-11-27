@@ -59,6 +59,15 @@ func (handler *Handler) GetTask(context *gin.Context) {
 		}
 		return
 	}
+	// Resolve only the persisted target, without granting asset list access.
+	if len(item.Groups) > 0 {
+		group := item.Groups[0]
+		item.TargetName = handler.mountTargetName(context, []mountBinding{{
+			MountType: group.MountType, ProjectID: nullableIDParam(group.ProjectID),
+			BusinessSystemID: nullableIDParam(group.BusinessSystemID),
+			EnvironmentID:    nullableIDParam(group.EnvironmentID), ServiceID: nullableIDParam(group.ServiceID),
+		}})
+	}
 	response.Success(context, item)
 }
 func (handler *Handler) SaveTask(context *gin.Context) {

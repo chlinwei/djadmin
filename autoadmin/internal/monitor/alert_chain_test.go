@@ -277,20 +277,20 @@ func TestAlertChainEvaluation(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"name"}))
 
 	// 出口媒介 [2] 的绑定与事件/投递记录。
-	mock.ExpectQuery("SELECT id, name, enabled FROM monitor_alert_media").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "enabled"}).AddRow(int64(2), "公司邮箱", true))
-	mock.ExpectQuery("FROM monitor_user_alert_media_binding b JOIN sys_user u").
-		WithArgs(int64(2)).
-		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients", "enabled"}).
-			AddRow(int32(5), "zhang", []byte(`["a@b.com"]`), true))
 	mock.ExpectQuery("SELECT id, event_type, status, attempt_count, error_message FROM monitor_alert_notification_event").
 		WithArgs(int64(1), "firing").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "event_type", "status", "attempt_count", "error_message"}).
 			AddRow(int64(9), "firing", "success", int64(1), ""))
-	mock.ExpectQuery("FROM monitor_alert_notification_delivery d LEFT JOIN sys_user u").
-		WithArgs(int64(9)).
-		WillReturnRows(sqlmock.NewRows([]string{"user_id", "address", "status", "error_message", "username"}).
-			AddRow(int32(5), "a@b.com", "failed", "smtp timeout", "zhang"))
+	mock.ExpectQuery("ListEventMaintenanceDecisions").WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"window_id", "title", "ends_at", "decided_at"}).AddRow(3, "数据库升级", startedAt, startedAt))
+	mock.ExpectQuery("SELECT id, name, enabled FROM monitor_alert_media").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "enabled"}).AddRow(int64(2), "公司邮箱", true))
+	mock.ExpectQuery("ListAlertNotificationDeliveries").WithArgs(int64(9)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "user_id", "username", "media_id", "media_name", "media_type", "address", "status", "attempt_count", "error_message", "sent_at", "create_time"}).
+			AddRow(1, 5, "zhang", 2, "公司邮箱", "email", "a@b.com", "failed", 1, "smtp timeout", nil, startedAt))
+	mock.ExpectQuery("FROM monitor_user_alert_media_binding b JOIN sys_user u").
+		WithArgs(int64(2)).
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients", "enabled"}).
+			AddRow(int32(5), "zhang", []byte(`["a@b.com"]`), true))
 
 	recorder := httptest.NewRecorder()
 	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/monitor/alert-notification/chain/1/", nil))
@@ -376,6 +376,29 @@ func TestAlertChainEvaluation(t *testing.T) {
 	if err = mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
 	}
+}
+
+func TestChainShowsPersistedMaintenanceWithoutPolicyMedia(t *testing.T) {
+	h, m, _ := notificationTestHandler(t)
+	now := time.Now().UTC()
+	m.ExpectQuery("GetAlertHistoryForChain").WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"alertname", "severity", "instance", "labels", "state", "started_at"}).AddRow("disk", "warning", "h", []byte("{}"), "firing", now))
+	m.ExpectQuery("ListNotificationPolicyNodes").WillReturnRows(policyTreeRow(1, 0, "默认", "[]", `[]`))
+	m.ExpectQuery("GetLatestAlertNotificationEventForAlert").WithArgs(1, "firing").WillReturnRows(sqlmock.NewRows([]string{"id", "event_type", "status", "attempt_count", "error_message"}).AddRow(9, "firing", "suppressed", 0, "维护中"))
+	m.ExpectQuery("ListEventMaintenanceDecisions").WithArgs(9).WillReturnRows(sqlmock.NewRows([]string{"window_id", "title", "ends_at", "decided_at"}).AddRow(3, "数据库升级", now.Add(time.Hour), now))
+	engine := gin.New()
+	engine.GET("/:historyId/", h.AlertChainEvaluation)
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/1/", nil))
+	var res struct {
+		Data struct {
+			Event  *alertChainEvent        `json:"event"`
+			Medias []alertChainMediaDetail `json:"medias"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil || res.Data.Event == nil || len(res.Data.Event.MaintenanceWindows) != 1 || res.Data.Event.MaintenanceWindows[0].ID != 3 || len(res.Data.Medias) != 0 {
+		t.Fatal(rec.Body.String(), err)
+	}
+	requireNotificationMocks(t, m)
 }
 
 func TestAlertChainEvaluationNotFound(t *testing.T) {

@@ -341,6 +341,7 @@ type filterRuleResponse struct {
 	Name            string    `json:"name"`
 	Description     string    `json:"description"`
 	Pattern         string    `json:"pattern"`
+	RuleType        string    `json:"rule_type"`
 	Enabled         bool      `json:"enabled"`
 	Application     *int64    `json:"application"`
 	ApplicationName string    `json:"application_name"`
@@ -357,7 +358,7 @@ func (handler *Handler) filterRuleResponse(context *gin.Context, row db.MonitorL
 	}
 	return filterRuleResponse{
 		ID: row.ID, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime, Remark: row.Remark.String,
-		Name: row.Name, Description: row.Description, Pattern: row.Pattern, Enabled: row.Enabled,
+		Name: row.Name, Description: row.Description, Pattern: row.Pattern, RuleType: row.RuleType, Enabled: row.Enabled,
 		Application: application, ApplicationName: applicationName,
 	}
 }

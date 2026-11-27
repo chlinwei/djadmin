@@ -47,7 +47,7 @@
         </template>
         <template v-else-if="activeTab === 'projects' && column.key === 'action'">
           <a-space>
-            <a-tooltip title="编辑"><a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openProject(record)"><FontAwesomeIcon :icon="['fa', 'edit']" /></a-button></a-tooltip>
+            <AssetFormAction @open="openProject(record, $event)" />
             <a-tooltip title="删除"><a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteProject(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip>
           </a-space>
         </template>
@@ -62,12 +62,12 @@
         </template>
         <template v-else-if="activeTab === 'profiles' && column.key === 'action'">
           <a-space>
-            <a-tooltip title="创建集群">
+            <a-tooltip v-if="canCreate" title="创建集群">
               <a-button v-permission="'assets:service-tree:manage'" data-create-cluster-profile size="small" @click="createClusterFromProfile(record)">
                 <FontAwesomeIcon :icon="['fas', 'diagram-project']" />
               </a-button>
             </a-tooltip>
-            <a-tooltip v-if="record.profile_type === 'custom'" title="编辑"><a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openClusterProfile(record)"><FontAwesomeIcon :icon="['fa', 'edit']" /></a-button></a-tooltip>
+            <AssetFormAction :editable="record.profile_type === 'custom'" @open="openClusterProfile(record, $event)" />
             <a-tooltip v-if="record.profile_type === 'custom'" title="删除"><a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteClusterProfile(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip>
           </a-space>
         </template>
@@ -85,17 +85,13 @@
         </template>
         <template v-else-if="activeTab === 'applications' && column.key === 'action'">
           <a-space>
-            <a-tooltip key="application-edit" title="编辑">
-              <a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openApplication(record)">
-                <FontAwesomeIcon :icon="['fa', 'edit']" />
-              </a-button>
-            </a-tooltip>
-            <a-tooltip key="application-versions" title="版本管理">
+            <AssetFormAction @open="openApplication(record, $event)" />
+            <a-tooltip v-if="canView" key="application-versions" title="版本管理">
               <a-button size="small" @click="openVersions(record)">
                 <FontAwesomeIcon :icon="['fas', 'code-branch']" />
               </a-button>
             </a-tooltip>
-            <a-tooltip key="application-templates" title="部署模板管理">
+            <a-tooltip v-if="canView" key="application-templates" title="部署模板管理">
               <a-button data-manage-application-templates size="small" @click="openTemplateManager(record)">
                 <FontAwesomeIcon :icon="['fas', 'file-lines']" />
               </a-button>
@@ -152,11 +148,7 @@
                 <FontAwesomeIcon :icon="['fas', 'stop']" />
               </a-button>
             </a-tooltip>
-            <a-tooltip key="deployment-edit" title="编辑">
-              <a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openDeployment(record)">
-                <FontAwesomeIcon :icon="['fa', 'edit']" />
-              </a-button>
-            </a-tooltip>
+            <AssetFormAction @open="openDeployment(record, $event)" />
             <a-tooltip key="deployment-delete" title="删除">
               <a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteDeployment(record)">
                 <FontAwesomeIcon :icon="['fas', 'trash-can']" />
@@ -170,6 +162,7 @@
     </div>
 
     <ProjectDialog
+      :read-only="dialogReadOnly || (selectedProjectId ? !canUpdate : !canCreate)"
       :open="projectDialogOpen"
       :project-id="selectedProjectId"
       @update:open="projectDialogOpen = $event"
@@ -183,15 +176,17 @@
       @saved="handleServiceSaved"
     />
     <ClusterProfileDialog
+      :read-only="dialogReadOnly || (selectedClusterProfileId ? !canUpdate : !canCreate)"
       :open="clusterProfileDialogOpen"
       :profile-id="selectedClusterProfileId"
       @update:open="clusterProfileDialogOpen = $event"
       @saved="handleSaved"
     />
     <Dialog
+      :read-only="dialogReadOnly || (selectedApplication ? !canUpdate : !canCreate)"
       :open="applicationDialogOpen"
       :item_id="selectedApplication?.id || -1"
-      :title="selectedApplication ? `编辑-${selectedApplication.name}` : '新增应用'"
+      :title="selectedApplication ? `${dialogReadOnly || !canUpdate ? '查看' : '编辑'}-${selectedApplication.name}` : '新增应用'"
       appname="应用"
       @update:open="applicationDialogOpen = $event"
       @initList="reload(false)"
@@ -209,6 +204,7 @@
       @changed="reload(false)"
     />
     <DeploymentDialog
+      :read-only="dialogReadOnly || (selectedDeployment ? !canUpdate : !canCreate)"
       :open="deploymentDialogOpen"
       :deployment-id="selectedDeployment?.id || null"
       @update:open="deploymentDialogOpen = $event"
@@ -218,6 +214,9 @@
 </template>
 
 <script setup>
+import AssetFormAction from './AssetFormAction.vue'
+import { checkPermission } from '@/directives/permission/permission'
+import { canView, canCreate, canUpdate, canDelete } from './assetPermissions'
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
@@ -255,6 +254,7 @@ const activeTab = ref('applications')
 const keyword = ref('')
 const rows = ref([])
 const loading = ref(false)
+const dialogReadOnly = ref(false)
 const projectDialogOpen = ref(false)
 const selectedProjectId = ref(null)
 const serviceDialogOpen = ref(false)
@@ -390,13 +390,13 @@ function stopRuntimePolling() {
 }
 function scheduleRuntimePolling() {
   stopRuntimePolling()
-  if (activeTab.value !== 'deployments') return
+  if (!canUpdate.value || activeTab.value !== 'deployments') return
   runtimePollTimer = setInterval(() => {
     void refreshVisibleRuntimeStatuses({ background: true })
   }, runtimePollIntervalMs)
 }
 async function refreshVisibleRuntimeStatuses({ background = false } = {}) {
-  if (activeTab.value !== 'deployments' || (background && runtimePollInFlight)) return
+  if (!canUpdate.value || activeTab.value !== 'deployments' || (background && runtimePollInFlight)) return
   const deployments = rows.value.filter((record) => !isDeploymentBusy(record.id))
   if (deployments.length === 0) return
   if (background) runtimePollInFlight = true
@@ -423,7 +423,7 @@ async function startRuntimePolling() {
   scheduleRuntimePolling()
 }
 async function handleManualRefresh() {
-  if (activeTab.value === 'deployments') {
+  if (canUpdate.value && activeTab.value === 'deployments') {
     stopRuntimePolling()
     await refreshVisibleRuntimeStatuses()
     scheduleRuntimePolling()
@@ -447,20 +447,27 @@ async function handleTableChange(page) {
   await reload(false)
   if (activeTab.value === 'deployments') startRuntimePolling()
 }
-function openApplication(record = null) {
+function openApplication(record = null, readOnly = false) {
+  if (record ? !canView.value : !canCreate.value) return
+  dialogReadOnly.value = readOnly
   selectedApplication.value = record
   applicationDialogOpen.value = true
 }
-function openProject(record = null) {
+function openProject(record = null, readOnly = false) {
+  if (record ? !canView.value : !canCreate.value) return
+  dialogReadOnly.value = readOnly
   selectedProjectId.value = record?.id || null
   projectDialogOpen.value = true
 }
 function createClusterFromProfile(record) {
+  if (!canCreate.value || !checkPermission('assets:service-tree:manage')) return
   selectedServiceId.value = null
   selectedServiceClusterProfileId.value = record.id
   serviceDialogOpen.value = true
 }
-function openClusterProfile(record = null) {
+function openClusterProfile(record = null, readOnly = false) {
+  if (record ? !canView.value : !canCreate.value) return
+  dialogReadOnly.value = readOnly
   selectedClusterProfileId.value = record?.id || null
   clusterProfileDialogOpen.value = true
 }
@@ -470,11 +477,13 @@ async function handleSaved() {
 }
 // 删除流程只差在文案与删除接口，收尾刷新统一走 handleSaved。
 function confirmDelete({ title, summary, items, remove, successMessage = '删除成功' }) {
+  if (!canDelete.value) return
   openDeleteConfirm({
     title,
     summary,
     items,
     onConfirm: async () => {
+      if (!canDelete.value) return
       await remove()
       message.success(successMessage)
       await handleSaved()
@@ -487,14 +496,18 @@ async function handleServiceSaved() {
   await reload(false)
 }
 function openVersions(record) {
+  if (!canView.value) return
   selectedApplication.value = record
   versionDialogOpen.value = true
 }
 function openTemplateManager(record) {
+  if (!canView.value) return
   templateManagerApplication.value = record
   templateManagerOpen.value = true
 }
-function openDeployment(record = null) {
+function openDeployment(record = null, readOnly = false) {
+  if (record ? !canView.value : !canCreate.value) return
+  dialogReadOnly.value = readOnly
   selectedDeployment.value = record
   deploymentDialogOpen.value = true
 }
@@ -533,6 +546,7 @@ function isDeploymentBusy(deploymentId) {
   return ['start', 'stop', 'status'].some((action) => isControlLoading(deploymentId, action))
 }
 async function runApplicationControl(record, action) {
+  if (!canUpdate.value) return
   const loadingKey = controlLoadingKey(record.id, action)
   deploymentControlLoading[loadingKey] = true
   try {
@@ -567,6 +581,7 @@ async function runApplicationControl(record, action) {
   }
 }
 function confirmApplicationControl(record, action) {
+  if (!canUpdate.value) return
   const actionLabel = action === 'start' ? '启动' : '停止'
   Modal.confirm({
     title: `确认${actionLabel}应用`,

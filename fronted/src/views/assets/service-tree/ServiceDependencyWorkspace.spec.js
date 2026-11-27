@@ -10,6 +10,7 @@ vi.mock('@/api/assets/application', () => ({
 }))
 vi.mock('@/api/assets/serviceDependencies', () => ({
   getServiceDependencyTopology: vi.fn(),
+  getServiceDependency: vi.fn(),
   getServiceDependencyTypes: vi.fn(),
   deleteServiceDependencies: vi.fn(),
   deleteServiceDependencyTypes: vi.fn(),
@@ -44,7 +45,7 @@ const graphStub = {
   emits: ['select-node', 'select-edge'],
   template: '<div class="graph-stub"><button v-for="node in nodes" :key="node.id" @click="$emit(\'select-node\', node)">{{node.name}}</button></div>',
 }
-const dialogStub = { name: 'ServiceDependencyDialog', props: ['open', 'record', 'services', 'types', 'initialSource'], emits: ['saved', 'update:open'], template: '<div class="dialog-stub" />' }
+const dialogStub = { name: 'ServiceDependencyDialog', props: ['open', 'record', 'readOnly', 'services', 'types', 'initialSource'], emits: ['saved', 'update:open'], template: '<div class="dialog-stub" />' }
 const typeStub = { name: 'ServiceDependencyTypes', props: ['open'], emits: ['changed', 'update:open'], template: '<div />' }
 let wrappers = []
 beforeEach(() => {
@@ -64,6 +65,7 @@ beforeEach(() => {
     { id: 5, business_system: 30, environment: 5 },
   ]))
   api.getServiceDependencyTypes.mockResolvedValue(page(types))
+  api.getServiceDependency.mockResolvedValue(envelope(edge))
   api.getServiceDependencyTopology.mockResolvedValue(topology())
   api.deleteServiceDependencies.mockResolvedValue(envelope({ count: 1, results: [{ id: 9, ok: true }] }))
 })
@@ -332,6 +334,30 @@ describe('service dependency workspace', () => {
     expect(wrapper.text()).not.toContain('新增依赖')
     wrapper.findComponent(RadioGroup).vm.$emit('update:value', 'list')
     await flushPromises()
-    expect(wrapper.findAllComponents(Tooltip)).toHaveLength(0)
+    const actions = wrapper.findAllComponents(Tooltip)
+    expect(actions.map(action => action.props('title'))).toEqual(['查看'])
+    await actions[0].get('button').trigger('click')
+    await flushPromises()
+    expect(wrapper.findComponent(dialogStub).props()).toMatchObject({ record: edge, readOnly: true })
+    expect(api.getServiceDependencyTypes).not.toHaveBeenCalled()
+  })
+
+  it('图边读取最新关系；有更新权但类型不可用时只允许查看', async () => {
+    const wrapper = await create()
+    api.getServiceDependency.mockResolvedValueOnce(envelope({ ...edge, function_scope: '最新范围' }))
+    api.getServiceDependencyTypes.mockRejectedValueOnce(new Error('类型不可用'))
+    wrapper.findComponent(graphStub).vm.$emit('select-edge', edge)
+    await flushPromises()
+    expect(api.getServiceDependency).toHaveBeenCalledWith(edge.id)
+    expect(wrapper.findComponent(dialogStub).props()).toMatchObject({ readOnly: true, record: { function_scope: '最新范围' } })
+    expect(wrapper.text()).toContain('类型不可用')
+  })
+  it('关系最新端点已不在当前范围时，不为有更新权的用户加载候选或开放保存', async () => {
+    const wrapper = await create()
+    api.getServiceDependency.mockResolvedValueOnce(envelope({ ...edge, target_service_id: 99, target_name: '新环境服务' }))
+    wrapper.findComponent(graphStub).vm.$emit('select-edge', edge)
+    await flushPromises()
+    expect(wrapper.findComponent(dialogStub).props()).toMatchObject({ readOnly: true, record: { target_name: '新环境服务' } })
+    expect(api.getServiceDependencyTypes).not.toHaveBeenCalled()
   })
 })

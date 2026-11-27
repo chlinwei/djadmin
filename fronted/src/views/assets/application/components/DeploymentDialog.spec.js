@@ -27,10 +27,32 @@ vi.mock('@/api/assets/application', () => ({
 }))
 
 import DeploymentDialog from './DeploymentDialog.vue'
-import { getApplicationDeploymentList, getApplicationService, saveApplicationDeployment } from '@/api/assets/application'
+import { getApplicationDeployment, getApplicationDeploymentList, getApplicationService, saveApplicationDeployment } from '@/api/assets/application'
 import { getHostList } from '@/api/assets/host'
 
 describe('DeploymentDialog', () => {
+  it('查看实例不查询主机候选、不展示运行变量，普通编辑保留已有运行配置', async () => {
+    const runtime = { runtime_variables: { API_TOKEN: 'private-value' }, runtime_status: 'running', ha_role: 'active' }
+    const detail = { data: { data: { id: 1, host: 136, host_ip: '10.0.0.1', instance_name: 'app', ...runtime } } }
+    getApplicationDeployment.mockResolvedValueOnce(detail).mockResolvedValueOnce(detail)
+    const wrapper = mount(DeploymentDialog, {
+      props: { open: true, readOnly: true, deploymentId: 1, environmentId: 32 },
+      global: { plugins: [Antd], stubs: { AModal: { template: '<div><slot /></div>' } } },
+    })
+    try {
+      await flushPromises()
+      expect(wrapper.text()).toContain('10.0.0.1')
+      expect(wrapper.vm.form).not.toHaveProperty('runtime_variables')
+      expect(getHostList).not.toHaveBeenCalled()
+      await wrapper.vm.submit()
+      expect(saveApplicationDeployment).not.toHaveBeenCalled()
+      await wrapper.setProps({ open: false })
+      await wrapper.setProps({ open: true, readOnly: false })
+      await flushPromises()
+      await wrapper.vm.submit()
+      expect(saveApplicationDeployment).toHaveBeenCalledWith(expect.objectContaining(runtime))
+    } finally { wrapper.unmount() }
+  })
   it('loads every host page within the selected environment', async () => {
     getHostList.mockResolvedValueOnce({ data: { data: { results: [{ id: 136, instance_name: 'first', ip: '10.0.0.1' }], totalPages: 2 } } })
     getHostList.mockResolvedValueOnce({ data: { data: { results: [{ id: 230, instance_name: 'second', ip: '10.0.0.2' }], totalPages: 2 } } })

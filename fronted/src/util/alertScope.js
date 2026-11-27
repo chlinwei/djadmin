@@ -1,3 +1,13 @@
+import { getApplicationServiceList, getBusinessEnvironmentList, getBusinessSystemList, getProjectList } from '@/api/assets/application'
+import { fetchAllPages } from '@/util/fetchAllPages'
+
+export async function loadAlertScopeAssets() {
+  const [projects, systems, services, environments] = await Promise.all([
+    getProjectList, getBusinessSystemList, getApplicationServiceList, getBusinessEnvironmentList,
+  ].map(loader => fetchAllPages(loader)))
+  return { projects, systems, services, environments, environmentNames: new Map(environments.map(e => [String(e.id), e.name])) }
+}
+
 /**
  * 服务树公共树数据构建，供「通知策略」页面的 tree matcher（tree type 条目）选择服务树节点使用。
  * 树层级：项目 → 业务系统 → 环境 → 服务，全部节点可直接选中（订阅/路由语义是"命中任一所选节点"）。
@@ -7,7 +17,7 @@
 /**
  * 构建 a-tree-select 的树数据；节点 value 形如 `type:id`（type: service|environment|business|project）。
  */
-export function buildAlertScopeTreeData({ projects = [], systems = [], services = [], environmentNames = new Map() }) {
+export function buildAlertScopeTreeData({ projects = [], systems = [], services = [], environmentNames = new Map() }, { businessScopedEnvironments = false } = {}) {
   const servicesBySystem = new Map()
   for (const service of Array.isArray(services) ? services : []) {
     const businessId = service?.business_system
@@ -23,8 +33,7 @@ export function buildAlertScopeTreeData({ projects = [], systems = [], services 
     isLeaf: true,
   })
 
-  // 同一环境可挂在多个业务系统下：只在首次出现的位置携带 value（可选），
-  // 其余分支的同环境节点仅作层级展示（key 追加业务后缀，不可选），避免 a-tree `value` 重复。
+  // 策略按全局环境 ID 匹配；维护窗口按业务内的环境分支匹配，两者不能共用环境节点标识。
   const valuedEnvironmentIds = new Set()
 
   const environmentNodesFor = (businessId) => {
@@ -43,12 +52,12 @@ export function buildAlertScopeTreeData({ projects = [], systems = [], services 
     }
     return order.map((envId) => {
       const group = byEnv.get(envId)
-      const selectable = envId !== 'unassigned' && !valuedEnvironmentIds.has(String(envId))
+      const selectable = envId !== 'unassigned' && (businessScopedEnvironments || !valuedEnvironmentIds.has(String(envId)))
       if (selectable) {
         valuedEnvironmentIds.add(String(envId))
       }
       const key = selectable
-        ? `environment:${envId}`
+        ? `environment:${envId}${businessScopedEnvironments ? `:${businessId}` : ''}`
         : `environment:${envId === 'unassigned' ? 'unassigned' : `${envId}:dup`}:${businessId}`
       const node = {
         key,
@@ -58,7 +67,7 @@ export function buildAlertScopeTreeData({ projects = [], systems = [], services 
         children: group.services.map(serviceNode),
       }
       // 不可选节点也必须带 value 且等于 key，否则 rc-tree-select 告警 key/value 不一致。
-      node.value = selectable ? `environment:${envId}` : key
+      node.value = key
       return node
     })
   }
@@ -114,5 +123,15 @@ export function buildAlertScopeTreeData({ projects = [], systems = [], services 
     })
   }
 
+  if (businessScopedEnvironments) {
+    // 收起下拉树后，已选标签仍要能区分不同业务下的同名环境。
+    function labelPaths(nodes, parent) {
+      for (const node of nodes) {
+        node.pathTitle = parent ? `${parent} / ${node.title}` : node.title
+        if (node.children) labelPaths(node.children, node.pathTitle)
+      }
+    }
+    labelPaths(projectNodes, '')
+  }
   return projectNodes
 }

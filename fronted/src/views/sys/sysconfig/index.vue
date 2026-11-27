@@ -52,25 +52,25 @@
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
-              <a-tooltip title="编辑">
+              <a-tooltip v-if="canEdit(record)" title="编辑">
                 <a-button
                   size="small"
                   type="primary"
-                  :disabled="record.is_readonly"
                   @click="openEdit(record)"
-                  v-if="checkPermission('sys:config:update')"
                 >
                   编辑
                 </a-button>
               </a-tooltip>
+              <ViewRecordButton v-else @click="openEdit(record)" />
               <a-popconfirm
+                v-if="canEdit(record)"
                 title="确认重置为默认值吗？"
                 ok-text="确认"
                 cancel-text="取消"
                 @confirm="handleResetDefault(record)"
               >
                 <a-tooltip title="重置默认">
-                  <a-button v-if="checkPermission('sys:config:update')" size="small" :disabled="record.is_readonly">重置默认</a-button>
+                  <a-button size="small">重置默认</a-button>
                 </a-tooltip>
               </a-popconfirm>
             </a-space>
@@ -83,13 +83,14 @@
     <a-modal
       v-model:open="editVisible"
       :width="520"
-      title="修改参数"
+      :title="canEdit(editForm) ? '修改参数' : '查看参数'"
       @ok="saveEdit"
       :confirm-loading="saveLoading"
       ok-text="保存"
       cancel-text="取消"
     >
-      <a-form layout="vertical" style="margin-top: 16px">
+      <template v-if="!canEdit(editForm)" #footer><a-button @click="editVisible = false">关闭</a-button></template>
+      <a-form layout="vertical" style="margin-top: 16px" :disabled="!canEdit(editForm)">
         <a-form-item label="参数名称">
           <a-input :value="editForm.name" disabled />
         </a-form-item>
@@ -118,6 +119,7 @@ import { getConfigList, updateConfig, resetConfigDefault } from '@/api/sys/sysco
 import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
 import { checkPermission } from '@/directives/permission/permission'
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 
 const filterText = ref('')
 const loading = ref(false)
@@ -125,7 +127,8 @@ const configs = ref([])
 const valueFilter = ref('all')
 const editVisible = ref(false)
 const saveLoading = ref(false)
-const editForm = reactive({ id: null, name: '', key: '', value: '', default_value: '', description: '' })
+const editForm = reactive({ id: null, name: '', key: '', value: '', default_value: '', description: '', is_readonly: true })
+const canEdit = record => !record.is_readonly && checkPermission('sys:config:update')
 
 const toComparableValue = (value) => {
   if (value === null || value === undefined) {
@@ -183,7 +186,7 @@ const columns = computed(() => [
   { title: '属性', dataIndex: 'is_readonly', key: 'is_readonly', width: 100 },
   { title: '修改时间', dataIndex: 'update_time', key: 'update_time', width: 180 },
   { title: '说明', dataIndex: 'description', key: 'description' },
-  ...(checkPermission('sys:config:update')
+  ...(checkPermission('sys:config:list')
     ? [{ title: '操作', key: 'action', width: 180, fixed: 'right' }]
     : []),
 ])
@@ -258,7 +261,8 @@ const loadConfigs = async () => {
 }
 
 const openEdit = (record) => {
-  if (!checkPermission('sys:config:update')) return
+  if (!checkPermission('sys:config:list')) return
+  editForm.is_readonly = record.is_readonly
   editForm.id = record.id
   editForm.name = record.name
   editForm.key = record.key
@@ -269,7 +273,7 @@ const openEdit = (record) => {
 }
 
 const saveEdit = () => {
-  if (!checkPermission('sys:config:update')) return
+  if (!editVisible.value || !canEdit(editForm)) return
   saveLoading.value = true
   updateConfig(editForm.id, {
     value: editForm.value,
@@ -290,7 +294,7 @@ const saveEdit = () => {
 }
 
 const handleResetDefault = (record) => {
-  if (!checkPermission('sys:config:update')) return
+  if (!canEdit(record)) return
   resetConfigDefault(record.id)
     .then(() => {
       message.success('已重置为默认值')

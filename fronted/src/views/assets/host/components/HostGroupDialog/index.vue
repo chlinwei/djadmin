@@ -4,12 +4,13 @@
             <a-spin :spinning="loading" />
             <a-form v-if="!loading" :model="form" ref="formRef" name="basic" :label-col="{ span: 8 }" :wrapper-col="{ span: 16 }" autocomplete="off" :rules="rules">
                 <a-form-item label="分组名称" name="name">
-                    <a-input v-model:value="form.name" placeholder="例如：生产环境" />
+                    <a-input v-model:value="form.name" :readonly="readOnly" placeholder="例如：生产环境" />
                 </a-form-item>
                 <a-form-item label="备注" name="remark">
-                    <a-textarea v-model:value="form.remark" :rows="3" placeholder="可填写用途、环境、负责人等信息" />
+                    <a-textarea v-model:value="form.remark" :readonly="readOnly" :rows="3" placeholder="可填写用途、环境、负责人等信息" />
                 </a-form-item>
             </a-form>
+            <template v-if="readOnly" #footer><a-button @click="handleCancel">关闭</a-button></template>
         </a-modal>
     </div>
 </template>
@@ -23,6 +24,7 @@ const formRef = ref(null)
 const loading = ref(false)
 
 const props = defineProps({
+    readOnly: Boolean,
     open: {
         type: Boolean,
         default: false,
@@ -57,7 +59,9 @@ const handleApiError = (err) => {
 }
 
 const handleOk = () => {
+    if (props.readOnly || !props.open || loading.value) return
     formRef.value?.validate().then(() => {
+        if (props.readOnly || !props.open) return
         const payload = { ...form.value }
         return saveOrCreateHostGroup(payload).then((res) => {
             if (res.data.code === 200) {

@@ -26,6 +26,8 @@ export function getInspectionTasks(params) {
   return requestUtil.get(taskPrefix, params)
 }
 
+export const getInspectionTask = (id) => requestUtil.get(`${taskPrefix}${id}/`)
+
 export function saveInspectionTask(data) {
   return data.id
     ? requestUtil.patch(`${taskPrefix}${data.id}/`, data)

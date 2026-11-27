@@ -9,10 +9,16 @@ package automation
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"time"
 
 	"autoadmin/internal/platform/database"
+	"github.com/lib/pq"
 )
+
+func hostIDArgs(ids ...int64) []driver.Value {
+	return []driver.Value{pq.Array(ids)}
+}
 
 // openSmokeDatabase 连真库（冒烟用例用）：-tags postgres 连 PostgreSQL。
 func openSmokeDatabase(ctx context.Context, dsn string) (*sql.DB, error) {

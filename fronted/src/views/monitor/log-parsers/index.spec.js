@@ -20,7 +20,7 @@ vi.mock('@/api/monitor', () => ({
   })),
   getLogProcessingRules: vi.fn(() => Promise.resolve({
     data: { data: { results: [
-      { id: 1, name: 'springboot-tomcat-exception', description: '- /logs/mqif_RS.log\n- /logs/mqif_SS1.log', application: 5, input_format: 'text', multiline_enabled: true, pipeline_body: { processors: [] } },
+      { id: 1, name: 'springboot-tomcat-exception', description: '- /logs/mqif_RS.log\n- /logs/mqif_SS1.log', application: 5, application_name: 'Tomcat', input_format: 'text', multiline_enabled: true, pipeline_body: { processors: [] } },
       { id: 2, name: 'redis.log', application: 8, input_format: 'text', multiline_enabled: false, pipeline_body: { processors: [] } },
       { id: 3, name: 'common-error', application: null, input_format: 'text', multiline_enabled: false, pipeline_body: { processors: [] } },
     ] } },
@@ -90,6 +90,27 @@ describe('日志处理规则', () => {
   })
 
   describe('解析试算语义与权限', () => {
+    it('仅查看过滤规则时显示所选应用、锁定排除方向，仍可试算但不能保存', async () => {
+      store.state.perms = ['monitor:view']
+      const api = await import('@/api/monitor')
+      const rule = { id: 92, name: '过滤探针', application: 20, application_name: '探活服务', pattern: 'health', rule_type: 'exclude', enabled: true }
+      api.getLogCollectionFilterRules.mockResolvedValueOnce({ data: { data: { results: [rule] } } })
+      const wrapper = await mountPage()
+      try {
+        wrapper.vm.catalogTab = 'filters'
+        wrapper.vm.openFilterEdit(rule)
+        await flushPromises()
+        const dialog = document.querySelector('.ant-modal-content')
+        expect(dialog.querySelector('.ant-select-disabled').textContent).toContain('探活服务')
+        expect(dialog.querySelector('.ant-segmented-item-selected input').disabled).toBe(true)
+        expect(dialog.querySelector('.ant-segmented-item-selected').textContent).toContain('排除')
+        expect(dialog.querySelector('.ant-modal-footer').textContent.replace(/\s/g, '')).toBe('关闭')
+        wrapper.vm.filterSample = 'health\nfailure'
+        expect(wrapper.vm.filterSampleKept).toEqual(['failure'])
+        await wrapper.vm.saveFilterRule()
+        expect(api.saveLogCollectionFilterRule).not.toHaveBeenCalled()
+      } finally { wrapper.unmount() }
+    })
     it('只读用户打开解析试算而不是运行或编辑，试算不发布规则', async () => {
       store.state.perms = ['monitor:view']
       const api = await import('@/api/monitor')
@@ -98,6 +119,7 @@ describe('日志处理规则', () => {
       })
       const wrapper = await mountPage()
       try {
+        expect((await import('@/api/assets/application')).getApplicationList).not.toHaveBeenCalled()
         const entry = wrapper.findAll('[data-simulate-rule]')[0]
         const tooltip = wrapper.findAllComponents({ name: 'ATooltip' })
           .find((item) => item.props('title') === '解析试算')
@@ -162,11 +184,9 @@ describe('日志处理规则', () => {
 
         await selectTab('发送前处理（Filebeat）')
         const preprocessPane = dialog.querySelector('.ant-tabs-tabpane-active')
-        expect(preprocessPane.querySelector('.ant-descriptions')).not.toBeNull()
-        expect(preprocessPane.querySelector('input, textarea, .ant-select, .ant-switch, .ant-segmented')).toBeNull()
-        for (const text of ['springboot-tomcat-exception', '/logs/mqif_RS.log', '/logs/mqif_SS1.log', 'Tomcat', '文本', '开启', '首行正则', '合并超时（毫秒）']) {
-          expect(preprocessPane.textContent).toContain(text)
-        }
+        expect(preprocessPane.querySelector('.ant-select-disabled').textContent).toContain('Tomcat')
+        expect(preprocessPane.querySelector('textarea').value).toContain('/logs/mqif_SS1.log')
+        expect([...preprocessPane.querySelectorAll('input,textarea,button[role="switch"]')].every(el => el.disabled)).toBe(true)
         expect(dialog.textContent).toContain('规则配置不可修改，仅可更换日志样例进行试算')
 
         await selectTab('字段解析（Elasticsearch Ingest）')
@@ -188,21 +208,24 @@ describe('日志处理规则', () => {
         await wrapper.findAll('[data-simulate-rule]')[0].trigger('click')
         await flushPromises()
         expect(document.body.querySelector('.ant-modal-title').textContent).toContain('解析试算：')
-        expect(document.body.querySelector('.ant-modal-footer').textContent.replace(/\s/g, '')).toContain('发布')
+        expect(document.body.querySelector('.ant-modal-footer').textContent.replace(/\s/g, '')).toBe('关闭')
+        await wrapper.vm.publishPipeline()
+        expect((await import('@/api/monitor')).saveLogProcessingRule).not.toHaveBeenCalled()
         const dialog = document.body.querySelector('.ant-modal-content')
         expect(dialog.querySelector('.ant-tabs-tabpane-active').textContent).toContain('条件丢弃预览')
         wrapper.vm.activeTab = 'ingest'
         await flushPromises()
-        expect(dialog.querySelector('.ant-tabs-tabpane-active textarea').readOnly).toBe(false)
+        expect(dialog.querySelector('.ant-tabs-tabpane-active textarea').readOnly).toBe(true)
         wrapper.vm.openEdit(wrapper.vm.processingRules[0])
         await flushPromises()
         expect(document.body.querySelector('.ant-modal-title').textContent).toBe('编辑处理规则：springboot-tomcat-exception')
+        expect(dialog.querySelector('.ant-modal-footer').textContent.replace(/\s/g, '')).toContain('发布')
         expect(wrapper.vm.activeTab).toBe('preprocess')
         expect(dialog.querySelector('.ant-tabs-tabpane-active .ant-select')).not.toBeNull()
         store.state.perms = ['monitor:view']
         await flushPromises()
         expect(document.body.querySelector('.ant-modal-footer').textContent.replace(/\s/g, '')).toBe('关闭')
-        expect(dialog.querySelector('.ant-tabs-tabpane-active input')).toBeNull()
+        expect(dialog.querySelector('.ant-tabs-tabpane-active textarea').disabled).toBe(true)
         store.state.perms = ['monitor:view', 'monitor:create', 'monitor:update']
         wrapper.vm.openCreate()
         await flushPromises()

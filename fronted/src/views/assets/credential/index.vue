@@ -1,6 +1,6 @@
 <template>
     <Dialog :open="itemAssignVisible" @update:open="(value) => { itemAssignVisible = value }" :item_id="item_id"
-        :title="item_assign_title" @initList="initList" />
+        :title="item_assign_title" :read-only="item_id === -1 ? !canCreate : !canEdit" @initList="initList" />
     <a-row class="tools" :gutter="16">
         <a-col :span="7">
             <a-input-search class="tool-item" v-model:value="SearchText" placeholder="全局搜索" enter-button size="large"
@@ -36,7 +36,7 @@
     <a-row>
         <a-col :span="24">
             <a-table :row-selection="{ selectedRowKeys: state.selectedRowKeys, onChange: onSelectChange }" rowKey="id"
-                :columns="columns" :data-source="datasources" :pagination="pagination" :loading="loading"
+                :columns="columns" :scroll="{ x: 900 }" :data-source="datasources" :pagination="pagination" :loading="loading"
                 onSelectChange="onSelectChange" @change="handleTableChange" size="small" :locale="tableLocale">
                 
                 <template #bodyCell="{ column, record }">
@@ -46,12 +46,13 @@
                     <template v-if="column.key === 'action'">
                         <div :key="record.id">
                             <a-row :gutter="6" class="action_row">
-                                <a-col v-permission="'assets:credentials:update'">
-                                    <a-tooltip title="编辑">
+                                <a-col v-if="canView">
+                                    <a-tooltip v-if="canEdit" title="编辑" placement="top">
                                         <a-button type="primary" @click="onSaveOrCreate(record.id, record.name)">
                                             <FontAwesomeIcon :icon="['fa', 'edit']" />
                                         </a-button>
                                     </a-tooltip>
+                                    <ViewRecordButton v-else @click="onSaveOrCreate(record.id, record.name)" />
                                 </a-col>
                                 <a-col v-permission="'assets:credentials:delete'">
                                     <a-tooltip title="删除">
@@ -67,7 +68,8 @@
                     <template v-else-if="column.key === 'name'">
                         <span>
                         <FontAwesomeIcon v-if="record.port" :icon="['fas', 'fa-key']" />&nbsp; 
-                        {{ record.name }}
+                        <a v-if="canView" href="#" @click.prevent="onSaveOrCreate(record.id, record.name)">{{ record.name }}</a>
+                        <template v-else>{{ record.name }}</template>
                         </span>
                     </template>
                     <template v-else-if="column.key === 'username'">
@@ -86,6 +88,7 @@
     </a-row>
 </template>
 <script setup>
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import { ref, reactive } from 'vue';
 import { usePagination } from 'vue-request';
 import { computed, onMounted } from 'vue'
@@ -95,6 +98,10 @@ import { createPagination, tableLocale } from '@/util/tableStyle'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
+import { checkPermission } from '@/directives/permission/permission'
+const canView = computed(() => checkPermission('assets:credentials:view'))
+const canEdit = computed(() => checkPermission('assets:credentials:update'))
+const canCreate = computed(() => checkPermission('assets:credentials:create'))
 const SearchText = ref('')
 const lastSearchKeyword = ref('')
 const rowLoadingStates = reactive({
@@ -147,7 +154,7 @@ const columns = [
     },
     {
         title: '操作',
-        key: 'action'
+        key: 'action', fixed: 'right', width: 128
     }
 ];
 
@@ -182,8 +189,6 @@ const queryData = params => {
     return getCredentailList(params).then(res => {
         if (res.data.code == 200) {
             lastSearchKeyword.value = res.config.params.search
-            console.log("hahaha")
-            console.log(res.data.data)
             total.value = res.data.data.count
             return res.data.data.results
         } else {
@@ -368,12 +373,14 @@ const itemAssignVisible = ref(false)
 const item_assign_title = ref("错误界面")
 const item_id = ref(-1)
 const onSaveOrCreate = (id, name) => {
+    if (!canView.value) return
     itemAssignVisible.value = true
     item_id.value = id
-    item_assign_title.value = "修改凭证" + "-" + name
+    item_assign_title.value = `${canEdit.value ? '编辑' : '查看'}凭证 - ${name}`
 }
 // 新增
 const HandleAdd = () => {
+    if (!canCreate.value) return
     item_id.value = -1
     itemAssignVisible.value = true
     item_assign_title.value = "创建凭证"

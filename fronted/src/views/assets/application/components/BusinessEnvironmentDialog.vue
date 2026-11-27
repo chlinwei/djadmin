@@ -1,15 +1,16 @@
 <template>
   <a-modal
     :open="open"
-    :title="environmentId ? `编辑环境：${form.name || '加载中'}` : '新增环境'"
+    :title="environmentId ? `${readOnly ? '查看' : '编辑'}环境：${form.name || '加载中'}` : '新增环境'"
     :confirm-loading="saving"
     ok-text="保存"
     cancel-text="取消"
     @ok="submit"
     @cancel="emit('update:open', false)"
   >
+    <template v-if="readOnly" #footer><a-button @click="emit('update:open', false)">关闭</a-button></template>
     <a-spin :spinning="loading">
-      <a-form ref="formRef" :model="form" :rules="rules" layout="vertical">
+      <a-form :disabled="readOnly" ref="formRef" :model="form" :rules="rules" layout="vertical">
         <a-row :gutter="16">
           <a-col :span="12">
             <a-form-item name="name" label="环境名称">
@@ -33,7 +34,7 @@
           </a-col>
           <a-col :span="12">
             <a-form-item label="启用">
-              <EnabledSwitch v-model:checked="form.enabled" />
+              <EnabledSwitch :read-only="readOnly" v-model:checked="form.enabled" />
             </a-form-item>
           </a-col>
           <a-col :span="24">
@@ -49,11 +50,13 @@
 
 <script setup>
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
+import { formFields } from './assetFormValues'
 import { reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { getBusinessEnvironment, saveBusinessEnvironment } from '@/api/assets/application'
 
 const props = defineProps({
+  readOnly: Boolean,
   open: { type: Boolean, required: true },
   environmentId: { type: Number, default: null },
 })
@@ -78,7 +81,7 @@ async function initialize() {
   try {
     if (props.environmentId) {
       const detail = await getBusinessEnvironment(props.environmentId)
-      Object.assign(form, initialForm(), detail?.data?.data || {})
+      Object.assign(form, formFields(initialForm(), detail?.data?.data))
     }
   } finally {
     loading.value = false
@@ -86,12 +89,14 @@ async function initialize() {
 }
 
 async function submit() {
+  if (props.readOnly || loading.value) return
   try {
     await formRef.value.validate()
   } catch {
     // 表单校验失败时 antd 已在字段上标红，不再弹全局提示
     return
   }
+  if (props.readOnly) return
   saving.value = true
   try {
     const response = await saveBusinessEnvironment({ ...form })
@@ -107,5 +112,5 @@ async function submit() {
 
 watch(() => props.open, (visible) => {
   if (visible) initialize()
-})
+}, { immediate: true })
 </script>

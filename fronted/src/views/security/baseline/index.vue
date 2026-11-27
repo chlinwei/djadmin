@@ -40,11 +40,12 @@
                 </a-button>
               </a-tooltip>
               <div class="baseline-quick-actions">
-                <a-tooltip title="编辑" placement="top">
-                  <a-button v-permission="'baseline:manage'" size="small" type="primary" :disabled="!selectedBaseline" @click="openBaselineModal(selectedBaseline)">
+                <a-tooltip v-if="canView && canManage" title="编辑" placement="top">
+                  <a-button size="small" type="primary" :disabled="!selectedBaseline" @click="openBaselineModal(selectedBaseline)">
                     <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                   </a-button>
                 </a-tooltip>
+                <ViewRecordButton v-else-if="canView" :disabled="!selectedBaseline" @click="openBaselineModal(selectedBaseline)" />
                 <a-tooltip title="删除" placement="top">
                   <a-button v-permission="'baseline:manage'" class="delBtn" size="small" type="primary" danger :disabled="!selectedBaseline" @click="confirmDeleteBaseline(selectedBaseline)">
                     <FontAwesomeIcon :icon="['fas', 'trash-can']" />
@@ -76,11 +77,12 @@
                     <a-button v-permission="'baseline:manage'" size="large" type="primary" :disabled="!selectedBaseline" @click="openCategoryModal()">
                       <FontAwesomeIcon :icon="['fas', 'plus-circle']" />&nbsp;新增类目
                     </a-button>
-                    <a-tooltip title="编辑" placement="top">
-                      <a-button v-permission="'baseline:manage'" size="small" type="primary" :disabled="!selectedCategory" @click="openCategoryModal(selectedCategory)">
-                        <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />&nbsp;重命名
+                    <a-tooltip v-if="canView && canManage" title="编辑" placement="top">
+                      <a-button size="small" type="primary" :disabled="!selectedCategory" @click="openCategoryModal(selectedCategory)">
+                        <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />&nbsp;编辑
                       </a-button>
                     </a-tooltip>
+                    <ViewRecordButton v-else-if="canView" :disabled="!selectedCategory" @click="openCategoryModal(selectedCategory)" />
                     <a-button v-permission="'baseline:manage'" size="small" :disabled="!selectedCategory" @click="moveCategory('up')">
                       <FontAwesomeIcon :icon="['fas', 'arrow-up']" />&nbsp;上移
                     </a-button>
@@ -113,17 +115,14 @@
               :locale="{ emptyText: selectedCategory ? '该类目暂无策略，点击右上角「添加策略」' : (selectedBaseline ? '左侧选择一个类目查看策略' : '左侧选择一个基线标准') }"
             >
               <template #bodyCell="{ column, record, index }">
-                <template v-if="column.key === 'severity'">
+                <template v-if="column.dataIndex === 'name' && canView">
+                  <a @click="openItemEditModal(record.sourceIndex)">{{ record.name }}</a>
+                </template>
+                <template v-else-if="column.key === 'severity'">
                   <a-tag :color="record.severity === 'high' ? 'red' : record.severity === 'medium' ? 'orange' : 'default'">{{ severityLabel(record.severity) }}</a-tag>
                 </template>
                 <template v-else-if="column.key === 'action'">
                   <a-space :size="6">
-                    <a-tooltip title="查看详情" placement="top">
-                      <a-button v-permission="'baseline:view'" type="link" size="small" class="detail-action" data-view-policy @click="openItemDetails(record)">
-                        <FontAwesomeIcon :icon="['fas', 'eye']" />
-                        <span>详情</span>
-                      </a-button>
-                    </a-tooltip>
                     <a-tooltip title="上移" placement="top">
                       <a-button v-permission="'baseline:manage'" size="small" :disabled="itemsMoving || itemsLoading || itemEditModalOpen || record.id === categoryRows[0]?.id" @click="moveItem(record, 'up')">
                         <FontAwesomeIcon :icon="['fas', 'arrow-up']" />
@@ -134,11 +133,12 @@
                         <FontAwesomeIcon :icon="['fas', 'arrow-down']" />
                       </a-button>
                     </a-tooltip>
-                    <a-tooltip title="编辑" placement="top">
-                      <a-button v-permission="'baseline:manage'" size="small" type="primary" :disabled="itemsMoving" @click="openItemEditModal(record.sourceIndex)">
+                    <a-tooltip v-if="canView && canManage" title="编辑" placement="top">
+                      <a-button size="small" type="primary" data-policy-form :disabled="itemsMoving" @click="openItemEditModal(record.sourceIndex)">
                         <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                       </a-button>
                     </a-tooltip>
+                    <ViewRecordButton v-else-if="canView" data-policy-form @click="openItemEditModal(record.sourceIndex)" />
                     <a-tooltip title="删除" placement="top">
                       <a-button v-permission="'baseline:manage'" class="delBtn" size="small" type="primary" danger :disabled="itemsMoving" @click="removeItemRow(record.sourceIndex)">
                         <FontAwesomeIcon :icon="['fas', 'trash-can']" />
@@ -200,79 +200,40 @@
       </a-tab-pane>
     </a-tabs>
 
-    <a-modal v-model:open="baselineModalOpen" :title="baselineForm.id ? '编辑基线' : '新增基线'" centered @ok="submitBaseline">
-      <a-form layout="vertical">
-        <a-form-item label="基线名称" required><a-input v-model:value="baselineForm.name" placeholder="如 等保2.0 主机安全基线" /></a-form-item>
+    <a-modal v-model:open="baselineModalOpen" :title="!canManage ? '查看基线' : baselineForm.id ? '编辑基线' : '新增基线'" centered @ok="submitBaseline">
+      <template v-if="!canManage" #footer><a-button @click="baselineModalOpen = false">关闭</a-button></template>
+      <a-form layout="vertical" :disabled="!canManage">
+        <a-form-item label="基线名称" required><a-input :readonly="!canManage" v-model:value="baselineForm.name" placeholder="如 等保2.0 主机安全基线" /></a-form-item>
         <div class="form-grid">
-          <a-form-item label="版本"><a-input v-model:value="baselineForm.version" placeholder="v1" /></a-form-item>
+          <a-form-item label="版本"><a-input :readonly="!canManage" v-model:value="baselineForm.version" placeholder="v1" /></a-form-item>
           <a-form-item label="状态">
-            <EnabledSwitch v-model:checked="baselineForm.enabled" />
+            <EnabledSwitch :read-only="!canManage" v-model:checked="baselineForm.enabled" />
           </a-form-item>
         </div>
-        <a-form-item label="描述"><a-textarea v-model:value="baselineForm.description" :rows="2" /></a-form-item>
+        <a-form-item label="描述"><a-textarea :readonly="!canManage" v-model:value="baselineForm.description" :rows="2" /></a-form-item>
       </a-form>
     </a-modal>
 
-    <a-modal
-      :open="Boolean(itemDetail)"
-      :title="`策略详情：${itemDetail?.name || ''}`"
-      width="80vw"
-      style="max-width: 1200px"
-      centered
-      :footer="null"
-      @cancel="itemDetail = null"
-    >
-      <template v-if="itemDetail">
-        <a-descriptions bordered :column="2" size="small">
-          <a-descriptions-item label="策略名称" :span="2">{{ itemDetail.name }}</a-descriptions-item>
-          <a-descriptions-item label="所属基线">{{ itemDetail.baseline_name || '-' }}</a-descriptions-item>
-          <a-descriptions-item label="所属类目">{{ itemDetail.category_name || '-' }}</a-descriptions-item>
-          <a-descriptions-item label="严重级别">{{ severityLabel(itemDetail.severity) }}</a-descriptions-item>
-          <a-descriptions-item label="运行用户">{{ itemDetail.run_user || 'root（默认）' }}</a-descriptions-item>
-          <a-descriptions-item label="说明" :span="2">
-            <span class="policy-detail-text">{{ itemDetail.description || '-' }}</span>
-          </a-descriptions-item>
-          <a-descriptions-item label="修复建议" :span="2">
-            <span class="policy-detail-text">{{ itemDetail.remediation || '-' }}</span>
-          </a-descriptions-item>
-        </a-descriptions>
-        <h4>采集命令（{{ itemDetail.input_commands.length }}）</h4>
-        <p v-if="!itemDetail.input_commands.length">未配置采集命令</p>
-        <a-descriptions v-for="(input, index) in itemDetail.input_commands" :key="index" bordered :column="2" size="small" class="policy-detail-input">
-          <a-descriptions-item label="采集 key">{{ input.key }}</a-descriptions-item>
-          <a-descriptions-item label="解析方式">{{ opaParseOptions.find((option) => option.value === input.parse)?.label || input.parse || '-' }}</a-descriptions-item>
-          <a-descriptions-item label="命令" :span="2"><pre class="policy-detail-code">{{ input.exec }}</pre></a-descriptions-item>
-        </a-descriptions>
-        <h4>文件采集（{{ itemDetail.input_files.length }}）</h4>
-        <p v-if="!itemDetail.input_files.length">未配置文件采集</p>
-        <a-descriptions v-for="(input, index) in itemDetail.input_files" :key="index" bordered :column="2" size="small" class="policy-detail-input">
-          <a-descriptions-item label="采集 key">{{ input.key }}</a-descriptions-item>
-          <a-descriptions-item label="解析方式">{{ opaParseOptions.find((option) => option.value === input.parse)?.label || input.parse || '-' }}</a-descriptions-item>
-          <a-descriptions-item label="路径" :span="2"><pre class="policy-detail-code">{{ input.path }}</pre></a-descriptions-item>
-        </a-descriptions>
-        <h4>Rego 策略</h4>
-        <pre class="policy-detail-code">{{ itemDetail.policy || '未配置 Rego 策略' }}</pre>
-      </template>
-    </a-modal>
-
-    <a-modal v-model:open="itemEditModalOpen" :title="itemEditIndex === null ? '添加策略' : `编辑策略 - ${itemEditForm.name}`" width="80vw" style="max-width: 1200px" centered :mask-closable="false" :confirm-loading="itemsSaving" @ok="confirmItemEdit">
-      <a-form layout="vertical">
+    <a-modal v-model:open="itemEditModalOpen" :title="!canManage ? '查看策略' : itemEditIndex === null ? '添加策略' : `编辑策略 - ${itemEditForm.name}`" width="80vw" style="max-width: 1200px" centered :mask-closable="false" :confirm-loading="itemsSaving" @ok="confirmItemEdit">
+      <template v-if="!canManage" #footer><a-button @click="itemEditModalOpen = false">关闭</a-button></template>
+      <a-form layout="vertical" :disabled="!canManage">
         <div class="form-grid">
-          <a-form-item label="条目名称" required class="mount-item"><a-input v-model:value="itemEditForm.name" placeholder="如 密码最小长度" /></a-form-item>
-          <a-form-item label="所属类目" class="mount-item"><a-input :value="selectedCategory?.name" disabled /></a-form-item>
+          <a-form-item label="条目名称" required class="mount-item"><a-input :readonly="!canManage" v-model:value="itemEditForm.name" placeholder="如 密码最小长度" /></a-form-item>
+          <a-form-item label="所属基线" class="mount-item"><a-input :value="itemContext.baselineName" readonly /></a-form-item>
+          <a-form-item label="所属类目" class="mount-item"><a-input :value="itemContext.categoryName" readonly /></a-form-item>
         </div>
         <div class="form-grid">
           <a-form-item label="严重级别" class="mount-item">
             <a-select v-model:value="itemEditForm.severity" :options="[{label:'高',value:'high'},{label:'中',value:'medium'},{label:'低',value:'low'}]" :getPopupContainer="getPopupContainer" />
           </a-form-item>
           <a-form-item label="运行用户" class="mount-item">
-            <a-input v-model:value="itemEditForm.run_user" placeholder="root" />
+            <a-input :readonly="!canManage" v-model:value="itemEditForm.run_user" placeholder="root" />
             <div class="field-hint">采集命令以此用户执行（su -l 登录环境，留空默认 root）；支持 <code>{{ '{' }}HOST_IP{{ '}' }}</code> / <code>{{ '{' }}HOST_NAME{{ '}' }}</code> 变量（在命令/路径中生效）。</div>
           </a-form-item>
         </div>
-        <a-form-item label="说明" class="mount-item"><a-input v-model:value="itemEditForm.description" /></a-form-item>
+        <a-form-item label="说明" class="mount-item"><a-input :readonly="!canManage" v-model:value="itemEditForm.description" /></a-form-item>
         <a-form-item label="修复建议" class="mount-item">
-          <a-textarea v-model:value="itemEditForm.remediation" :rows="2" placeholder="不符合时建议的处理方式，如：编辑 /etc/ssh/sshd_config 设置 PermitEmptyPasswords no 并重启 sshd" />
+          <a-textarea :readonly="!canManage" v-model:value="itemEditForm.remediation" :rows="2" placeholder="不符合时建议的处理方式，如：编辑 /etc/ssh/sshd_config 设置 PermitEmptyPasswords no 并重启 sshd" />
         </a-form-item>
         <a-alert type="info" show-icon class="variable-hint">
           <template #message>可用变量（主机级）</template>
@@ -286,33 +247,33 @@
         </a-alert>
         <div class="check-heading">
           <span>采集命令（{{ itemEditForm.input_commands.length }}）</span>
-          <a-button size="small" @click="itemEditForm.input_commands.push({ key: '', exec: '', parse: 'raw' })">
+          <a-button v-if="canManage" size="small" @click="itemEditForm.input_commands.push({ key: '', exec: '', parse: 'raw' })">
             <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;添加采集命令
           </a-button>
         </div>
         <div v-for="(input, inputIndex) in itemEditForm.input_commands" :key="inputIndex" class="input-grid command-grid">
-          <a-input v-model:value="input.key" placeholder="key，如 es_limits" />
+          <a-input :readonly="!canManage" v-model:value="input.key" placeholder="key，如 es_limits" />
           <a-select v-model:value="input.parse" :options="opaParseOptions" :getPopupContainer="getPopupContainer" />
-          <a-tooltip title="删除" placement="top">
+          <a-tooltip v-if="canManage" title="删除" placement="top">
             <a-button class="delBtn" size="small" type="primary" danger @click="itemEditForm.input_commands.splice(inputIndex, 1)">
               <FontAwesomeIcon :icon="['fas', 'trash-can']" />
             </a-button>
           </a-tooltip>
-          <a-textarea v-model:value="input.exec" :auto-size="{ minRows: 3, maxRows: 10 }"
+          <a-textarea :readonly="!canManage" v-model:value="input.exec" :auto-size="{ minRows: 3, maxRows: 10 }"
             class="opa-policy-editor command-editor" aria-label="采集命令" spellcheck="false"
             placeholder="命令，如 cat /proc/1/limits" />
         </div>
         <div class="check-heading">
           <span>文件采集（{{ itemEditForm.input_files.length }}）</span>
-          <a-button size="small" @click="itemEditForm.input_files.push({ key: '', path: '', parse: 'lines' })">
+          <a-button v-if="canManage" size="small" @click="itemEditForm.input_files.push({ key: '', path: '', parse: 'lines' })">
             <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;添加文件采集
           </a-button>
         </div>
         <div v-for="(input, inputIndex) in itemEditForm.input_files" :key="'f' + inputIndex" class="input-grid">
-          <a-input v-model:value="input.key" placeholder="key，如 sshd_config" />
-          <a-input v-model:value="input.path" placeholder="路径，如 /etc/ssh/sshd_config" />
+          <a-input :readonly="!canManage" v-model:value="input.key" placeholder="key，如 sshd_config" />
+          <a-input :readonly="!canManage" v-model:value="input.path" placeholder="路径，如 /etc/ssh/sshd_config" />
           <a-select v-model:value="input.parse" :options="opaParseOptions" :getPopupContainer="getPopupContainer" />
-          <a-tooltip title="删除" placement="top">
+          <a-tooltip v-if="canManage" title="删除" placement="top">
             <a-button class="delBtn" size="small" type="primary" danger @click="itemEditForm.input_files.splice(inputIndex, 1)">
               <FontAwesomeIcon :icon="['fas', 'trash-can']" />
             </a-button>
@@ -320,7 +281,7 @@
         </div>
         <div class="field-hint" style="margin-bottom:8px;">每条命令的输出成为 input 的一个顶层字段，策略里用 <code>input.{{ '{' }}key{{ '}' }}</code> 引用；命令失败时整个条目直接报错（附错误原因）。</div>
         <a-form-item label="Rego 策略" required>
-          <a-textarea v-model:value="itemEditForm.policy" :rows="10" spellcheck="false" class="opa-policy-editor" />
+          <a-textarea :readonly="!canManage" v-model:value="itemEditForm.policy" :rows="10" spellcheck="false" class="opa-policy-editor" />
           <div class="field-hint">
             必须以 <code>package baseline</code> 开头，产出 <code>assertions contains &lt;元素&gt; if {{ '{' }} ... {{ '}' }}</code> 全量断言清单（OPA v1 语法；pass/fail 都展示，基线空断言视为无法验证）。
             用规则表达布尔条件时应声明 <code>default 条件规则名 := false</code>，避免不符合时断言消失。
@@ -331,10 +292,11 @@
       </a-form>
     </a-modal>
 
-    <a-modal v-model:open="categoryModalOpen" :title="categoryForm.id ? '重命名类目' : '新增类目'" centered @ok="submitCategory">
-      <a-form layout="vertical">
+    <a-modal v-model:open="categoryModalOpen" :title="!canManage ? '查看类目' : categoryForm.id ? '重命名类目' : '新增类目'" centered @ok="submitCategory">
+      <template v-if="!canManage" #footer><a-button @click="categoryModalOpen = false">关闭</a-button></template>
+      <a-form layout="vertical" :disabled="!canManage">
         <a-form-item label="类目名称" required>
-          <a-input v-model:value="categoryForm.name" placeholder="如 密码策略 / 用户类目 / SSH 类目" @pressEnter="submitCategory" />
+          <a-input :readonly="!canManage" v-model:value="categoryForm.name" placeholder="如 密码策略 / 用户类目 / SSH 类目" @pressEnter="submitCategory" />
           <div class="field-hint">类目是策略的分组（二层菜单的第二层），同一基线内建议按检查对象命名。</div>
         </a-form-item>
       </a-form>
@@ -366,6 +328,7 @@
 </template>
 
 <script setup>
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { checkPermission } from '@/directives/permission/permission'
@@ -464,7 +427,7 @@ const openKeys = ref([])
 const itemsLoading = ref(false)
 const itemForm = ref([])
 const categoryModalOpen = ref(false)
-const categoryForm = reactive({ id: null, name: '' })
+const categoryForm = reactive({ id: null, baselineId: null, name: '' })
 const scanModalOpen = ref(false)
 const scanning = ref(false)
 const scanBaseline = ref(null)
@@ -592,8 +555,13 @@ function handleScanTableChange(pagination) {
   scanPagination.pageSize = pagination.pageSize
   loadScans()
 }
-function openBaselineModal(record) {
-  if (!checkPermission('baseline:manage')) return
+async function openBaselineModal(record) {
+  if (record ? !canView.value : !canManage.value) return
+  if (record) {
+    const detail = responseData(await getBaselineDetail(record.id))
+    if (detail.baseline?.id !== record.id) return
+    record = detail.baseline
+  }
   baselineForm.id = record?.id || null
   baselineForm.name = record?.name || ''
   baselineForm.version = record?.version || 'v1'
@@ -665,14 +633,15 @@ function selectBaseline(record) {
   categories.value = []
   const baselineKey = String(record.id)
   if (!openKeys.value.includes(baselineKey)) openKeys.value = [...openKeys.value, baselineKey]
-  getBaselineDetail(record.id)
+  return getBaselineDetail(record.id)
     .then((response) => {
+      if (selectedBaseline.value?.id !== record.id) return
       const detail = responseData(response)
       categories.value = detail.categories || []
       selectedCategoryId.value = categories.value[0]?.id ?? null
       itemForm.value = mapBaselineItems(detail.items)
     })
-    .finally(() => { itemsLoading.value = false })
+    .finally(() => { if (selectedBaseline.value?.id === record.id) itemsLoading.value = false })
 }
 
 function mapBaselineItems(items) {
@@ -691,15 +660,9 @@ function mapBaselineItems(items) {
 const categoryRows = computed(() => itemForm.value
   .map((item, index) => ({ ...item, sourceIndex: index }))
   .filter((item) => item.category_id === selectedCategoryId.value))
-const itemDetail = ref(null)
-function openItemDetails(record) {
-  if (!checkPermission('baseline:view')) return
-  itemDetail.value = {
-    ...record,
-    baseline_name: selectedBaseline.value?.name,
-    category_name: categories.value.find((category) => category.id === record.category_id)?.name,
-  }
-}
+const canView = computed(() => checkPermission('baseline:view'))
+const canManage = computed(() => checkPermission('baseline:manage'))
+const itemContext = ref({})
 const itemEditModalOpen = ref(false)
 const itemEditIndex = ref(null)
 const itemsSaving = ref(false)
@@ -733,14 +696,31 @@ async function moveItem(record, direction) {
   }
 }
 
-function openItemEditModal(index = null) {
-  if (!checkPermission('baseline:manage')) return
+async function openItemEditModal(index = null) {
+  if (index !== null ? !canView.value : !canManage.value) return
+  const baseline = selectedBaseline.value
+  const category = selectedCategory.value
+  if (!baseline || !category) return
+  let item
+  let categoryName = category.name
+  let baselineName = baseline.name
+  if (index !== null) {
+    const itemId = itemForm.value[index]?.id
+    const detail = responseData(await getBaselineDetail(baseline.id))
+    if (selectedBaseline.value?.id !== baseline.id || selectedCategoryId.value !== category.id) return
+    item = mapBaselineItems(detail.items).find(row => row.id === itemId)
+    if (!item || item.category_id !== category.id) return message.warning('策略已移动或删除，请刷新列表')
+    categoryName = detail.categories.find(row => row.id === category.id)?.name
+    baselineName = detail.baseline.name
+  }
+  // 保存以弹窗打开时的对象为准，不依赖可因刷新或排序而变化的行下标。
+  itemContext.value = { baselineId: baseline.id, categoryId: category.id, itemId: item?.id, categoryName, baselineName }
   itemEditIndex.value = index
   Object.assign(itemEditForm, {
     name: '', description: '', severity: 'high', run_user: '', remediation: '',
     ...emptyOpaConfig(),
   })
-  if (index !== null) Object.assign(itemEditForm, itemForm.value[index])
+  if (item) Object.assign(itemEditForm, item)
   itemEditModalOpen.value = true
 }
 
@@ -763,7 +743,7 @@ async function confirmItemEdit() {
     return
   }
   const editing = itemEditIndex.value !== null
-  const categoryId = editing ? itemForm.value[itemEditIndex.value].category_id : selectedCategoryId.value
+  const { itemId, categoryId, baselineId } = itemContext.value
   const payload = {
     category_id: categoryId,
     name: itemEditForm.name.trim(),
@@ -779,8 +759,8 @@ async function confirmItemEdit() {
   }
   itemsSaving.value = true
   try {
-    if (editing) await updateBaselineItem(selectedBaseline.value.id, itemForm.value[itemEditIndex.value].id, payload)
-    else await addBaselineItem(selectedBaseline.value.id, payload)
+    if (editing) await updateBaselineItem(baselineId, itemId, payload)
+    else await addBaselineItem(baselineId, payload)
     itemEditModalOpen.value = false
     message.success(editing ? '策略已保存' : '策略已添加')
     await selectBaseline(selectedBaseline.value)
@@ -806,8 +786,17 @@ async function removeItemRow(index) {
 
 // ---- 类目管理：新增 / 重命名 / 上下移 / 删除（非空由后端拒绝）。
 
-function openCategoryModal(record) {
-  if (!checkPermission('baseline:manage')) return
+async function openCategoryModal(record) {
+  if (record ? !canView.value : !canManage.value) return
+  const baselineId = selectedBaseline.value?.id
+  if (!baselineId) return
+  if (record) {
+    const detail = responseData(await getBaselineDetail(baselineId))
+    if (baselineId !== selectedBaseline.value?.id) return
+    record = detail.categories.find(category => category.id === record.id)
+    if (!record) return message.warning('类目已删除，请刷新列表')
+  }
+  categoryForm.baselineId = baselineId
   categoryForm.id = record?.id || null
   categoryForm.name = record?.name || ''
   categoryModalOpen.value = true
@@ -822,12 +811,12 @@ async function submitCategory() {
   }
   try {
     if (categoryForm.id) {
-      await updateBaselineCategory(selectedBaseline.value.id, categoryForm.id, { name })
+      await updateBaselineCategory(categoryForm.baselineId, categoryForm.id, { name })
       const target = categories.value.find((category) => category.id === categoryForm.id)
       if (target) target.name = name
       message.success('类目已重命名')
     } else {
-      const data = responseData(await createBaselineCategory(selectedBaseline.value.id, { name }))
+      const data = responseData(await createBaselineCategory(categoryForm.baselineId, { name }))
       categories.value = [...categories.value, { id: data.id, name: data.name, sort: data.sort }]
       message.success('类目已创建')
     }
@@ -955,23 +944,7 @@ defineOptions({ name: 'ViewSecurityBaseline' })
 </script>
 
 <style scoped>
-.policy-detail-text,
-.policy-detail-code,
-.opa-policy-editor {
-  font-variant-ligatures: none;
-}
-.policy-detail-code {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.policy-detail-code {
-  margin: 0;
-  color: #262626;
-  font-family: "JetBrains Mono", "Cascadia Code", monospace;
-}
-.policy-detail-input {
-  margin-bottom: 12px;
-}
+.opa-policy-editor { font-variant-ligatures: none; }
 /* 条目编辑器：与巡检组检查项编辑器保持一致的布局语义（fronted/src/views/inspection/index.vue）。 */
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .input-grid { display: grid; grid-template-columns: minmax(150px, 200px) 1fr minmax(110px, 150px) auto; gap: 8px; align-items: center; margin-bottom: 8px; }

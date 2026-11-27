@@ -68,11 +68,12 @@ type alertChainDelivery struct {
 }
 
 type alertChainEvent struct {
-	ID           int64  `json:"id"`
-	EventType    string `json:"event_type"`
-	Status       string `json:"status"`
-	AttemptCount int64  `json:"attempt_count"`
-	Error        string `json:"error"`
+	MaintenanceWindows []maintenanceDecisionResponse `json:"maintenance_windows"`
+	ID                 int64                         `json:"id"`
+	EventType          string                        `json:"event_type"`
+	Status             string                        `json:"status"`
+	AttemptCount       int64                         `json:"attempt_count"`
+	Error              string                        `json:"error"`
 }
 
 type alertChainMediaDetail struct {
@@ -544,8 +545,26 @@ func (handler *Handler) AlertChainEvaluation(context *gin.Context) {
 	}
 
 	medias := make([]alertChainMediaDetail, 0)
+	// 命中的维护事件独立于当前策略；即使之后删除了出口，诊断仍能说明原抑制决定。
+	var chainEvent *alertChainEvent
+	event, err := queries.GetLatestAlertNotificationEventForAlert(context, db.GetLatestAlertNotificationEventForAlertParams{AlertID: historyID, EventType: eventType})
+	if err != nil && err != sql.ErrNoRows {
+		response.Error(context, err)
+		return
+	}
+	if err == nil {
+		windows, err := handler.notificationDecisions(context, event.ID)
+		if err != nil {
+			response.Error(context, err)
+			return
+		}
+		chainEvent = &alertChainEvent{ID: event.ID, EventType: event.EventType, Status: event.Status, AttemptCount: int64(event.AttemptCount), Error: event.ErrorMessage, MaintenanceWindows: windows}
+		if len(windows) > 0 {
+			summaryIssues = append(summaryIssues, fmt.Sprintf("通知曾受维护窗口「%s」等 %d 个窗口抑制；当前事件状态：%s", windows[0].Title, len(windows), event.Status))
+		}
+	}
 	if len(mediaIDs) > 0 {
-		medias, err = handler.policyMediasDetail(context, mediaIDs, historyID, eventType, userGroupIDs)
+		medias, err = handler.policyMediasDetail(context, mediaIDs, chainEvent, userGroupIDs)
 		if err != nil {
 			response.Error(context, err)
 			return
@@ -561,7 +580,7 @@ func (handler *Handler) AlertChainEvaluation(context *gin.Context) {
 			summaryIssues = append(summaryIssues, fmt.Sprintf("媒介 %s：无 %s 事件记录，通知未触发", media.Name, eventType))
 		}
 		for _, delivery := range media.Deliveries {
-			if delivery.Status != "success" {
+			if delivery.Status == "failed" {
 				name := delivery.Username
 				if name == "" {
 					name = fmt.Sprintf("%d", derefInt32(delivery.UserID))
@@ -582,6 +601,7 @@ func (handler *Handler) AlertChainEvaluation(context *gin.Context) {
 		"alert": gin.H{
 			"id": historyID, "alertname": alertname, "state": state,
 			"labels": mergedLabels, "started_at": startedAt,
+			"verified_host_id": handler.verifiedMaintenanceHost(context, historyID, labels),
 		},
 		"policy_tree": gin.H{
 			"matched_path_ids": pathIDs,
@@ -589,7 +609,7 @@ func (handler *Handler) AlertChainEvaluation(context *gin.Context) {
 			"levels":           levels,
 			"final_policy":     policyDetail,
 		},
-		"medias":         medias,
+		"medias": medias, "event": chainEvent,
 		"summary_issues": summaryIssues,
 	})
 }
@@ -603,7 +623,7 @@ func mustMarshalMatchers(matchers []policyMatcher) json.RawMessage {
 }
 
 // policyMediasDetail 填充出口媒介的绑定与实际 event/delivery 记录（含停用媒介，便于展示断点）。
-func (handler *Handler) policyMediasDetail(context *gin.Context, mediaIDs []int64, historyID int64, eventType string, userGroupIDs []int64) ([]alertChainMediaDetail, error) {
+func (handler *Handler) policyMediasDetail(context *gin.Context, mediaIDs []int64, event *alertChainEvent, userGroupIDs []int64) ([]alertChainMediaDetail, error) {
 	queries := db.New(handler.db)
 	mediaRows, err := queries.ListAlertMediaBriefByIDs(context, mediaIDs)
 	if err != nil {
@@ -611,6 +631,13 @@ func (handler *Handler) policyMediasDetail(context *gin.Context, mediaIDs []int6
 	}
 
 	details := make([]alertChainMediaDetail, 0, len(mediaRows))
+	var deliveries []db.ListAlertNotificationDeliveriesRow
+	if event != nil {
+		deliveries, err = queries.ListAlertNotificationDeliveries(context, event.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
 	for _, media := range mediaRows {
 		mediaDetail := alertChainMediaDetail{
 			ID: media.ID, Name: media.Name, Enabled: media.Enabled,
@@ -640,34 +667,20 @@ func (handler *Handler) policyMediasDetail(context *gin.Context, mediaIDs []int6
 			mediaDetail.Bindings = append(mediaDetail.Bindings, bindingView)
 		}
 
-		event, eventErr := queries.GetLatestAlertNotificationEventForAlert(context, db.GetLatestAlertNotificationEventForAlertParams{
-			AlertID: historyID, EventType: eventType,
-		})
-		switch {
-		case eventErr == sql.ErrNoRows:
-			mediaDetail.Event = nil
-		case eventErr != nil:
-			return nil, eventErr
-		default:
-			mediaDetail.Event = &alertChainEvent{
-				ID: event.ID, EventType: event.EventType, Status: event.Status,
-				AttemptCount: int64(event.AttemptCount), Error: event.ErrorMessage,
+		mediaDetail.Event = event
+		for _, row := range deliveries {
+			if !row.MediaID.Valid || row.MediaID.Int64 != media.ID {
+				continue
 			}
-			deliveryRows, err := queries.ListAlertNotificationDeliveriesForChain(context, event.ID)
-			if err != nil {
-				return nil, err
+			delivery := alertChainDelivery{
+				Address: row.Address, Status: row.Status, Error: row.ErrorMessage,
+				Username: row.Username,
 			}
-			for _, row := range deliveryRows {
-				delivery := alertChainDelivery{
-					Address: row.Address, Status: row.Status, Error: row.ErrorMessage,
-					Username: row.Username.String,
-				}
-				if row.UserID.Valid {
-					value := row.UserID.Int32
-					delivery.UserID = &value
-				}
-				mediaDetail.Deliveries = append(mediaDetail.Deliveries, delivery)
+			if row.UserID.Valid {
+				value := row.UserID.Int32
+				delivery.UserID = &value
 			}
+			mediaDetail.Deliveries = append(mediaDetail.Deliveries, delivery)
 		}
 		details = append(details, mediaDetail)
 	}

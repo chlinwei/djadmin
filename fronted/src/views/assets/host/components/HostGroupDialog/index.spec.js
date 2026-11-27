@@ -17,6 +17,20 @@ const mountDialog = () => shallowMount(Dialog, {
 describe('单层主机分组表单', () => {
   beforeEach(() => vi.clearAllMocks())
 
+  it('查看分组加载同一详情但不能提交', async () => {
+    getHostGroupById.mockResolvedValueOnce({ data: { code: 200, data: { id: 8, name: 'testing', remark: 'test hosts' } } })
+    const wrapper = mountDialog()
+    await wrapper.setProps({ item_id: 8, open: true, readOnly: true })
+    await flushPromises()
+    const state = wrapper.vm.$.setupState
+    expect(state.form.remark).toBe('test hosts')
+    state.formRef = { validate: vi.fn().mockResolvedValue() }
+    state.handleOk()
+    await flushPromises()
+    expect(saveOrCreateHostGroup).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('新增只提交名称与备注，不包含父级字段', async () => {
     const wrapper = mountDialog()
     await wrapper.setProps({ open: true })

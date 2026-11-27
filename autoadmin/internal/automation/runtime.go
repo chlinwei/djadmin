@@ -88,6 +88,38 @@ func (handler *Handler) GetInventory(context *gin.Context) {
 		automationResourceError(context, err)
 		return
 	}
+	// Only return hosts associated with this inventory; viewing a saved scope
+	// must not require enumerating every host or an enabled inventory.
+	selected := intSlice(item["selected_host_ids"])
+	hosts, err := handler.snapshotHosts(context, selected, "")
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	item["resolved_hosts"] = hosts
+	// A configured host may have lost its IP. Keep its display name in the
+	// configuration, but do not include it in the executable host list.
+	labels := make(map[int64]string, len(hosts))
+	for _, host := range hosts {
+		labels[host.HostID] = host.HostName
+	}
+	var unresolved []int64
+	for _, id := range selected {
+		if _, exists := labels[id]; !exists {
+			unresolved = append(unresolved, id)
+		}
+	}
+	if len(unresolved) > 0 {
+		rows, err := db.New(handler.db).ListAutomationHostAgentIdentities(context, unresolved)
+		if err != nil {
+			response.Error(context, err)
+			return
+		}
+		for _, row := range rows {
+			labels[row.ID] = row.InstanceName
+		}
+	}
+	item["selected_host_names"] = labels
 	response.Success(context, item)
 }
 

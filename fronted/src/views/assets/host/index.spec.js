@@ -91,7 +91,7 @@ vi.mock('@/util/timezone', () => ({
 vi.mock('@/store', () => ({
   default: {
     state: {
-      perms: ['assets:hosts:view', 'assets:hosts:update', 'assets:hosts:execute', 'assets:hostgroups:create', 'assets:hostgroups:update', 'assets:hostgroups:delete', 'sys:config:list'],
+      perms: ['assets:hosts:view', 'assets:hosts:create', 'assets:hosts:update', 'assets:hosts:execute', 'assets:hostgroups:view', 'assets:hostgroups:create', 'assets:hostgroups:update', 'assets:hostgroups:delete', 'sys:config:list'],
       role_codes: ['operator'],
       user: {
         timezone: 'Asia/Shanghai',
@@ -257,7 +257,23 @@ describe('Host Agent 凭证安装与主机编辑保存', () => {
     try {
       await flushPromises()
       expect(hostApi.batchRefreshHostInfo).toHaveBeenCalledWith([7])
-      expect(wrapper.vm.$.setupState.columns.at(-1)).toMatchObject({ key: 'action', width: 96, align: 'center' })
+      const state = wrapper.vm.$.setupState
+      expect(state.columns.at(-1)).toMatchObject({ key: 'action', fixed: 'right' })
+      hostApi.getHostById.mockResolvedValueOnce({ data: { code: 200, data: {
+        id: 7, group: 9, group_name: '生产组', environment: 12, environment_name: '停用环境',
+      } } })
+      await state.onSaveOrCreate(7)
+      await flushPromises()
+      expect(state.hostReadOnly).toBe(true)
+      expect(state.selectedGroupOptions).toEqual([{ label: '生产组', value: 9 }])
+      expect(state.selectedEnvironmentOptions).toEqual([{ label: '停用环境', value: 12 }])
+      expect(hostGroupApi.getHostGroupTree).not.toHaveBeenCalled()
+      const { default: request } = await import('@/util/request')
+      expect(request.get).not.toHaveBeenCalledWith(expect.stringContaining('business-environments'), expect.anything())
+      state.formRef = { validate: vi.fn().mockResolvedValue() }
+      state.handleOk()
+      await flushPromises()
+      expect(hostApi.saveOrCreateHost).not.toHaveBeenCalled()
     } finally {
       wrapper.unmount()
       store.state.perms = originalPermissions

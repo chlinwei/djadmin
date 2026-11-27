@@ -28,6 +28,7 @@ function mountCard(tasks = [task], canEditTask = true, realIcons = false) {
       tasks,
       taskPagination: { current: 1, pageSize: 10, total: tasks.length },
       canEditTask,
+      canViewTask: true,
       formatEnvVarCell: () => '{}',
       formatEnvVarCellFullText: () => '{}',
       formatUpdateTime: () => '-',
@@ -96,15 +97,15 @@ describe('自动化任务列表名称列', () => {
     }
   })
 
-  it('retains a full-name tooltip without making a read-only task name editable', async () => {
+  it('retains a full-name tooltip and a form entry on a read-only task', async () => {
     const wrapper = mountCard([task], false)
     try {
       await flushPromises()
       const nameCell = cell(wrapper, 'name')
-      expect(nameCell.find('button').exists()).toBe(false)
+      await nameCell.get('button').trigger('click')
       expect(nameCell.get('.task-label-text').text()).toBe(task.name)
       expect(nameCell.findComponent(Tooltip).props()).toMatchObject({ title: task.name, placement: 'top' })
-      expect(wrapper.emitted('edit')).toBeUndefined()
+      expect(wrapper.emitted('edit')).toEqual([[task]])
     } finally {
       wrapper.unmount()
     }

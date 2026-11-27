@@ -30,6 +30,10 @@ func expectCreatedMonitorTarget(mock sqlmock.Sqlmock, id int64) {
 	mock.ExpectQuery("CreateMonitorTargetIfAbsent").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(id))
 }
 
+func expectCreatedMaintenanceWindow(mock sqlmock.Sqlmock, id int64) {
+	mock.ExpectQuery("CreateMaintenanceWindow").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(id))
+}
+
 // expectAlertNotificationEventInsert 见 mysql 版本：PG 侧派生为
 // `INSERT … ON CONFLICT DO NOTHING RETURNING id`（`:one` 走 QueryRow），
 // 被唯一键跳过时不返回行 —— sql.ErrNoRows。

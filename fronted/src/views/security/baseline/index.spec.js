@@ -29,7 +29,7 @@ beforeEach(() => {
     url.endsWith('/scan-hosts/')
       ? { hosts: [{ id: 10, name: 'host-a', ip: '10.0.0.1', online: true }, { id: 11, name: 'host-b', ip: '10.0.0.2', online: false }] }
       : url === 'sys/security/baseline/7/'
-      ? { categories: [{ id: 3, name: '类目一' }, { id: 4, name: '类目二' }], items: savedItems }
+      ? { baseline, categories: [{ id: 3, name: '类目一' }, { id: 4, name: '类目二' }], items: savedItems }
       : { results: url === 'sys/security/baseline/' ? [baseline] : [] },
   )))
   requestUtil.post.mockResolvedValue(response({ targets: 1 }))
@@ -71,82 +71,49 @@ describe('策略只读详情', () => {
     }, ...items.slice(1)]
     await loadPage()
     const originalItems = JSON.stringify(wrapper.vm.itemForm)
-    const originalEditor = JSON.stringify(wrapper.vm.itemEditForm)
-    const readsBeforeView = requestUtil.get.mock.calls.length
-    const entries = wrapper.findAll('[data-view-policy]')
+    const entries = wrapper.findAll('[data-policy-form]')
     expect(entries).toHaveLength(2)
-    expect(entries.every((entry) => entry.isVisible())).toBe(true)
-    expect(entries.every((entry) => entry.classes().includes('detail-action') && entry.classes().includes('ant-btn-link') && entry.text() === '详情')).toBe(true)
-    const viewTooltip = wrapper.findAllComponents(Tooltip).find((tooltip) => tooltip.props('title') === '查看详情')
-    expect(viewTooltip.props('placement')).toBe('top')
-    await entries[0].trigger('mouseenter')
-    await new Promise((resolve) => setTimeout(resolve, 150))
-    await flushPromises()
-    expect(document.body.querySelector('.ant-tooltip-inner')?.textContent).toBe('查看详情')
+    const reads = requestUtil.get.mock.calls.length
     await entries[0].trigger('click')
     await flushPromises()
     const dialog = document.body.querySelector('.ant-modal-content')
-    expect(dialog.querySelector('.ant-modal-title').textContent).toBe('策略详情：策略一')
-    for (const text of ['测试基线', '类目一', 'audit', '按运维流程更新配置', '这里应完整展示，不受列表截断影响。',
-      'hostname', 'printf "%s\\n" "{HOST_NAME}"', '/etc/ssh/sshd_config', 'raw 原文', 'lines 按行', 'json 对象', '/etc/example/settings.json']) {
-      expect(dialog.textContent).toContain(text)
-    }
-    expect(Array.from(dialog.querySelectorAll('pre')).some((element) => element.textContent === policy)).toBe(true)
-    expect(dialog.querySelector('input, textarea, .ant-select, .ant-switch')).toBeNull()
-    expect(dialog.querySelector('.ant-modal-footer')).toBeNull()
-    expect(wrapper.findAll('button').filter((button) => button.isVisible() && /新增|添加策略|扫描|重命名/.test(button.text()))).toHaveLength(0)
-    for (const title of ['上移', '下移', '编辑', '删除']) {
-      const buttons = wrapper.findAllComponents(Tooltip).filter((tooltip) => tooltip.props('title') === title)
-      expect(buttons.every((tooltip) => !tooltip.find('button').isVisible())).toBe(true)
-    }
-    wrapper.vm.openItemEditModal(0)
+    expect(dialog.querySelector('.ant-modal-title').textContent).toBe('查看策略')
+    expect(dialog.querySelector('.ant-modal-footer').textContent.replace(/\s/g, '')).toBe('关闭')
+    const inputs = [...dialog.querySelectorAll('input, textarea')]
+    const values = inputs.map(node => node.value)
+    for (const value of ['类目一', '测试基线', 'audit', policy, '/etc/ssh/sshd_config', '/etc/example/settings.json']) expect(values).toContain(value)
+    expect(inputs.every(node => node.disabled || node.readOnly)).toBe(true)
+    expect(dialog.textContent).not.toContain('添加采集命令')
     await wrapper.vm.confirmItemEdit()
     await wrapper.vm.moveItem(wrapper.vm.categoryRows[0], 'down')
     wrapper.vm.openScanModal(baseline)
-    expect(wrapper.vm.itemEditModalOpen).toBe(false)
     expect(wrapper.vm.scanModalOpen).toBe(false)
     expect(JSON.stringify(wrapper.vm.itemForm)).toBe(originalItems)
-    expect(JSON.stringify(wrapper.vm.itemEditForm)).toBe(originalEditor)
-    expect(requestUtil.get).toHaveBeenCalledTimes(readsBeforeView)
+    expect(requestUtil.get.mock.calls.slice(reads)).toEqual([['sys/security/baseline/7/']])
     expect(requestUtil.patch).not.toHaveBeenCalled()
     expect(requestUtil.post).not.toHaveBeenCalled()
     expect(requestUtil.del).not.toHaveBeenCalled()
-    expect(wrapper.vm.itemColumns.find((column) => column.key === 'action')).toMatchObject({ fixed: 'right', width: 264 })
-    expect(wrapper.findAllComponents({ name: 'ATable' })[0].props('scroll')).toEqual({ x: 840 })
   })
 
-  it('空配置明确显示默认用户和未配置项，详情归属不随页面类目改变', async () => {
+  it('仅查看可打开基线和类目的同一表单，不能通过确认或回车保存', async () => {
     store.state.perms = ['baseline:view']
     await loadPage()
-    await wrapper.findAll('[data-view-policy]')[0].trigger('click')
-    await flushPromises()
-    wrapper.vm.selectedCategoryId = 4
-    await flushPromises()
-    const dialog = document.body.querySelector('.ant-modal-content')
-    for (const text of ['类目一', 'root（默认）', '未配置采集命令', '未配置文件采集', '未配置 Rego 策略']) {
-      expect(dialog.textContent).toContain(text)
-    }
-    expect(dialog.textContent).not.toContain('类目二')
-    dialog.querySelector('.ant-modal-close').click()
-    await flushPromises()
-    expect(wrapper.vm.itemDetail).toBeNull()
-    await wrapper.find('[data-view-policy]').trigger('click')
-    await flushPromises()
-    expect(document.body.querySelector('.ant-modal-title').textContent).toBe('策略详情：其他类目策略')
-    expect(document.body.querySelector('.ant-descriptions').textContent).toContain('类目二')
+    await wrapper.vm.openBaselineModal(baseline)
+    expect(wrapper.vm.baselineForm.name).toBe('测试基线')
+    await wrapper.vm.submitBaseline()
+    await wrapper.vm.openCategoryModal(wrapper.vm.categories[0])
+    expect(wrapper.vm.categoryForm.name).toBe('类目一')
+    await wrapper.vm.submitCategory()
+    expect(requestUtil.patch).not.toHaveBeenCalled()
+    expect(requestUtil.post).not.toHaveBeenCalled()
   })
 
-  it('缺少查看权限不能打开详情，管理员保留查看能力', async () => {
+  it('无查看权限时不提供检查项表单', async () => {
     store.state.perms = []
     await loadPage()
-    expect(wrapper.findAll('[data-view-policy]').every((entry) => !entry.isVisible())).toBe(true)
-    wrapper.vm.openItemDetails(wrapper.vm.categoryRows[0])
-    expect(wrapper.vm.itemDetail).toBeNull()
-    store.state.role_codes = ['admin']
-    wrapper.vm.openItemDetails(wrapper.vm.categoryRows[0])
-    await flushPromises()
-    expect(document.body.querySelector('.ant-modal-title').textContent).toBe('策略详情：策略一')
-    expect(document.body.querySelector('.ant-modal-footer')).toBeNull()
+    expect(wrapper.find('[data-policy-form]').exists()).toBe(false)
+    await wrapper.vm.openItemEditModal(0)
+    expect(wrapper.vm.itemEditModalOpen).toBe(false)
   })
 })
 

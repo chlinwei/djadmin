@@ -57,6 +57,9 @@ func TestPlaybookUploadFile(t *testing.T) {
 	engine := newPlaybookFileServer(t, database)
 
 	body, contentType := multipartBody(t, "file", "site.yml", "- hosts: all\n  tasks:\n    - name: ping\n      ping:\n")
+	mock.ExpectQuery(selectQuery).WithArgs(int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "create_time", "update_time", "remark", "name", "description", "content", "content_format", "category"}).
+			AddRow(int64(7), now, now, sql.NullString{}, "site", "", "- hosts: all", "playbook", "general"))
 	mock.ExpectExec(updateQuery).WithArgs("- hosts: all\n  tasks:\n    - name: ping\n      ping:\n", sqlmock.AnyArg(), int64(7)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(selectQuery).WithArgs(int64(7)).
@@ -72,6 +75,18 @@ func TestPlaybookUploadFile(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "- hosts: all") {
 		t.Fatalf("response content missing: %s", recorder.Body.String())
+	}
+
+	body, contentType = multipartBody(t, "file", "site.yml", "- hosts: all")
+	mock.ExpectQuery(selectQuery).WithArgs(int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "create_time", "update_time", "remark", "name", "description", "content", "content_format", "category"}).
+			AddRow(int64(7), now, now, sql.NullString{}, "site", "", "- hosts: all", "playbook", "software_package"))
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/playbooks/7/upload/", body)
+	request.Header.Set("Content-Type", contentType)
+	engine.ServeHTTP(recorder, request)
+	if !strings.Contains(recorder.Body.String(), packageTemplateReadOnly) {
+		t.Fatalf("managed template upload: %s", recorder.Body.String())
 	}
 
 	// 非 YAML 后缀：400 且无数据库交互

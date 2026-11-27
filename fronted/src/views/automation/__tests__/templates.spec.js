@@ -4,6 +4,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/sys/automation', () => ({
+  getPlaybook: vi.fn(),
   getPlaybookList: vi.fn(() => Promise.resolve({ data: { data: { results: [], count: 0 } } })),
   getShellcheckStatus: vi.fn(() => Promise.resolve({ data: { data: { ready: true, source: 'uploaded', version: '0.9.0' } } })),
   uploadShellcheckBinary: vi.fn(),
@@ -90,6 +91,22 @@ describe('自动化模板页：Shell 类型与 ShellCheck', () => {
     } finally {
       wrapper.unmount()
     }
+  })
+
+  it('以最新详情判断托管模板，即使有更新权限也只显示只读控件', async () => {
+    automationApi.getPlaybook.mockResolvedValue({ data: { data: { id: 8, name: '安装', category: 'software_package', content: '- hosts: all', content_format: 'playbook' } } })
+    const wrapper = await mountPage()
+    try {
+      await wrapper.vm.openTemplateModal({ id: 8, category: 'general' })
+      await flushPromises()
+      const modal = document.body.querySelector('.ant-modal-content')
+      expect(modal.querySelector('.ant-modal-title').textContent).toBe('查看模板')
+      expect(modal.querySelector('textarea').readOnly).toBe(true)
+      expect(modal.querySelector('.ant-modal-footer').textContent.replace(/\s/g, '')).toBe('关闭')
+      expect(modal.querySelector('input[type=file]')).toBeNull()
+      await wrapper.vm.submitTemplate()
+      expect(automationApi.updatePlaybook).not.toHaveBeenCalled()
+    } finally { wrapper.unmount() }
   })
 
   it.each([

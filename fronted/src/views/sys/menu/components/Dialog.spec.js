@@ -56,6 +56,16 @@ describe('菜单编辑弹窗', () => {
     vi.clearAllMocks()
   })
 
+  it('只读详情显示已保存的菜单路径，不允许修改或提交', async () => {
+    const wrapper = mountDialog({ readOnly: true })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+    expect(wrapper.findAll('input:disabled').some(input => input.element.value === '/monitor/logging/center')).toBe(true)
+    wrapper.vm.handleOk()
+    expect(saveOrCreateMenu).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('提交前把数值字段归一成数字（文本框给出的字符串也不许原样发出去）', async () => {
     const wrapper = mountDialog()
     await wrapper.setProps({ open: true })

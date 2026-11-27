@@ -27,7 +27,8 @@
         <template #title>
           <a-space wrap>
             <span>{{ currentGroup ? currentGroup.name : '成员' }}</span>
-            <a-button v-if="currentGroup && canUpdate" size="small" @click="openEditModal(currentGroup)">编辑组信息</a-button>
+            <a-button v-if="currentGroup && canView && canUpdate" size="small" @click="openEditModal(currentGroup)">编辑组信息</a-button>
+            <ViewRecordButton v-else-if="currentGroup && canView" @click="openEditModal(currentGroup)" />
           </a-space>
         </template>
         <template #extra>
@@ -75,11 +76,11 @@
     <!-- 新增/编辑组（组名、描述） -->
     <a-modal
       v-model:open="modalVisible"
-      :title="editingId ? '编辑用户组' : '新增用户组'"
+      :title="groupReadOnly ? '查看用户组' : editingId ? '编辑用户组' : '新增用户组'"
       :footer="null"
       @cancel="closeModal"
     >
-      <a-form :label-col="{ span: 4 }" :wrapper-col="{ span: 19 }">
+      <a-form :disabled="groupReadOnly" :label-col="{ span: 4 }" :wrapper-col="{ span: 19 }">
         <a-form-item label="组名" required>
           <a-input v-model:value="groupForm.name" placeholder="例如：告警值班-后端" />
         </a-form-item>
@@ -88,14 +89,15 @@
         </a-form-item>
       </a-form>
       <div class="modal-actions">
-        <a-button @click="closeModal">取消</a-button>
-        <a-button type="primary" :loading="saveLoading" @click="saveGroup">保存</a-button>
+        <a-button @click="closeModal">{{ groupReadOnly ? '关闭' : '取消' }}</a-button>
+        <a-button v-if="!groupReadOnly" type="primary" :loading="saveLoading" @click="saveGroup">保存</a-button>
       </div>
     </a-modal>
   </div>
 </template>
 
 <script setup>
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import { tableLocale } from '@/util/tableStyle'
 import { message } from 'ant-design-vue'
@@ -118,6 +120,7 @@ defineOptions({
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 
 const canCreate = computed(() => checkPermission('system:usergroups:create'))
+const canView = computed(() => checkPermission('system:usergroups:view'))
 const canUpdate = computed(() => checkPermission('system:usergroups:update'))
 const canDelete = computed(() => checkPermission('system:usergroups:delete'))
 const canAddMembers = computed(() => canUpdate.value && checkPermission('system:users:view'))
@@ -135,6 +138,7 @@ const selectedGroupId = ref(null)
 const memberToAdd = ref(null)
 const modalVisible = ref(false)
 const editingId = ref(null)
+const groupReadOnly = computed(() => !!editingId.value && !canUpdate.value)
 const groupForm = ref({ name: '', remark: '' })
 
 const currentGroup = computed(() => groupList.value.find((group) => group.id === selectedGroupId.value) || null)
@@ -176,7 +180,7 @@ function openCreateModal() {
 }
 
 function openEditModal(record) {
-  if (!requireAction('system:usergroups:update')) return
+  if (!requireAction('system:usergroups:view')) return
   editingId.value = record.id
   groupForm.value = { name: record.name, remark: record.remark || '' }
   modalVisible.value = true

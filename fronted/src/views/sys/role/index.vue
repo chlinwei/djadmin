@@ -1,6 +1,6 @@
 <template>
     <Dialog :open="open" @update:open="(value) => { open = value }" :role_id="role_id" :title="title"
-        @initList="initList" />
+        :read-only="role_id !== -1 && (protectedRole || !checkPermission('system:roles:update'))" @initList="initList" />
 
     <MenuAssign :open="menuAssignVisible" @update:menuAssignVisible="(value) => { menuAssignVisible = value }"
         :role_id="role_id" :title="menu_assign_title" @initList="initList" />
@@ -32,7 +32,7 @@
     <a-row>
         <a-col :span="24">
             <a-table :row-selection="{ selectedRowKeys: state.selectedRowKeys, onChange: onSelectChange }" rowKey="id"
-                :columns="columns" :data-source="users" :pagination="pagination" :loading="loading"
+                :columns="columns" :data-source="users" :pagination="pagination" :loading="loading" :scroll="{ x: 1000 }"
                 size="small" :locale="tableLocale" @change="handleTableChange">
                 <template #bodyCell="{ column, record }">
                     <template v-if="column.key === 'create_time'">
@@ -47,13 +47,14 @@
                                             @click="handleMenuAssign(record.id, record.name)">分配权限</a-button>
                                     </a-tooltip>
                                 </a-col>
-                                <a-col v-if="record.name != 'admin'"  v-permission.remove="'system:roles:update'">
+                                <a-col v-if="canEditRole(record)">
                                     <a-tooltip title="编辑">
-                                        <a-button type="primary" @click="onSaveorChanageRole(record.id)">
+                                        <a-button type="primary" @click="openRole(record)">
                                             <FontAwesomeIcon :icon="['fa','edit']" />
                                         </a-button>
                                     </a-tooltip>
                                 </a-col>
+                                <a-col v-else-if="checkPermission('system:roles:view')"><ViewRecordButton @click="openRole(record)" /></a-col>
                                 <a-col v-permission.remove="'system:roles:delete'">
                                     <a-tooltip title="删除">
                                         <a-button class="delBtn" :loading="rowLoadingStates[record.id]" danger
@@ -86,6 +87,7 @@ import { computed, reactive } from 'vue';
 import { createPagination, tableLocale } from '@/util/tableStyle'
 import { message } from 'ant-design-vue';
 import Dialog from '@/views/sys/role/components/Dialog.vue';
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import MenuAssign from '@/views/sys/role/components/MenuAssign.vue';
 import {checkPermission} from '@/directives/permission/permission'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
@@ -100,10 +102,8 @@ const columns = [
     { title: '权限字符', dataIndex: 'code', key: 'code', width: 150 },
     { title: '创建时间', dataIndex: 'create_time', key: 'create_time', width: 80,sorter: true},
     { title: '备注', dataIndex: 'remark', key: 'remark', width: 200 },
+    { title: '操作', key: 'action', fixed: 'right', width: 330 },
 ]
-if(checkPermission(['system:roles:update','system:roles:delete'])) {
-    columns.push({ title: '操作', key: 'action', fixed: 'right', width: 330 })
-}
 
 const normalizeUtcTime = (value) => {
     if (!value || typeof value !== 'string') {
@@ -227,10 +227,14 @@ const onSearch = (keyword) => {
 const title = ref("")
 const role_id = ref(-1)
 const open = ref(false)
-const onSaveorChanageRole = (id) => {
+const protectedRole = ref(false)
+const isProtectedRole = row => row.name === 'admin' || row.code === 'admin'
+const canEditRole = row => !isProtectedRole(row) && checkPermission('system:roles:update')
+const openRole = (record) => {
+    protectedRole.value = isProtectedRole(record)
     open.value = true;
-    title.value = "角色修改"
-    role_id.value = id
+    title.value = canEditRole(record) ? '角色修改' : '查看角色'
+    role_id.value = record.id
 }
 const initList = (res) => {
     run({ page: current, size: pageSize.value, keyword: lastSearchKeyword })

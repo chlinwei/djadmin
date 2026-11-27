@@ -39,6 +39,16 @@ async function submit() {
 }
 
 describe('dependency editing dialog', () => {
+  it('shows the stored type without its dictionary and prevents submission in view mode', async () => {
+    await create({ id: 9, source_service_id: 1, target_service_id: 2, ...details, interaction_type_name: '历史类型' })
+    await wrapper.setProps({ types: [], readOnly: true })
+    expect(wrapper.text()).toContain('历史类型')
+    expect(wrapper.findAll('.ant-select').every(field => field.classes().includes('ant-select-disabled'))).toBe(true)
+    expect(wrapper.findAll('button').map(button => button.text().replace(/\s/g, ''))).toContain('关闭')
+    expect(wrapper.text()).not.toContain('保存')
+    await wrapper.vm.$.setupState.save()
+    expect(saveServiceDependency).not.toHaveBeenCalled()
+  })
   it('initializes on first open, defaults strength to unknown and excludes disabled types from new relationships', async () => {
     await create()
     expect(wrapper.findAllComponents(Select)[0].props('value')).toBe(1)

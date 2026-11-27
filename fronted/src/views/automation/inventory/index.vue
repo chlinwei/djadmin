@@ -34,7 +34,10 @@
         @change="onTableChange"
       >
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'enabled'">
+          <template v-if="column.key === 'name' && canViewInventory">
+            <a @click="openEditModal(record)">{{ record.name }}</a>
+          </template>
+          <template v-else-if="column.key === 'enabled'">
             <EnabledSwitch
               :checked="record.enabled === true"
               :disabled="!canUpdateInventory || loading || inventoryStatusUpdatingId === record.id"
@@ -43,9 +46,12 @@
             />
           </template>
           <template v-else-if="column.key === 'resolved_host_count'">
-            <a-button size="small" type="link" @click.stop="openScopeViewer(record)">
-              {{ Number(record.resolved_host_count || 0) }} 台
-            </a-button>
+            <a-tooltip title="查看详情" placement="top">
+              <a-button size="small" type="link" class="detail-action" @click.stop="openScopeViewer(record)">
+                <FontAwesomeIcon :icon="['fas', 'eye']" />
+                <span>详情</span>（{{ Number(record.resolved_host_count || 0) }} 台）
+              </a-button>
+            </a-tooltip>
           </template>
           <template v-else-if="column.key === 'health_status'">
             <a-tooltip :title="record.health_status?.message || ''">
@@ -54,17 +60,12 @@
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
-              <a-tooltip title="查看详情" placement="top">
-                <a-button type="link" size="small" class="detail-action" data-view-inventory @click="openScopeViewer(record)" v-permission="'automation:inventory:view'">
-                  <FontAwesomeIcon :icon="['fas', 'eye']" />
-                  <span>详情</span>
-                </a-button>
-              </a-tooltip>
-              <a-tooltip title="编辑">
-                <a-button size="small" type="primary" @click="openEditModal(record)" v-permission="'automation:inventory:update'">
+              <a-tooltip v-if="canViewInventory && canUpdateInventory" title="编辑" placement="top">
+                <a-button size="small" type="primary" data-inventory-form @click="openEditModal(record)">
                   <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                 </a-button>
               </a-tooltip>
+              <ViewRecordButton v-else-if="canViewInventory" data-inventory-form @click="openEditModal(record)" />
               <a-tooltip title="删除">
                 <a-button
                   class="delBtn"
@@ -84,43 +85,46 @@
     </a-card>
 
     <a-modal
-      :title="isCreateMode ? '新增Inventory' : '编辑Inventory'"
+      :title="inventoryReadOnly ? '查看Inventory' : isCreateMode ? '新增Inventory' : '编辑Inventory'"
       :open="modalVisible"
       :confirmLoading="submitting"
       :width="860"
       @ok="submitForm"
       @cancel="modalVisible = false"
     >
-      <a-form layout="vertical">
+      <template v-if="inventoryReadOnly" #footer><a-button @click="modalVisible = false">关闭</a-button></template>
+      <a-form layout="vertical" :disabled="inventoryReadOnly">
         <a-form-item label="名称" required>
-          <a-input v-model:value="form.name" placeholder="例如：生产环境Inventory" />
+          <a-input :readonly="inventoryReadOnly" v-model:value="form.name" placeholder="例如：生产环境Inventory" />
         </a-form-item>
 
         <a-form-item label="启用状态">
-          <EnabledSwitch v-model:checked="form.enabled" />
+          <EnabledSwitch :read-only="inventoryReadOnly" v-model:checked="form.enabled" />
         </a-form-item>
 
         <a-form-item label="范围预览">
-          <a-input :value="scopePreviewText" readonly />
+          <a-textarea :value="scopePreviewText" :auto-size="{ minRows: 1, maxRows: 6 }" readonly />
         </a-form-item>
 
-        <a-form-item>
-          <a-button @click="openScopeModal">编辑主机范围</a-button>
+        <a-form-item label="主机范围">
+          <ViewRecordButton v-if="inventoryReadOnly" :disabled="false" @click="openScopeModal" />
+          <a-button v-else :disabled="false" @click="openScopeModal">编辑主机范围</a-button>
         </a-form-item>
 
         <a-form-item label="备注">
-          <a-textarea v-model:value="form.remark" :rows="2" />
+          <a-textarea :readonly="inventoryReadOnly" v-model:value="form.remark" :rows="2" />
         </a-form-item>
       </a-form>
     </a-modal>
 
     <a-modal
-      title="编辑 Inventory 范围"
+      :title="inventoryReadOnly ? '查看 Inventory 范围' : '编辑 Inventory 范围'"
       :open="scopeModalVisible"
       :width="1080"
       @ok="scopeModalVisible = false"
       @cancel="scopeModalVisible = false"
     >
+      <template v-if="inventoryReadOnly" #footer><a-button @click="scopeModalVisible = false">关闭</a-button></template>
       <div class="scope-editor__desc">勾选分组只是批量勾选入口，最终保存的是具体主机列表；分组后续新增的主机不会自动进入本 Inventory。</div>
       <a-input
         v-model:value="scopeEditKeyword"
@@ -132,6 +136,7 @@
         <a-tree
           v-if="filteredScopeEditTreeData.length > 0"
           :checked-keys="checkedKeys"
+          :disabled="inventoryReadOnly"
           checkable
           block-node
           :expanded-keys="scopeEditExpandedKeys"
@@ -152,18 +157,6 @@
       :footer="null"
       @cancel="scopeViewVisible = false"
     >
-      <a-descriptions v-if="scopeViewInventory" bordered size="small" :column="2" class="scope-viewer__details">
-        <a-descriptions-item label="名称">{{ scopeViewInventory.name }}</a-descriptions-item>
-        <a-descriptions-item label="启用状态">
-          <EnabledSwitch :checked="scopeViewInventory.enabled" read-only />
-        </a-descriptions-item>
-        <a-descriptions-item label="可用主机">{{ Number(scopeViewInventory.resolved_host_count || 0) }} 台</a-descriptions-item>
-        <a-descriptions-item label="健康状态">
-          <a-tag :color="getHealthTagColor(scopeViewInventory)">{{ scopeViewInventory.health_status?.label || '未知' }}</a-tag>
-          <span>{{ scopeViewInventory.health_status?.message || '' }}</span>
-        </a-descriptions-item>
-        <a-descriptions-item label="备注" :span="2">{{ scopeViewInventory.remark || '-' }}</a-descriptions-item>
-      </a-descriptions>
       <div class="scope-editor__desc">仅展示当前 Inventory 执行范围（主机组与主机），未命中节点已隐藏</div>
       <div class="scope-viewer__summary">{{ scopeViewSummary }}</div>
       <a-input
@@ -202,6 +195,7 @@
 </template>
 
 <script setup>
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
@@ -209,6 +203,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { assertBatchDeleteSucceeded, openDeleteConfirm } from '@/util/deleteConfirm'
 import { checkPermission } from '@/directives/permission/permission'
 import {
+  getInventory,
   getInventoryList,
   createInventory,
   batchDeleteInventories,
@@ -229,7 +224,8 @@ const inventoryStatusUpdatingId = ref(null)
 const modalVisible = ref(false)
 const scopeModalVisible = ref(false)
 const scopeViewVisible = ref(false)
-const scopeViewInventory = ref(null)
+const detailHosts = ref([])
+const selectedHostNames = ref({})
 const scopeViewTitle = ref('查看 Inventory 范围')
 const scopeViewSummary = ref('')
 const scopeViewTreeData = ref([])
@@ -238,11 +234,12 @@ const scopeEditKeyword = ref('')
 const isCreateMode = ref(true)
 const editingId = ref(null)
 const keyword = ref('')
+const canViewInventory = computed(() => checkPermission('automation:inventory:view'))
+const inventoryReadOnly = computed(() => !isCreateMode.value && !canUpdateInventory.value)
 const canUpdateInventory = computed(() => checkPermission('automation:inventory:update'))
 
 const records = ref([])
 const groupTreeData = ref([])
-const groupNameMap = ref({})
 const groupPathMap = ref({})
 const hostOptions = ref([])
 const scopeLoadState = ref('loading')
@@ -259,7 +256,7 @@ const form = reactive({
 
 const columns = [
   { title: '名称', dataIndex: 'name', key: 'name', width: 260 },
-  { title: '可用主机', dataIndex: 'resolved_host_count', key: 'resolved_host_count', width: 120 },
+  { title: '可用主机', dataIndex: 'resolved_host_count', key: 'resolved_host_count', width: 160 },
   { title: '健康状态', dataIndex: 'health_status', key: 'health_status', width: 120 },
   { title: '状态', dataIndex: 'enabled', key: 'enabled', width: 100 },
   { title: '备注', dataIndex: 'remark', key: 'remark' },
@@ -281,11 +278,20 @@ function getHealthTagColor(record) {
 }
 
 const scopePreviewText = computed(() => {
-  const hostCount = form.selected_host_ids?.length || 0
-  return hostCount > 0 ? `已选 ${hostCount} 台主机` : '未选择范围（0台主机）'
+  const labels = new Map(detailHosts.value.map(h => [h.host_id, [h.group_name, h.host_name || h.host_ip].filter(Boolean).join(' / ')]))
+  if (!inventoryReadOnly.value) {
+    for (const h of hostOptions.value) labels.set(h.id, [groupPathMap.value[h.group_id], formatInventoryHostDisplayName(h)].filter(Boolean).join(' / '))
+  }
+  return form.selected_host_ids.map(id => labels.get(id) || selectedHostNames.value[id] || `主机 #${id}`).join('\n') || '未选择范围（0台主机）'
 })
 
 const scopeEditTreeData = computed(() => {
+  if (inventoryReadOnly.value) {
+    const byId = new Map(detailHosts.value.map(host => [host.host_id, host]))
+    return savedScopeTree(form.selected_host_ids.map(id => byId.get(id) || {
+      host_id: id, host_name: selectedHostNames.value[id] || `主机 #${id}`, group_name: '未解析',
+    }))
+  }
   return buildViewerTreeWithHosts(groupTreeData.value, hostOptions.value)
 })
 
@@ -479,56 +485,6 @@ const filteredScopeViewTreeData = computed(() => {
 
 const scopeViewExpandedKeys = computed(() => collectGroupTreeKeys(filteredScopeViewTreeData.value))
 
-function toNumericSet(values) {
-  const set = new Set()
-  ;(Array.isArray(values) ? values : []).forEach((item) => {
-    const num = Number(item)
-    if (Number.isInteger(num) && num > 0) {
-      set.add(num)
-    }
-  })
-  return set
-}
-
-function parseGroupIdFromNode(node) {
-  const keyText = String(node?.key || '')
-  if (!keyText.startsWith('group-')) {
-    return null
-  }
-  const groupId = Number(keyText.slice('group-'.length))
-  return Number.isInteger(groupId) && groupId > 0 ? groupId : null
-}
-
-function pruneTreeToCheckedNodes(nodes, selectedGroupSet, selectedHostSet, inheritedGroupSelected = false) {
-  const normalizedNodes = Array.isArray(nodes) ? nodes : []
-  const result = []
-
-  normalizedNodes.forEach((node) => {
-    if (!node || typeof node !== 'object') {
-      return
-    }
-
-    const keyText = String(node.key || '')
-    if (keyText.startsWith('host-')) {
-      const hostId = Number(keyText.slice('host-'.length))
-      const keepByHost = Number.isInteger(hostId) && selectedHostSet.has(hostId)
-      if (keepByHost || inheritedGroupSelected) {
-        result.push({ ...node, children: undefined })
-      }
-      return
-    }
-
-    const groupId = parseGroupIdFromNode(node)
-    const groupSelected = inheritedGroupSelected || (groupId !== null && selectedGroupSet.has(groupId))
-    const children = pruneTreeToCheckedNodes(node.children || [], selectedGroupSet, selectedHostSet, groupSelected)
-    if (children.length > 0) {
-      result.push({ ...node, children })
-    }
-  })
-
-  return result
-}
-
 function getGroupIdByNode(node) {
   const key = String(node?.key || '')
   if (!key.startsWith('group-')) {
@@ -602,22 +558,25 @@ function canUseScope() {
   return false
 }
 
-function openScopeViewer(record) {
-  const selectedHostIds = Array.isArray(record?.selected_host_ids) ? record.selected_host_ids : []
-  if (selectedHostIds.length > 0 && !canUseScope()) return
-  scopeViewInventory.value = record
-  scopeViewKeyword.value = ''
-
-  scopeViewTitle.value = `查看 Inventory 详情 - ${record?.name || ''}`
-
-  if (selectedHostIds.length > 0) {
-    const treeWithHosts = buildViewerTreeWithHosts(groupTreeData.value, hostOptions.value)
-    const prunedTree = pruneTreeToCheckedNodes(treeWithHosts, new Set(), toNumericSet(selectedHostIds), false)
-    scopeViewTreeData.value = appendGroupHostCount(prunedTree)
-  } else {
-    scopeViewTreeData.value = []
+function savedScopeTree(hosts) {
+  const groups = new Map()
+  for (const host of hosts) {
+    const key = `group-${host.group_id ?? host.group_name ?? 'none'}`
+    if (!groups.has(key)) groups.set(key, { key, title: host.group_name || '未分组', children: [] })
+    groups.get(key).children.push({
+      key: `host-${host.host_id}`, host_id: host.host_id, isLeaf: true,
+      title: host.host_name && host.host_ip && host.host_name !== host.host_ip ? `${host.host_name}(${host.host_ip})` : host.host_name || host.host_ip,
+    })
   }
+  return appendGroupHostCount([...groups.values()])
+}
 
+async function openScopeViewer(record) {
+  if (!canViewInventory.value) return
+  const detail = (await getInventory(record.id)).data.data
+  scopeViewTitle.value = `实际主机清单 - ${detail.name}`
+  scopeViewKeyword.value = ''
+  scopeViewTreeData.value = savedScopeTree(detail.resolved_hosts)
   const scopeStats = collectTreeScopeStats(scopeViewTreeData.value)
   scopeViewSummary.value = `当前范围：${scopeStats.hostCount}台主机`
 
@@ -625,7 +584,7 @@ function openScopeViewer(record) {
 }
 
 function openScopeModal() {
-  if (!canUseScope()) return
+  if (!inventoryReadOnly.value && !canUseScope()) return
   scopeEditKeyword.value = ''
   scopeModalVisible.value = true
 }
@@ -660,6 +619,7 @@ function collectVisibleHostIds(nodes) {
 }
 
 function onScopeCheck(nextChecked) {
+  if (inventoryReadOnly.value) return
   const keys = Array.isArray(nextChecked) ? nextChecked : nextChecked?.checked || []
   // 只保存主机 ID：分组勾选只是批量入口，不能让之后新入组的主机自动进入 Inventory。
   const checkedInView = keys
@@ -682,18 +642,9 @@ function buildGroupTree(nodes) {
   }))
 }
 
-function flattenGroupMap(nodes, collector = {}) {
-  ;(nodes || []).forEach((node) => {
-    collector[node.id] = node.name
-    flattenGroupMap(node.children || [], collector)
-  })
-  return collector
-}
-
 async function loadGroupTree() {
   const res = await getAutomationGroupTree()
   const raw = res?.data?.data || []
-  groupNameMap.value = flattenGroupMap(raw, {})
   groupPathMap.value = flattenGroupPathMap(raw, {})
   groupTreeData.value = buildGroupTree(raw)
 }
@@ -768,14 +719,23 @@ function applyRouteSearchQuery() {
   return true
 }
 
-function openCreateModal() {
+async function openCreateModal() {
+  if (!checkPermission('automation:inventory:create')) return
+  await loadScopeCandidates()
+  detailHosts.value = []
+  selectedHostNames.value = {}
   isCreateMode.value = true
   editingId.value = null
   resetForm()
   modalVisible.value = true
 }
 
-function openEditModal(record) {
+async function openEditModal(record) {
+  if (!canViewInventory.value) return
+  record = (await getInventory(record.id)).data.data
+  detailHosts.value = record.resolved_hosts
+  selectedHostNames.value = record.selected_host_names
+  if (canUpdateInventory.value) await loadScopeCandidates()
   isCreateMode.value = false
   editingId.value = record.id
   form.name = record.name || ''
@@ -787,6 +747,7 @@ function openEditModal(record) {
 }
 
 async function submitForm() {
+  if (inventoryReadOnly.value || !checkPermission(isCreateMode.value ? 'automation:inventory:create' : 'automation:inventory:update')) return
   if (!canUseScope()) return
   if (!form.name || !String(form.name).trim()) {
     message.error('请输入名称')
@@ -873,7 +834,8 @@ function onTableChange(page) {
   loadInventories(false)
 }
 
-onMounted(async () => {
+async function loadScopeCandidates() {
+  scopeLoadState.value = 'loading'
   try {
     await Promise.all([loadGroupTree(), loadAllHostOptions()])
     scopeLoadState.value = 'ready'
@@ -881,6 +843,9 @@ onMounted(async () => {
     scopeLoadState.value = 'failed'
     message.error(`主机范围加载失败：${error?.message || '请刷新页面后重试'}`)
   }
+}
+
+onMounted(async () => {
   applyRouteSearchQuery()
   await loadInventories(true)
 })
@@ -942,7 +907,4 @@ watch(
   margin-bottom: 10px;
 }
 
-.scope-viewer__details {
-  margin-bottom: 16px;
-}
 </style>

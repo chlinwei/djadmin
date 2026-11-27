@@ -64,6 +64,27 @@ function mountPage() {
 }
 
 describe('日志存储页面', () => {
+  it('查看模式保留脱敏连接配置和体检，不保存也不发起连接测试', async () => {
+    const store = (await import('@/store')).default
+    const perms = store.state.perms
+    store.state.perms = ['monitor:view']
+    const wrapper = mountPage()
+    try {
+      await flushPromises()
+      wrapper.vm.openDialog({ ...CLUSTER, password_configured: true })
+      await flushPromises()
+      const dialog = document.querySelector('.ant-modal-content')
+      expect(dialog.querySelector('input[type="password"]').value).toBe('******')
+      expect([...dialog.querySelectorAll('input, textarea, [role="switch"]')].every(el => el.disabled)).toBe(true)
+      expect(dialog.querySelector('.ant-modal-footer').textContent.replace(/\s/g, '')).toBe('关闭')
+      expect(wrapper.text()).toContain('链路体检')
+      await wrapper.vm.submit()
+      await wrapper.vm.testConnection(CLUSTER)
+      const api = await import('@/api/monitor')
+      expect(api.saveElasticsearchCluster).not.toHaveBeenCalled()
+      expect(api.testElasticsearchCluster).not.toHaveBeenCalled()
+    } finally { wrapper.unmount(); store.state.perms = perms }
+  })
   it('加载集群列表后不会陷入渲染循环', async () => {
     const wrapper = mountPage()
     await flushPromises()

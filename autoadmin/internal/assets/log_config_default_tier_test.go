@@ -25,6 +25,7 @@ func TestApplicationServiceLogConfigCarriesServiceDefaultTier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create sql mock: %v", err)
 	}
+
 	defer database.Close()
 	service, err := NewService(NewRepository(database), "", "test-django-secret")
 	if err != nil {
@@ -43,6 +44,8 @@ func TestApplicationServiceLogConfigCarriesServiceDefaultTier(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("FROM assets_application_service")).
 		WithArgs(int64(15)).
 		WillReturnRows(sqlmock.NewRows([]string{"code"}).AddRow("nginx"))
+	mock.ExpectQuery("ListSelectedLogTierNames").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(4, "标准档"))
 
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
@@ -61,11 +64,34 @@ func TestApplicationServiceLogConfigCarriesServiceDefaultTier(t *testing.T) {
 	if payload.Data.LogRetentionTier == nil || *payload.Data.LogRetentionTier != 4 {
 		t.Fatalf("响应应带服务默认档位 4，得到 %+v（body=%s）", payload.Data.LogRetentionTier, recorder.Body.String())
 	}
-	if !payload.Data.LogCollectionEnabled {
+	if payload.Data.TierNames[4] != "标准档" || !payload.Data.LogCollectionEnabled {
 		t.Fatalf("总开关应照常带上：%s", recorder.Body.String())
 	}
 	if err = mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("database expectations: %v", err)
+	}
+}
+
+func TestSelectedLogFilterNamesIncludeInheritedAndIgnoreExplicitOff(t *testing.T) {
+	pool, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	config := ServiceLogConfig{Logs: []ServiceTemplateLog{
+		{TemplateFilterIncludeRuleID: new(int64(7)), CollectionExcludeFilterRuleID: new(int64(8))},
+		{TemplateFilterIncludeRuleID: new(int64(7)), CollectionFilterRuleID: new(int64(0))},
+	}}
+	mock.ExpectQuery("ListSelectedLogFilterNames").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(7, "保留错误").AddRow(8, "排除噪音"))
+	if err := NewRepository(pool).loadSelectedLogNames(context.Background(), &config); err != nil {
+		t.Fatal(err)
+	}
+	if len(config.FilterNames) != 2 || config.FilterNames[7] != "保留错误" || config.FilterNames[8] != "排除噪音" {
+		t.Fatal(config.FilterNames)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 

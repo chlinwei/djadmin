@@ -51,7 +51,7 @@ func TestNotificationStatusFromMatchesExpectedPriority(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			got := notificationStatusFrom(testCase.count, testCase.failed, testCase.active, testCase.delivery)
+			got := notificationStatusFrom(testCase.count, testCase.failed, testCase.active, testCase.delivery, 0, 0)
 			if got != testCase.want {
 				t.Fatalf("notificationStatusFrom(%d,%d,%d,%d) = %q, want %q", testCase.count, testCase.failed, testCase.active, testCase.delivery, got, testCase.want)
 			}

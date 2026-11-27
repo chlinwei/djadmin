@@ -183,6 +183,8 @@
       </template>
       <template v-else>
         当前范围共 {{ metrics.services }} 个服务、{{ metrics.managedPairs }} 个已纳管的服务与主机组合。
+        这里只读汇总；配置写操作仍然以逻辑服务为单位。请下钻到具体服务修改采集开关、档位或过滤条件。
+        有执行权限时可在汇总表上方确认下发已有配置差异；下发不会修改服务配置。
       </template>
     </div>
   </div>
@@ -200,7 +202,7 @@ const props = defineProps({
   dimension: { type: Object, required: true },
   rows: { type: Array, default: () => [] },
   metrics: { type: Object, default: () => ({}) },
-  // 服务行的档位下拉候选（id → 名称），由调用方给（页面本来就有这份数据）。
+  // 只含当前汇总范围内被服务选用的档位，不是编辑候选。
   retentionTiers: { type: Array, default: () => [] },
   // 最近写入的窗口说明（服务行的"最近写入"列标题用它，如"最近 30 天写入"）。
   recentDocsTitle: { type: String, default: '最近写入' },
@@ -272,7 +274,7 @@ const columns = computed(() => {
 })
 
 function tierLabel(tierId) {
-  if (tierId === null || tierId === undefined) return '继承服务默认'
+  if (tierId === null || tierId === undefined) return '未配置服务默认档位'
   const tier = props.retentionTiers.find((item) => item.id === tierId)
   return tier ? tier.name : `档位 #${tierId}`
 }

@@ -34,7 +34,7 @@
           </a-space>
           <a-radio-group v-model:value="view" option-type="button" :options="[{ label: '架构图', value: 'graph' }, { label: '关系列表', value: 'list' }]" />
         </div>
-        <ServiceDependencyGraph v-if="view === 'graph'" :nodes="visibleTopology.nodes" :edges="visibleTopology.edges" :title="scopeTitle" :layout-key="layoutKey" @select-node="showNode" @select-edge="showRelation" />
+        <ServiceDependencyGraph v-if="view === 'graph'" :nodes="visibleTopology.nodes" :edges="visibleTopology.edges" :title="scopeTitle" :layout-key="layoutKey" @select-node="showNode" @select-edge="editRelation" />
         <template v-else>
           <a-space class="batch-toolbar">
             <a-tooltip v-if="canDelete" title="删除" placement="top"><a-button class="delBtn" size="small" type="primary" danger :disabled="!selectedKeys.length || deleting" :loading="deleting" @click="deleteRelations(selectedRecords)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /><span>&nbsp;批量删除</span></a-button></a-tooltip>
@@ -46,10 +46,11 @@
               <template v-else-if="column.key === 'target'"><a-button type="link" @click="showNodeById(record.target_service_id)">{{ record.target_name }}</a-button></template>
               <template v-else-if="column.key === 'type'">{{ record.interaction_type_name }}<a-tag v-if="!record.interaction_type_enabled">已停用</a-tag></template>
               <template v-else-if="column.key === 'strength'"><a-tag :color="record.strength === 'strong' ? 'blue' : record.strength === 'weak' ? 'orange' : 'default'">{{ strengthLabels[record.strength] }}</a-tag></template>
-              <template v-else-if="column.key === 'function'"><a-button type="link" @click="showRelation(record)">{{ record.function_scope }}</a-button></template>
+              <template v-else-if="column.key === 'function'"><a-button type="link" @click="editRelation(record)">{{ record.function_scope }}</a-button></template>
               <template v-else-if="column.key === 'action'">
                 <a-space>
-                  <a-tooltip v-if="canUpdate" title="编辑" placement="top"><a-button size="small" type="primary" :disabled="deleting || !!typesError" @click="editRelation(record)"><FontAwesomeIcon :icon="['fas', 'pen-to-square']" /></a-button></a-tooltip>
+                  <a-tooltip v-if="canEditRelation(record)" title="编辑" placement="top"><a-button size="small" type="primary" :disabled="deleting" @click="editRelation(record)"><FontAwesomeIcon :icon="['fas', 'pen-to-square']" /></a-button></a-tooltip>
+                  <ViewRecordButton v-else :disabled="deleting" @click="editRelation(record)" />
                   <a-tooltip v-if="canDelete" title="删除" placement="top"><a-button class="delBtn" size="small" type="primary" danger :disabled="deleting" @click="deleteRelations([record])"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip>
                 </a-space>
               </template>
@@ -58,7 +59,7 @@
         </template>
       </template>
     </a-spin>
-    <ServiceDependencyDialog v-if="dialogOpen" v-model:open="dialogOpen" :record="editingRelation" :services="snapshot?.nodes || []" :types="types" :initial-source="treeScope.service" @saved="onRelationSaved" />
+    <ServiceDependencyDialog v-if="dialogOpen" v-model:open="dialogOpen" :record="editingRelation" :read-only="editingRelation ? !canEditRelation(editingRelation) : !canCreate" :services="snapshot?.nodes || []" :types="types" :initial-source="treeScope.service" @saved="onRelationSaved" />
     <ServiceDependencyTypes v-if="typesOpen" v-model:open="typesOpen" @changed="onTypesChanged" />
     <a-drawer :open="!!selectedNode" :title="selectedNode?.name || '服务状态'" :width="580" @close="selectedNode = null">
       <template v-if="selectedNode">
@@ -78,32 +79,16 @@
         </a-card>
       </template>
     </a-drawer>
-    <a-drawer :open="!!selectedRelation" title="依赖关系详情" :width="520" @close="selectedRelation = null">
-      <template v-if="selectedRelation">
-        <a-descriptions :column="1" bordered>
-          <a-descriptions-item label="方向">{{ selectedRelation.source_name }} → {{ selectedRelation.target_name }}</a-descriptions-item>
-          <a-descriptions-item label="交互类型">{{ selectedRelation.interaction_type_name }}</a-descriptions-item>
-          <a-descriptions-item label="依赖强度">{{ strengthLabels[selectedRelation.strength] }}</a-descriptions-item>
-          <a-descriptions-item label="功能范围">{{ selectedRelation.function_scope }}</a-descriptions-item>
-          <a-descriptions-item label="协议 / 通道">{{ selectedRelation.protocol || '未填写' }}</a-descriptions-item>
-          <a-descriptions-item label="故障影响">{{ selectedRelation.failure_impact || '未填写' }}</a-descriptions-item>
-          <a-descriptions-item label="故障处理说明">{{ selectedRelation.fallback_plan || '未填写' }}</a-descriptions-item>
-        </a-descriptions>
-        <a-space style="margin-top: 16px">
-          <a-tooltip v-if="canUpdate" title="编辑" placement="top"><a-button size="small" type="primary" :disabled="!!typesError" @click="editRelation(selectedRelation)"><FontAwesomeIcon :icon="['fas', 'pen-to-square']" /></a-button></a-tooltip>
-          <a-tooltip v-if="canDelete" title="删除" placement="top"><a-button class="delBtn" size="small" type="primary" danger :disabled="deleting" @click="deleteRelations([selectedRelation])"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip>
-        </a-space>
-      </template>
-    </a-drawer>
   </section>
 </template>
 
 <script setup>
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import { getApplicationServiceList, getBusinessEnvironmentList, getBusinessSystemList, getProjectList } from '@/api/assets/application'
-import { deleteServiceDependencies, getServiceDependencyTopology, getServiceDependencyTypes } from '@/api/assets/serviceDependencies'
+import { deleteServiceDependencies, getServiceDependency, getServiceDependencyTopology, getServiceDependencyTypes } from '@/api/assets/serviceDependencies'
 import { checkPermission } from '@/directives/permission/permission'
 import store from '@/store'
 import { assertBatchDeleteSucceeded, openDeleteConfirm } from '@/util/deleteConfirm'
@@ -145,11 +130,15 @@ const dialogOpen = ref(false)
 const typesOpen = ref(false)
 const editingRelation = ref(null)
 const selectedNode = ref(null)
-const selectedRelation = ref(null)
+const snapshotServiceIds = computed(() => new Set((snapshot.value?.nodes || []).map(node => node.id)))
+// If a newer detail moved either endpoint out of this snapshot, the old edit scope is no longer valid.
+const canEditRelation = record => canUpdate.value && !typesError.value &&
+  snapshotServiceIds.value.has(record.source_service_id) && snapshotServiceIds.value.has(record.target_service_id)
 const selectedKeys = ref([])
 const pagination = reactive(createPagination())
 const deleting = ref(false)
 let snapshotGeneration = 0
+let dialogGeneration = 0
 let typesGeneration = 0
 let catalogGeneration = 0
 let alive = true
@@ -178,7 +167,12 @@ const selectionHint = computed(() => {
   if (treeScope.value.environment && !environmentOptions.value.some((option) => option.value === treeScope.value.environment)) return '当前节点环境不在可用范围，请刷新服务树并检查服务归属。'
   return '请先选择项目与环境，或在左侧选择具体环境 / 服务。'
 })
-const allTypeOptions = computed(() => types.value.map((item) => ({ value: item.id, label: `${item.name}${item.enabled ? '' : '（已停用）'}` })))
+const allTypeOptions = computed(() => {
+  // Read-only filtering only needs the types represented in the snapshot, not the editing dictionary.
+  const rows = [...new Map((snapshot.value?.edges || []).map(edge =>
+    [edge.interaction_type_id, { id: edge.interaction_type_id, name: edge.interaction_type_name, enabled: edge.interaction_type_enabled }])).values()]
+  return rows.map(item => ({ value: item.id, label: `${item.name}${item.enabled ? '' : '（已停用）'}` }))
+})
 const visibleTopology = computed(() => snapshot.value ? selectDependencyTopology(snapshot.value, treeScope.value, filters) : { nodes: [], edges: [] })
 const scopeTitle = computed(() => `${projects.value.find((item) => item.id === projectId.value)?.name || '项目'} / ${environments.value.find((item) => item.id === environmentId.value)?.name || '环境'} / ${props.scope.nodeTitle || '全部服务'}`)
 const selectedRecords = computed(() => visibleTopology.value.edges.filter((edge) => selectedKeys.value.includes(edge.id)))
@@ -202,6 +196,7 @@ const columns = [
 const allPages = (loader) => fetchAllPages(async (params) => dependencyPage(await loader(params)))
 
 async function refreshTypes() {
+  if (!canCreate.value && !canUpdate.value) return
   const current = ++typesGeneration
   typesError.value = ''
   try {
@@ -221,7 +216,7 @@ async function loadCatalog() {
   catalogError.value = ''
   try {
     const [projectRows, environmentRows, businessRows, serviceRows] = await Promise.all([
-      allPages(getProjectList), allPages(getBusinessEnvironmentList), allPages(getBusinessSystemList), allPages(getApplicationServiceList), refreshTypes(),
+      allPages(getProjectList), allPages(getBusinessEnvironmentList), allPages(getBusinessSystemList), allPages(getApplicationServiceList),
     ])
     if (current !== catalogGeneration) return
     projects.value = projectRows
@@ -239,9 +234,9 @@ async function loadCatalog() {
 }
 
 function syncTreeScope() {
+  dialogGeneration++
   dialogOpen.value = false
   selectedNode.value = null
-  selectedRelation.value = null
   if (!catalogReady.value) return
   projectId.value = treeScope.value.project
   environmentId.value = treeScope.value.environment
@@ -255,7 +250,6 @@ async function refresh(prefix = '', preservePositions = true) {
   operationError.value = ''
   selectedKeys.value = []
   selectedNode.value = null
-  selectedRelation.value = null
   if (!ready.value) { snapshot.value = null; loadingSnapshot.value = false; return }
   loadingSnapshot.value = true
   const params = { project: projectId.value, environment: environmentId.value }
@@ -275,18 +269,30 @@ async function refresh(prefix = '', preservePositions = true) {
   } finally { if (current === snapshotGeneration) loadingSnapshot.value = false }
 }
 
-function editRelation(record) {
-  editingRelation.value = record
-  selectedRelation.value = null
-  dialogOpen.value = true
+async function editRelation(record) {
+  if (deleting.value || (!record && (!canCreate.value || typesError.value))) return
+  const scopeGeneration = snapshotGeneration
+  const current = ++dialogGeneration
+  const isCurrent = () => alive && current === dialogGeneration && scopeGeneration === snapshotGeneration
+  operationError.value = ''
+  try {
+    const detail = record ? dependencyData(await getServiceDependency(record.id)) : null
+    if (!isCurrent()) return
+    if (detail ? canEditRelation(detail) : canCreate.value) await refreshTypes()
+    if (!isCurrent() || (!record && typesError.value)) return
+    editingRelation.value = detail
+    selectedNode.value = null
+    dialogOpen.value = true
+  } catch (error) {
+    if (isCurrent()) operationError.value = error.message || '获取依赖关系失败'
+  }
 }
-function showNode(node) { selectedRelation.value = null; selectedNode.value = node }
+function showNode(node) { dialogGeneration++; selectedNode.value = node }
 function showNodeById(id) { const node = snapshot.value?.nodes.find((item) => item.id === id); if (node) showNode(node) }
-function showRelation(edge) { selectedNode.value = null; selectedRelation.value = edge }
 function onRelationSaved() { refresh('关系已保存，但刷新失败：') }
 function onTypesChanged() {
-  // Edges embed type labels and enabled flags, so updating only dropdown options would leave the list stale.
-  return Promise.all([refreshTypes(), refresh('类型更新已处理，但拓扑刷新失败：')])
+  // Filter labels come from edges; refreshing only the dictionary would leave the list stale.
+  return refresh('类型更新已处理，但拓扑刷新失败：')
 }
 function handleTableChange(page) { Object.assign(pagination, { current: page.current, pageSize: page.pageSize }) }
 

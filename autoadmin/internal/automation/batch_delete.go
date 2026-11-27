@@ -49,6 +49,9 @@ func (handler *Handler) BatchDeletePlaybooks(context *gin.Context) {
 		if playbook.Category == playbookCategoryAgent {
 			return apperror.New(apperror.CodeInvalidArgument, "该模板是 Agent 安装/更新的唯一配置源，禁止删除")
 		}
+		if playbook.Category == "software_package" {
+			return apperror.New(apperror.CodeInvalidArgument, packageTemplateReadOnly)
+		}
 		affected, err := db.New(handler.db).DeleteAutomationPlaybook(context, id)
 		if err != nil {
 			return translateDeleteReference(err, "模板仍被其他资源引用，请先调整关联配置后再删除")

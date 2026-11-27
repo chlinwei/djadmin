@@ -1,181 +1,78 @@
 <template>
-    <div>
-
-        <a-modal cancelText="取消" okText="保存" destroyOnClose :open="props.open" v-model:title="props.title"
-            v-model:item_id="props.item_id" @ok="handleOk" @cancel="handleCancel">
-
-            <a-spin :spinning="loading">
-            </a-spin>
-            <a-form v-if="!loading" :label-col="{ span: 6 }" :wrapper-col="{ span: 18 }" :model="form" ref="formRef" name="basic"  autocomplete="off" :rules="get_rules(form)">
-                <a-form-item name="name" label="凭证名称" text-align="right" >
-                    <a-input v-model:value="form.name" />
+    <a-modal :open="open" :title="title" destroy-on-close @cancel="close">
+        <a-spin :spinning="loading">
+            <a-form v-if="!loading" ref="formRef" :model="form" :label-col="{ span: 6 }" :wrapper-col="{ span: 18 }" autocomplete="off">
+                <a-form-item name="name" label="凭证名称" :rules="[{ required: true, message: '必填字段' }]">
+                    <a-input v-model:value="form.name" :readonly="readOnly" />
                 </a-form-item>
                 <a-form-item name="auth_type" label="认证类型">
-                    <a-radio-group v-model:value="form.auth_type">
-                        <a-radio :value="1">密码</a-radio>
-                        <a-radio :value="2">密钥</a-radio>
+                    <a-radio-group v-model:value="form.auth_type" :disabled="readOnly">
+                        <a-radio :value="1">密码</a-radio><a-radio :value="2">密钥</a-radio>
                     </a-radio-group>
                 </a-form-item>
-                
-                <a-form-item name="username" label="用户名">
-                    <a-input v-model:value="form.username" />
-                </a-form-item>
-            
+                <a-form-item name="username" label="用户名"><a-input v-model:value="form.username" :readonly="readOnly" /></a-form-item>
+                <a-form-item name="port" label="端口"><a-input-number v-model:value="form.port" :disabled="readOnly" :min="1" :max="65535" /></a-form-item>
                 <a-form-item v-if="form.auth_type === 2" name="private_key" label="SSH私钥">
-                    <a-textarea v-model:value="form.private_key" />
+                    <a-textarea v-model:value="form.private_key" :readonly="readOnly" />
                 </a-form-item>
-                <a-form-item v-if="form.auth_type === 1" name="password" label="密码">
-                    <a-input-password v-model:value="form.password" />
+                <a-form-item v-else name="password" label="密码">
+                    <a-input-password v-model:value="form.password" :readonly="readOnly" :visibility-toggle="!readOnly" />
                 </a-form-item>
-                
-                <a-form-item name="remark" label="备注">
-                    <a-textarea v-model:value="form.remark" />
-                </a-form-item>
+                <a-form-item name="remark" label="备注"><a-textarea v-model:value="form.remark" :readonly="readOnly" /></a-form-item>
             </a-form>
-        </a-modal>
-    </div>
+        </a-spin>
+        <template #footer>
+            <a-button @click="close">{{ readOnly ? '关闭' : '取消' }}</a-button>
+            <a-button v-if="!readOnly" type="primary" :disabled="loading" :loading="saving" @click="save">保存</a-button>
+        </template>
+    </a-modal>
 </template>
+
 <script setup>
-import { ref } from 'vue';
-import { watch } from 'vue';
-const formRef = ref(null)
+import { ref, watch } from 'vue'
+import { message } from 'ant-design-vue'
+import { SaveOrCreateCredential, getCredentailById } from '@/api/assets/credential/index'
+
+const props = defineProps({ open: Boolean, readOnly: Boolean, title: String, item_id: Number })
+const emit = defineEmits(['update:open', 'initList'])
+const empty = () => ({ id: -1, name: '', username: '', auth_type: 1, port: 22, password: '', private_key: null, remark: '' })
+const form = ref(empty())
+const formRef = ref()
 const loading = ref(false)
-const props = defineProps(
-    {
-        open: {
-            type: Boolean,
-            default: false,
-            required: true
-        },
-        title: {
-            type: String,
-            default: '错误界面',
-            required: true
-        },
-        item_id: {
-            type: Number,
-            default: -1,
-            required: true
-        }
-    }
-)
+const saving = ref(false)
+const close = () => emit('update:open', false)
 
+watch(() => [props.open, props.item_id], async ([open, id], _, onCleanup) => {
+    let current = true
+    onCleanup(() => { current = false })
+    form.value = empty()
+    loading.value = open && id !== -1
+    if (!loading.value) return
+    try {
+        const { data } = await getCredentailById(id)
+        if (!current) return
+        if (data.code !== 200) throw new Error(data.msg)
+        const row = data.data
+        // The backend recognizes this mask as “keep existing”; never copy secret material into the form.
+        form.value = { ...row, password: row.password ? '******' : '', private_key: row.private_key ? '******' : null }
+    } catch (error) {
+        if (current) { message.error(error.message || '获取凭证失败'); close() }
+    } finally { if (current) loading.value = false }
+}, { immediate: true })
 
-const get_rules = (obj) => {
-    var add_rules = {
-        name: [
-            { required: true, message: "必填字段" }
-        ],
-    }
-    var edit_rules = {
-        name: [
-            { required: true, message: "必填字段" }
-        ]
-    }
-    if(obj.id == -1) {
-        return add_rules
-    }else {
-        return edit_rules
-    }
+async function save() {
+    if (!props.open || props.readOnly || loading.value || saving.value) return
+    saving.value = true
+    try {
+        await formRef.value.validate()
+        if (!props.open || props.readOnly) return
+        const { data } = await SaveOrCreateCredential({ ...form.value })
+        if (data.code !== 200) throw new Error(data.msg)
+        message.success('保存凭证成功')
+        emit('initList')
+        close()
+    } catch (error) {
+        if (!error.errorFields) message.error(error.message || '保存凭证失败')
+    } finally { saving.value = false }
 }
-
-
-
-const form = ref({
-    id: -1,
-    name: '',
-    auth_type: 1,
-    password: '',
-    private_key: null,
-    remark: '',
-})
-
-
-const emits = defineEmits(['update:open', 'initList'])
-import { SaveOrCreateCredential } from '@/api/assets/credential/index.js';
-import {getCredentailById} from '@/api/assets/credential/index'
-const getItemById  = (id) =>{
-    return getCredentailById(id)
-}
-
-const handleOk = (e) => {
-    const res = formRef.value?.validate().then((r1) => {
-        var  obj = form.value;
-        if (obj.id == -1) {
-            SaveOrCreateCredential(obj).then(result => {
-                message.success("新增credential成功");
-                emits('initList')
-                emits('update:open', false)
-            })
-        } else {
-            SaveOrCreateCredential(obj).then(result => {
-                message.success("保存credential成功");
-                emits('initList')
-                emits('update:open', false);
-            }).catch(handleApiError)
-        }
-    }).catch(() => {})
-
-};
-
-
-
-watch(
-    () => props.open,
-    () => {
-
-        let id = props.item_id
-        if (id === -1) {
-            // 添加credential
-            form.value = {
-                id: -1,
-                name: '',
-                username: '',
-                auth_type: 1,
-                port: 22,
-                password: '',
-                private_key: null,
-                remark: '',
-            }
-        } else {
-            if (props.open) {
-                // 进入编辑界面
-                loading.value = true
-                getItemById(id).then(res => {
-                    form.value = res.data.data
-                }).finally(() => {
-                    loading.value = false
-                })
-            } else {
-                // 关闭编辑框框
-                form.value = {
-                    id: -1,
-                    name: '',
-                    username: '',
-                    auth_type: 1,
-                    port: 22,
-                    password: '',
-                    private_key: null,
-                    remark: '',
-                }
-            }
-        }
-    }
-
-)
-
-
-
-import { message } from 'ant-design-vue';
-// 取消窗口
-const handleCancel = () => {
-    emits('update:open', false);
-}
-
-
-
 </script>
-
-<style scoped>
-
-</style>

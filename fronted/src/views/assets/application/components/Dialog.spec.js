@@ -20,6 +20,19 @@ afterEach(() => {
 })
 
 describe('application categories', () => {
+  it('查看应用显示原类别选择器，Modal ok 也不会提交', async () => {
+    getApplicationById.mockResolvedValueOnce({ data: { data: { id: 3, name: 'Redis', category: 'cache' } } })
+    wrapper = mount(Dialog, {
+      props: { open: true, readOnly: true, title: '查看应用', appname: '应用', item_id: 3 },
+      global: { plugins: [Antd] },
+    })
+    await flushPromises()
+    expect(wrapper.findComponent({ name: 'ASelect' }).props('value')).toBe('cache')
+    wrapper.findComponent({ name: 'AModal' }).vm.$emit('ok')
+    await flushPromises()
+    expect(SaveOrCreateApplication).not.toHaveBeenCalled()
+    expect(wrapper.emitted('initList')).toBeUndefined()
+  })
   it('keeps an opened select attached to its modal after switching cached pages', async () => {
     const visible = ref(true)
     const open = ref(false)

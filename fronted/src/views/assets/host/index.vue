@@ -34,7 +34,9 @@
                             @click="onGroupSelect(group)"
                             @contextmenu="onGroupRightClick({ event: $event, node: group })"
                         >
-                            {{ group.name }} ({{ group.host_count }})
+                            <a v-if="canViewGroup" href="#" @click.stop.prevent="openGroup(group)">{{ group.name }}</a>
+                            <template v-else>{{ group.name }}</template>
+                            ({{ group.host_count }})
                         </a-menu-item>
                     </a-menu>
                     <a-empty v-if="!groupLoading && !filteredGroups.length" description="暂无分组" />
@@ -56,10 +58,10 @@
                             key="edit"
                             :disabled="groupContextMenu.node?.key === 0"
                             @click="handleContextEdit"
-                            v-if="checkPermission('assets:hostgroups:update')"
+                            v-if="canViewGroup"
                         >
-                            <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
-                            <span>&nbsp;修改</span>
+                            <FontAwesomeIcon :icon="['fas', canEditGroup ? 'pen-to-square' : 'eye']" />
+                            <span>&nbsp;{{ canEditGroup ? '编辑' : '查看' }}</span>
                         </a-menu-item>
                         <a-menu-item
                             key="delete"
@@ -188,7 +190,11 @@
                     @change="handleTableChange"
                 >
                     <template #bodyCell="{ column, record }">
-                            <template v-if="column.key === 'hostname'">
+                        <template v-if="column.key === 'instance_name'">
+                            <a v-if="canViewHost" href="#" @click.prevent="onSaveOrCreate(record.id)">{{ record.instance_name }}</a>
+                            <template v-else>{{ record.instance_name }}</template>
+                        </template>
+                            <template v-else-if="column.key === 'hostname'">
                                 <span class="hostname-value">{{ record.system?.hostname || '-' }}</span>
                             </template>
                         <template v-else-if="column.key === 'agent_status'">
@@ -229,13 +235,7 @@
                         </template>
                         <template v-else-if="column.key === 'action'">
                             <div :key="record.id">
-                                <a-tooltip v-if="onlyHostDetailAction" title="查看详情" placement="top">
-                                    <a-button type="link" size="small" class="host-detail-action detail-action" @click="openDetail(record.id)">
-                                        <FontAwesomeIcon :icon="['fas', 'eye']" />
-                                        <span>详情</span>
-                                    </a-button>
-                                </a-tooltip>
-                                <a-row v-else :gutter="6" class="action_row" :wrap="false">
+                                <a-row :gutter="6" class="action_row" :wrap="false">
                                     <a-col v-permission="'assets:hosts:view'">
                                         <a-tooltip title="查看详情" placement="top">
                                             <a-button type="link" size="small" class="host-detail-action detail-action" @click="openDetail(record.id)">
@@ -244,12 +244,13 @@
                                             </a-button>
                                         </a-tooltip>
                                     </a-col>
-                                    <a-col v-permission="'assets:hosts:update'">
-                                        <a-tooltip title="编辑">
+                                    <a-col v-if="canViewHost">
+                                        <a-tooltip v-if="canEditHost" title="编辑" placement="top">
                                             <a-button type="primary" @click="onSaveOrCreate(record.id)">
                                                 <FontAwesomeIcon :icon="['fa', 'edit']" />
                                             </a-button>
                                         </a-tooltip>
+                                        <ViewRecordButton v-else @click="onSaveOrCreate(record.id)" />
                                     </a-col>
                                     <a-col v-permission="'assets:hosts:create'">
                                         <a-tooltip title="克隆（复制分组/环境/监控项等配置，新建一台主机）">
@@ -406,6 +407,7 @@
         :open="groupDialogVisible"
         @update:open="(value) => { groupDialogVisible = value }"
         :item_id="groupDialogId"
+        :read-only="groupDialogId !== -1 && !canEditGroup"
         :title="groupDialogTitle"
         @initList="refreshGroups"
     />
@@ -415,7 +417,7 @@
         okText="保存"
         destroyOnClose
         :open="dialogVisible"
-        v-model:title="dialogTitle"
+        :title="dialogTitle"
         @ok="handleOk"
         @cancel="handleCancel"
         width="680px"
@@ -432,16 +434,17 @@
                 :rules="rules"
             >
                 <a-form-item name="instance_name" label="实例名">
-                    <a-input v-model:value="form.instance_name" placeholder="例如：app-01" />
+                    <a-input v-model:value="form.instance_name" :readonly="hostReadOnly" placeholder="例如：app-01" />
                 </a-form-item>
                 <a-form-item name="ip" label="IP 地址">
-                    <a-input v-model:value="form.ip" placeholder="主机的唯一标识，例如：192.168.1.10" />
+                    <a-input v-model:value="form.ip" :readonly="hostReadOnly" placeholder="主机的唯一标识，例如：192.168.1.10" />
                 </a-form-item>
                 <a-form-item name="group_id" label="主机分组">
                     <a-select
                         v-model:value="form.group_id"
                         placeholder="请选择分组"
-                        :options="groupOptions"
+                        :disabled="hostReadOnly"
+                        :options="hostReadOnly ? selectedGroupOptions : groupOptions"
                         :getPopupContainer="getPopupContainer"
                         :virtual="false"
                         allowClear
@@ -451,11 +454,12 @@
                     />
                 </a-form-item>
                 <a-form-item name="environment" label="所属环境">
-                    <a-select v-model:value="form.environment" :options="environmentOptions" :getPopupContainer="getPopupContainer" :virtual="false" allow-clear placeholder="请选择环境" />
+                    <a-select v-model:value="form.environment" :disabled="hostReadOnly" :options="hostReadOnly ? selectedEnvironmentOptions : environmentOptions" :getPopupContainer="getPopupContainer" :virtual="false" allow-clear placeholder="请选择环境" />
                 </a-form-item>
                 <a-form-item name="webssh_default_username" label="WebSSH 默认用户">
                     <a-select
                         v-model:value="form.webssh_default_username"
+                        :disabled="hostReadOnly"
                         :options="formWebSshDefaultUserOptions"
                         :getPopupContainer="getPopupContainer"
                         placeholder="请选择默认用户"
@@ -467,11 +471,11 @@
                         <a-tag
                             v-for="user in formWebSshUserTagList"
                             :key="user"
-                            closable
+                            :closable="!hostReadOnly"
                             @close.prevent="removeFormWebSshUserTag(user)"
                         >{{ user }}</a-tag>
                     </div>
-                    <a-space style="margin-top: 8px; width: 100%">
+                    <a-space v-if="!hostReadOnly" style="margin-top: 8px; width: 100%">
                         <a-input
                             v-model:value="formWebSshNewUser"
                             placeholder="输入用户名后点击添加"
@@ -481,10 +485,11 @@
                     </a-space>
                 </a-form-item>
                 <a-form-item name="remark" label="备注">
-                    <a-textarea v-model:value="form.remark" :rows="3" placeholder="可填写业务用途、负责人等信息" />
+                    <a-textarea v-model:value="form.remark" :readonly="hostReadOnly" :rows="3" placeholder="可填写业务用途、负责人等信息" />
                 </a-form-item>
             </a-form>
         </a-spin>
+        <template v-if="hostReadOnly" #footer><a-button @click="handleCancel">关闭</a-button></template>
     </a-modal>
 
     <a-modal
@@ -522,6 +527,7 @@
 </template>
 
 <script setup>
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 defineOptions({
     name: 'host'
 })
@@ -667,6 +673,13 @@ const form = reactive({
     webssh_login_users: 'root',
 })
 const environmentOptions = ref([])
+const selectedGroupOptions = ref([])
+const selectedEnvironmentOptions = ref([])
+const canViewHost = computed(() => checkPermission('assets:hosts:view'))
+const canEditHost = computed(() => checkPermission('assets:hosts:update'))
+const canViewGroup = computed(() => checkPermission('assets:hostgroups:view'))
+const canEditGroup = computed(() => checkPermission('assets:hostgroups:update'))
+const hostReadOnly = computed(() => form.id !== -1 && !canEditHost.value)
 const formWebSshNewUser = ref('')
 const formWebSshUserTagList = computed(() => normalizeWebSshUserList(form.webssh_login_users))
 const formWebSshDefaultUserOptions = computed(() => {
@@ -710,14 +723,11 @@ const rules = {
 
 const hostActionCodes = [
     'assets:hosts:view',
-    'assets:hosts:update',
     'assets:hosts:create',
     'assets:hosts:execute',
     'assets:hosts:delete',
 ]
 const visibleHostActionCount = hostActionCodes.filter((code) => checkPermission(code)).length
-// 只读用户只有详情一个动作。沿用五个按钮的列宽会把一个图标孤零零留在大片空白里。
-const onlyHostDetailAction = visibleHostActionCount === 1 && checkPermission('assets:hosts:view')
 const columns = [
     { title: '实例名', dataIndex: 'instance_name', key: 'instance_name', width: 160 },
     { title: '状态', dataIndex: 'agent_status', key: 'agent_status', width: 110 },
@@ -733,8 +743,7 @@ const columns = [
         title: '操作',
         key: 'action',
         fixed: 'right',
-        width: onlyHostDetailAction ? 96 : Math.max(96, visibleHostActionCount * 64 + 16 + (checkPermission('assets:hosts:view') ? 32 : 0)),
-        align: onlyHostDetailAction ? 'center' : 'left',
+        width: Math.max(96, visibleHostActionCount * 64 + 16 + (canViewHost.value ? 80 : 0)),
     },
 ]
 
@@ -749,6 +758,7 @@ const filteredGroups = computed(() => {
 const groupOptions = computed(() => groups.value.map((group) => ({ label: group.name, value: group.key })))
 
 const loadGroups = async () => {
+    if (!canViewGroup.value) return
     groupLoading.value = true
     try {
         const res = await getHostGroupTree()
@@ -1261,12 +1271,15 @@ const handleContextCreate = () => {
 }
 
 const handleContextEdit = () => {
-    if (!checkPermission('assets:hostgroups:update')) return
     const node = groupContextMenu.node
     closeGroupContextMenu()
-    if (!node || node.key === 0) return
+    openGroup(node)
+}
+
+const openGroup = (node) => {
+    if (!canViewGroup.value || !node || node.key === 0) return
     groupDialogId.value = node.key
-    groupDialogTitle.value = '编辑分组'
+    groupDialogTitle.value = canEditGroup.value ? '编辑分组' : '查看分组'
     groupDialogVisible.value = true
 }
 
@@ -1317,7 +1330,11 @@ const resetForm = () => {
 }
 
 const handleAdd = async () => {
+    if (!checkPermission('assets:hosts:create')) return
+    hostFormGeneration++
+    dialogLoading.value = false
     resetForm()
+    loadEnvironmentOptions()
     dialogTitle.value = '新增主机'
     dialogVisible.value = true
 }
@@ -1325,12 +1342,16 @@ const handleAdd = async () => {
 // 克隆主机：以已有主机为模板填表（分组/环境/WebSSH 用户等照搬）。
 // 实例名加 -copy 后缀，IP 清空由用户填写（服务端按 IP 唯一校验并标识），提交走新增逻辑。
 const handleCloneHost = async (record) => {
+    if (!checkPermission('assets:hosts:create')) return
+    const current = ++hostFormGeneration
     resetForm()
+    loadEnvironmentOptions()
     dialogTitle.value = '克隆主机'
     dialogLoading.value = true
     dialogVisible.value = true
     getHostById(record.id)
         .then((res) => {
+            if (current !== hostFormGeneration) return
             if (res.data.code === 200) {
                 const data = res.data.data || {}
                 form.id = -1
@@ -1349,11 +1370,12 @@ const handleCloneHost = async (record) => {
             }
         })
         .catch(() => {
+            if (current !== hostFormGeneration) return
             message.error('获取主机详情失败')
             dialogVisible.value = false
         })
         .finally(() => {
-            dialogLoading.value = false
+            if (current === hostFormGeneration) dialogLoading.value = false
         })
 }
 
@@ -1374,12 +1396,18 @@ const handleApiError = (err) => {
     message.error('操作失败，请稍后重试')
 }
 
+let hostFormGeneration = 0
 const onSaveOrCreate = async (id) => {
-    dialogTitle.value = '编辑主机'
+    if (!canViewHost.value) return
+    const current = ++hostFormGeneration
+    form.id = id
+    if (canEditHost.value) loadEnvironmentOptions()
+    dialogTitle.value = canEditHost.value ? '编辑主机' : '查看主机'
     dialogVisible.value = true
     dialogLoading.value = true
     getHostById(id)
         .then((res) => {
+            if (current !== hostFormGeneration) return
             if (res.data.code === 200) {
                 const data = res.data.data || {}
                 form.id = data.id ?? id
@@ -1387,6 +1415,8 @@ const onSaveOrCreate = async (id) => {
                 form.ip = data.ip || ''
                 form.environment = data.environment ?? null
                 form.group_id = data.group ?? data.group_id ?? undefined
+                selectedGroupOptions.value = form.group_id ? [{ value: form.group_id, label: data.group_name }] : []
+                selectedEnvironmentOptions.value = form.environment ? [{ value: form.environment, label: data.environment_name }] : []
                 form.remark = data.remark || ''
                 form.webssh_default_username = String(data.webssh_default_username || 'root').trim() || 'root'
                 form.webssh_login_users = String(data.webssh_login_users || 'root').trim() || 'root'
@@ -1394,15 +1424,22 @@ const onSaveOrCreate = async (id) => {
                 normalizeFormWebSshUserSettings()
             } else {
                 message.error(res.data.msg || '获取主机详情失败')
+                dialogVisible.value = false
             }
         })
+        .catch(() => {
+            if (current === hostFormGeneration) { message.error('获取主机详情失败'); dialogVisible.value = false }
+        })
         .finally(() => {
-            dialogLoading.value = false
+            if (current === hostFormGeneration) dialogLoading.value = false
         })
 }
 
 const handleOk = () => {
+    if (!dialogVisible.value || hostReadOnly.value || dialogLoading.value) return
+    if (form.id === -1 && !checkPermission('assets:hosts:create')) return
     formRef.value?.validate().then(() => {
+        if (!dialogVisible.value || hostReadOnly.value) return
         dialogLoading.value = true
         const payload = { ...form }
         normalizeFormWebSshUserSettings()
@@ -1428,6 +1465,7 @@ const handleOk = () => {
 }
 
 const handleCancel = () => {
+    hostFormGeneration++
     dialogVisible.value = false
 }
 
@@ -1653,9 +1691,14 @@ const formatDateTime = (value) => {
 
 useKeepAliveRefreshLifecycle(startHostListAutoRefresh, stopHostListAutoRefresh)
 
+async function loadEnvironmentOptions() {
+    try {
+        const response = await getBusinessEnvironmentList({ page: 1, page_size: 1000, enabled: true })
+        environmentOptions.value = (response?.data?.data?.results || []).map((item) => ({ label: item.name, value: item.id }))
+    } catch { environmentOptions.value = []; message.error('获取环境选项失败') }
+}
+
 onMounted(async () => {
-    const environmentResponse = await getBusinessEnvironmentList({ page: 1, page_size: 1000, enabled: true })
-    environmentOptions.value = (environmentResponse?.data?.data?.results || []).map((item) => ({ label: item.name, value: item.id }))
     await loadHostListRefreshIntervalConfig()
     await loadGroups()
     startHostListAutoRefresh()

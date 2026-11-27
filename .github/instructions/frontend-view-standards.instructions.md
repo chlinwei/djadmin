@@ -8,9 +8,12 @@ applyTo: "fronted/src/views/**/*.vue"
 
 When reviewing or editing Vue 3 components in `fronted/src/views/`, apply these standards automatically.
 
+For records with both view and edit modes, follow [查看与编辑共用表单](../../docs/architecture/CONVENTIONS.md#shared-view-edit-form): use the same fields, layout and controls, and show only one of `查看` / `编辑` according to permission and record state.
+
 ## Tooltip Requirements
 Every operation button (edit, delete, run, etc.) in action columns must be wrapped in `<a-tooltip>` with a standardized action word from this list:
 - 编辑 (edit)
+- 查看 (view)
 - 运行 (run)
 - 删除 (delete)
 - 历史记录 (history)

@@ -69,7 +69,7 @@
             :dimension="levelDimensionMeta"
             :rows="levelRows"
             :metrics="levelMetrics"
-            :retention-tiers="retentionTierRecords"
+            :retention-tiers="levelTierRecords"
             :pending-error="levelPendingError"
             :loading="levelLoading"
             @drilldown="drillDown"
@@ -232,7 +232,7 @@
                 <a-button v-if="canEditConfig" size="small" :disabled="Boolean(batchAction)" @click="openBatchTier">设置保留档位</a-button>
                 <a-button v-if="canEditConfig" size="small" :disabled="Boolean(batchAction)" @click="openBatchFilter">设置采集过滤</a-button>
                 <a-tooltip title="对勾选的每一条日志按同一次认证依据逐一认证（逐条走主机取样例，慢但真实）；没挂解析规则的日志会被跳过。" placement="top">
-                  <a-button size="small" :disabled="Boolean(batchAction)" @click="openBatchVerify">格式认证</a-button>
+                  <a-button v-if="canEditConfig" size="small" :disabled="Boolean(batchAction)" @click="openBatchVerify">格式认证</a-button>
                 </a-tooltip>
                 <a-button size="small" type="text" @click="clearLogSelection">取消选择</a-button>
               </a-space>
@@ -353,6 +353,7 @@
                 <template v-else-if="column.key === 'format_action'">
                   <a-tooltip :title="formatActionTooltip(record, serviceId)" placement="top">
                     <a-button
+                      v-if="canEditConfig"
                       type="link"
                       size="small"
                       :disabled="!canVerifyLogFormat(record, serviceId)"
@@ -369,7 +370,7 @@
                     <a-select
                       :value="record.retention_tier ?? null"
                       :disabled="!canEditConfig"
-                      :options="[{ label: inheritedTierLabel(), value: null }, ...retentionTierOptions]"
+                      :options="tierOptionsForRow(record)"
                       :loading="Boolean(savingRows[record.log_definition])"
                       :get-popup-container="getPopupContainer"
                       size="small"
@@ -388,7 +389,7 @@
                     <a-select
                       :value="record.collection_filter_rule_id ?? null"
                       :disabled="!canEditConfig"
-                      :options="[{ label: inheritedFilterLabel(record.template_filter_include_rule_id), value: null }, ...filterRuleOptions('include')]"
+                      :options="filterOptionsForRow(record, 'include')"
                       :loading="Boolean(savingRows[record.log_definition])"
                       :get-popup-container="getPopupContainer"
                       :virtual="false"
@@ -406,7 +407,7 @@
                     <a-select
                       :value="record.collection_exclude_filter_rule_id ?? null"
                       :disabled="!canEditConfig"
-                      :options="[{ label: inheritedFilterLabel(record.template_filter_exclude_rule_id), value: null }, ...filterRuleOptions('exclude')]"
+                      :options="filterOptionsForRow(record, 'exclude')"
                       :loading="Boolean(savingRows[record.log_definition])"
                       :get-popup-container="getPopupContainer"
                       :virtual="false"
@@ -418,6 +419,7 @@
                 </template>
                 <template v-else-if="column.key === 'extra_processors'">
                   <a-tooltip
+                    v-if="canEditConfig"
                     title="按条件丢弃整条日志（解析入库前，仅本服务生效）。为空 = 不丢弃。"
                     placement="top"
                   >
@@ -425,11 +427,14 @@
                       size="small"
                       :danger="extraProcessorsEnabled(record)"
                       @click="openExtraProcessors(record)"
-                      :disabled="!canEditConfig"
                     >
-                      {{ extraProcessorsEnabled(record) ? '已配置' : '配置' }}
+                      编辑{{ extraProcessorsEnabled(record) ? '（已配置）' : '' }}
                     </a-button>
                   </a-tooltip>
+                  <template v-else>
+                    <ViewRecordButton @click="openExtraProcessors(record)" />
+                    <span v-if="extraProcessorsEnabled(record)">（已配置）</span>
+                  </template>
                 </template>
                 <template v-else-if="column.key === 'data_stream'"><code>{{ record.data_stream }}</code></template>
               </template>
@@ -839,6 +844,7 @@
           <div class="extra-condition-bar">
             <span>满足以下</span>
             <a-select
+              :disabled="!canEditConfig"
               v-model:value="extraDialog.logic"
               :options="[{ value: 'all', label: '全部' }, { value: 'any', label: '任一' }]"
               size="small"
@@ -848,10 +854,11 @@
             <span>条件时丢弃（<b>不进 Elasticsearch，不可恢复</b>）：</span>
           </div>
           <div v-if="!extraDialog.rows.length" class="field-hint">
-            尚未配置任何条件 = 不启用丢弃。点「添加条件」开始。
+            尚未配置任何条件，不启用丢弃。<span v-if="canEditConfig">点「添加条件」开始。</span>
           </div>
           <div v-for="(row, index) in extraDialog.rows" :key="index" class="extra-condition-row">
             <a-auto-complete
+              :disabled="!canEditConfig"
               v-model:value="row.field"
               :options="extraFieldOptions"
               :filter-option="(input, option) => option.value.toLowerCase().includes(input.toLowerCase())"
@@ -860,6 +867,7 @@
               class="extra-field-input"
             />
             <a-select
+              :disabled="!canEditConfig"
               v-model:value="row.op"
               :options="extraOperatorOptions"
               size="small"
@@ -868,21 +876,22 @@
             />
             <a-input
               v-if="row.op !== 'exists' && row.op !== 'not_exists'"
+              :disabled="!canEditConfig"
               v-model:value="row.value"
               placeholder="值"
               size="small"
               class="extra-value-input"
             />
             <span v-else class="field-hint extra-value-input">（无需值）</span>
-            <a-button size="small" type="text" danger @click="removeExtraRow(index)">
+            <a-button v-if="canEditConfig" size="small" type="text" danger @click="removeExtraRow(index)">
               <DeleteOutlined />
             </a-button>
           </div>
-          <a-button size="small" dashed block @click="addExtraRow">
+          <a-button v-if="canEditConfig" size="small" dashed block @click="addExtraRow">
             <PlusOutlined /><span>&nbsp;添加条件</span>
           </a-button>
           <div class="extra-preview">
-            <div class="field-hint">保存后将写入：</div>
+            <div class="field-hint">{{ canEditConfig ? '保存后将写入：' : '当前处理器：' }}</div>
             <pre class="extra-preview-json">{{ extraCompiledPreview }}</pre>
           </div>
         </template>
@@ -891,9 +900,10 @@
             type="info"
             show-icon
             class="extra-drop-warning"
-            message="高级模式：直接编辑处理器 JSON（当前内容包含结构化模式表达不了的形状，保存后仍以高级模式打开）"
+            message="高级模式：当前处理器 JSON 含有条件表单不能表达的配置。"
           />
           <a-textarea
+            :disabled="!canEditConfig"
             v-model:value="extraDialog.advancedText"
             :rows="12"
             class="extra-processors-editor"
@@ -908,7 +918,7 @@
         </div>
         <template #footer>
           <a-button
-            v-if="extraDialog.mode === 'card'"
+            v-if="canEditConfig && extraDialog.mode === 'card'"
             size="small"
             type="text"
             style="float: left"
@@ -917,7 +927,7 @@
             切换到 JSON 高级模式
           </a-button>
           <a-button
-            v-else
+            v-else-if="canEditConfig"
             size="small"
             type="text"
             style="float: left"
@@ -925,7 +935,7 @@
           >
             返回条件模式
           </a-button>
-          <a-button @click="extraDialog.open = false">取消</a-button>
+          <a-button @click="extraDialog.open = false">{{ canEditConfig ? '取消' : '关闭' }}</a-button>
           <a-button v-if="canEditConfig" type="primary" :loading="extraDialog.saving" @click="saveExtraProcessors">保存</a-button>
         </template>
       </a-modal>
@@ -957,6 +967,7 @@
 </template>
 
 <script setup>
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { checkPermission } from '@/directives/permission/permission'
 // 服务配置仍由资产域管理；下发是日志采集执行，两者授权不能相互代替。
@@ -1013,6 +1024,9 @@ const configError = ref('')
 const logRows = ref([])
 const deploymentRecords = ref([])
 const retentionTierRecords = ref([])
+const levelTierRecords = ref([])
+const selectedTierNames = ref({})
+const selectedFilterNames = ref({})
 
 // 层级视图（非服务节点：全部/项目/业务系统/环境）的数据。**页面级只加载一份**：
 // 「日志查询」和「日志配置」两个 tab 看的是同一批服务的同一组数字，各拉一遍必然出现
@@ -1317,7 +1331,7 @@ const retentionTierOptions = computed(() => retentionTierRecords.value.map((item
 // 档位名按 id / code 反查（档位列显示给人看的是名字，不是 id）。
 function tierNameById(tierId) {
   const found = retentionTierRecords.value.find((item) => item.id === tierId)
-  return found ? found.name : ''
+  return selectedTierNames.value[tierId] || found?.name || ''
 }
 
 // 单条日志仅继承必填的服务默认档位，不再猜测平台默认档位。
@@ -1539,8 +1553,24 @@ function filterRuleOptions(direction) {
 // 继承模板时的说明文字：模板没配就写"无"，配了就带上规则名（用户要知道自己继承了什么）。
 function inheritedFilterLabel(ruleId) {
   if (!ruleId) return '继承模板（无）'
-  const rule = filterRuleRecords.value.find((item) => item.id === ruleId)
-  return `继承模板（${rule ? rule.name : `规则 #${ruleId}（已删除）`}）`
+  const name = selectedFilterNames.value[ruleId] || filterRuleRecords.value.find((item) => item.id === ruleId)?.name
+  return `继承模板（${name || `规则 #${ruleId}（已删除）`}）`
+}
+
+// 已选项独立于候选目录，停用的旧选择也要按名称展示。
+function withSelected(options, value, label) {
+  if (value != null && !options.some((item) => item.value === value)) return [...options, { value, label }]
+  return options
+}
+function tierOptionsForRow(row) {
+  return withSelected([{ label: inheritedTierLabel(), value: null }, ...(canEditConfig.value ? retentionTierOptions.value : [])],
+    row.retention_tier, effectiveTierLabel(row))
+}
+function filterOptionsForRow(row, direction) {
+  const value = direction === 'include' ? row.collection_filter_rule_id : row.collection_exclude_filter_rule_id
+  return withSelected([{ label: inheritedFilterLabel(row[`template_filter_${direction}_rule_id`]), value: null },
+    ...(canEditConfig.value ? filterRuleOptions(direction) : [])], value,
+    value === 0 ? '不过滤' : selectedFilterNames.value[value] || `规则 #${value}（已删除）`)
 }
 
 const verifyDeploymentOptions = computed(() => deploymentRecords.value
@@ -1596,7 +1626,6 @@ function extraProcessorsEnabled(record) {
 }
 
 function openExtraProcessors(record) {
-  if (!canEditConfig.value) return
   extraDialog.record = record
   const items = Array.isArray(record.extra_processors) ? record.extra_processors : []
   const parsed = parseDropRule(items)
@@ -1931,7 +1960,7 @@ async function submitBatchFilter() {
 
 // 认证弹窗的实例候选：认证按库里的绑定取实例，与表单编辑态无关，所以选中服务时拉一次。
 async function loadVerifyDeployments() {
-  if (!serviceId.value) {
+  if (!canEditConfig.value || !serviceId.value) {
     deploymentRecords.value = []
     return
   }
@@ -2241,6 +2270,7 @@ onUnmounted(stopFormatRefresh)
 useKeepAliveRefreshLifecycle(startFormatRefresh, stopFormatRefresh)
 
 function openVerifyDialog(record) {
+  if (!canEditConfig.value) return
   // 单条认证：清掉批量目标，否则弹窗优先按 targets 渲染，会把这一条当成上一批的一部分。
   batchVerifyTargets.value = []
   verifyTarget.value = record
@@ -2250,6 +2280,7 @@ function openVerifyDialog(record) {
 // 批量格式认证：只把**能认证**的（已挂解析规则的）行交给弹窗，其余明确跳过并说清为什么——
 // 静默少认证几条比拒绝更糟：用户以为都验过了。
 function openBatchVerify() {
+  if (!canEditConfig.value) return
   const rows = selectedLogRows.value
   if (!rows.length) {
     message.warning('请先勾选要认证的日志')
@@ -2392,6 +2423,7 @@ async function loadLevelStatus() {
   }
   const response = await getApplicationServiceLogStatusSummary(ids)
   const data = response?.data?.data || {}
+  levelTierRecords.value = Object.entries(data.tier_names || {}).map(([id, name]) => ({ id: Number(id), name }))
   levelStatusByService.value = Object.fromEntries((data.items || []).map((item) => [item.service_id, item]))
   // 配置态算不出来时后端给 pending_error（且每项的 pending 为 null）——界面显示"-"而不是 0。
   levelPendingError.value = data.pending_error || ''
@@ -2469,6 +2501,8 @@ async function loadLogConfig() {
   try {
     const response = await getApplicationServiceLogConfig(serviceId.value)
     const data = response?.data?.data || {}
+    selectedTierNames.value = data.tier_names || {}
+    selectedFilterNames.value = data.filter_names || {}
     logRows.value = data.logs || []
     // 重载后剔掉已经不在的行（模板改了日志定义、别的标签页删了）：勾选里留着不存在的 id 会让
     // 批量提交带上无效项（后端逐条拒绝），界面上却看不出哪一条出了问题。
@@ -2822,15 +2856,16 @@ watch(activeTab, async (tab) => {
   }
 })
 
-// 采集过滤规则同样只在首屏拉一次（两列下拉用）。
-getLogCollectionFilterRules({ page_size: 200 })
-  .then((response) => { filterRuleRecords.value = response?.data?.data?.results || [] })
-  .catch(() => { filterRuleRecords.value = [] })
-
-// 档位名要显示成人话（"继承服务默认"与具体档位名），只在首屏拉一次。
-getLogRetentionTiers({ page_size: 100 })
-  .then((response) => { retentionTierRecords.value = response?.data?.data?.results || [] })
-  .catch(() => { retentionTierRecords.value = [] })
+// 查看只使用 log-config 自带的已选名称，不为回显请求写入候选。
+watch(canEditConfig, (allowed) => {
+  if (!allowed) return
+  getLogCollectionFilterRules({ page_size: 200 })
+    .then((response) => { filterRuleRecords.value = response?.data?.data?.results || [] })
+    .catch(() => { filterRuleRecords.value = [] })
+  getLogRetentionTiers({ page_size: 100 })
+    .then((response) => { retentionTierRecords.value = response?.data?.data?.results || [] })
+    .catch(() => { retentionTierRecords.value = [] })
+}, { immediate: true })
 </script>
 
 <style scoped>

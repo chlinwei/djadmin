@@ -997,6 +997,42 @@ type MonitorLogRetentionTier struct {
 	Remark              string    `json:"remark"`
 }
 
+type MonitorMaintenanceSuppression struct {
+	EventID   int64     `json:"event_id"`
+	WindowID  int64     `json:"window_id"`
+	Title     string    `json:"title"`
+	EndsAt    time.Time `json:"ends_at"`
+	DecidedAt time.Time `json:"decided_at"`
+}
+
+type MonitorMaintenanceWindow struct {
+	ID        int64           `json:"id"`
+	Title     string          `json:"title"`
+	Reason    string          `json:"reason"`
+	StartsAt  time.Time       `json:"starts_at"`
+	EndsAt    time.Time       `json:"ends_at"`
+	Matchers  json.RawMessage `json:"matchers"`
+	Status    string          `json:"status"`
+	CreatedBy string          `json:"created_by"`
+	UpdatedBy string          `json:"updated_by"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
+}
+
+type MonitorMaintenanceWindowAudit struct {
+	ID        int64           `json:"id"`
+	WindowID  int64           `json:"window_id"`
+	Action    string          `json:"action"`
+	Actor     string          `json:"actor"`
+	DecidedAt time.Time       `json:"decided_at"`
+	Snapshot  json.RawMessage `json:"snapshot"`
+}
+
+type MonitorNotificationIntent struct {
+	AlertID   int64  `json:"alert_id"`
+	EventType string `json:"event_type"`
+}
+
 type MonitorNotificationPolicy struct {
 	ID               int64           `json:"id"`
 	CreateTime       time.Time       `json:"create_time"`

@@ -3,10 +3,11 @@
 
         <a-modal  cancelText="取消" okText="保存" destroyOnClose :open="props.open" v-model:title="props.title" v-model:treeData="props.treeData"
             v-model:item_id="props.item_id" @ok="handleOk" @cancel="handleCancel">
+            <template v-if="readOnly" #footer><a-button @click="handleCancel">关闭</a-button></template>
             
             <a-spin :spinning="loading">
              </a-spin>
-  <a-form v-if="!loading" :model="form" ref="formRef" name="basic" :label-col="{ span: 8 }" :wrapper-col="{ span: 16 }"
+  <a-form v-if="!loading" :disabled="readOnly" :model="form" ref="formRef" name="basic" :label-col="{ span: 8 }" :wrapper-col="{ span: 16 }"
                 autocomplete="off" :rules="get_rules(form)">
                 <a-form-item  name="parent_id" label="上级菜单">
                     <a-tree-select v-model:value="form.parent_id" show-search style="width: 100%"
@@ -72,6 +73,7 @@ const loading = ref(false)
 // 菜单树最大层级（含虚拟根节点），可按需调整
 const props = defineProps(
     {
+        readOnly: Boolean,
         open: {
             type: Boolean,
             default: false,
@@ -223,6 +225,7 @@ const normalizeMenuPayload = (menu) => {
 }
 
 const handleOk = e => {
+    if (props.readOnly) return
     formRef.value?.validate().then((r1) => {
         let obj = normalizeMenuPayload(form.value);
         if (obj.id == -1) {

@@ -58,9 +58,8 @@ describe('参数设置操作列', () => {
   it.each(['readonly', 'operator'])('%s 角色仅有查看权限时不显示空操作列，参数内容仍可查看', async (role) => {
     store.state.role_codes = [role]
     await loadPage()
-    expect(hasActions()).toBe(false)
-    expect(table().findAll('thead th').map((header) => header.text())).not.toContain('操作')
-    expect(table().findAll('tbody button')).toHaveLength(0)
+    expect(hasActions()).toBe(true)
+    expect(table().findAll('tbody button').map(button => button.attributes('aria-label'))).toEqual(['查看', '查看'])
     for (const text of ['日志保留天数', 'sys.logs.retention', '30', '可编辑', '构建版本']) {
       expect(table().text()).toContain(text)
     }
@@ -68,7 +67,9 @@ describe('参数设置操作列', () => {
     wrapper.vm.saveEdit()
     wrapper.vm.handleResetDefault(configs[0])
     await flushPromises()
-    expect(wrapper.vm.editVisible).toBe(false)
+    expect(wrapper.vm.editVisible).toBe(true)
+    expect(document.querySelectorAll('.ant-modal-content input:disabled')).toHaveLength(5)
+    expect(document.querySelector('.ant-modal-footer').textContent).not.toContain('保存')
     expect(updateConfig).not.toHaveBeenCalled()
     expect(resetConfigDefault).not.toHaveBeenCalled()
   })
@@ -82,8 +83,8 @@ describe('参数设置操作列', () => {
     const editable = wrapper.get('tr[data-row-key="1"]')
     const readonly = wrapper.get('tr[data-row-key="2"]')
     expect(editable.findAll('button').every((button) => button.attributes('disabled') === undefined)).toBe(true)
-    expect(readonly.findAll('button')).toHaveLength(2)
-    expect(readonly.findAll('button').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
+    expect(readonly.findAll('button')).toHaveLength(1)
+    expect(readonly.get('button').attributes('aria-label')).toBe('查看')
     await editable.findAll('button')[0].trigger('click')
     await flushPromises()
     expect(wrapper.vm.editVisible).toBe(true)
@@ -104,27 +105,26 @@ describe('参数设置操作列', () => {
     expect(resetConfigDefault).toHaveBeenCalledWith(1)
   })
 
-  it('权限变化时同步隐藏或恢复操作列，不重新请求参数', async () => {
+  it('权限变化时同步切换查看与编辑，不重新请求参数', async () => {
     await loadPage()
-    expect(hasActions()).toBe(false)
+    expect(table().findAll('[aria-label="查看"]')).toHaveLength(2)
     store.state.perms.push('sys:config:update')
     await flushPromises()
-    expect(hasActions()).toBe(true)
+    expect(table().findAll('[aria-label="查看"]')).toHaveLength(1)
     store.state.perms = ['sys:config:list']
     await flushPromises()
-    expect(hasActions()).toBe(false)
-    expect(table().findAll('thead th').map((header) => header.text())).not.toContain('操作')
+    expect(table().findAll('[aria-label="查看"]')).toHaveLength(2)
     expect(getConfigList).toHaveBeenCalledTimes(1)
     expect(updateConfig).not.toHaveBeenCalled()
     expect(resetConfigDefault).not.toHaveBeenCalled()
   })
 
-  it('隐藏操作列时保留仅已修改筛选和搜索', async () => {
+  it('只读模式保留仅已修改筛选和搜索', async () => {
     await loadPage()
     await wrapper.findAllComponents({ name: 'ARadioButton' })[1].trigger('click')
     await flushPromises()
     expect(table().props('dataSource').map((item) => item.id)).toEqual([1])
-    expect(hasActions()).toBe(false)
+    expect(hasActions()).toBe(true)
     wrapper.vm.filterText = '日志'
     await wrapper.vm.loadConfigs()
     expect(getConfigList).toHaveBeenLastCalledWith({ page_size: 30, search: '日志', page: 1 })

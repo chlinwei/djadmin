@@ -107,8 +107,9 @@ type ServiceLogStatusTotals struct {
 
 // ServiceLogStatusSummary 汇总响应体。
 type ServiceLogStatusSummary struct {
-	Items  []ServiceLogStatusItem `json:"items"`
-	Totals ServiceLogStatusTotals `json:"totals"`
+	TierNames map[int64]string       `json:"tier_names"`
+	Items     []ServiceLogStatusItem `json:"items"`
+	Totals    ServiceLogStatusTotals `json:"totals"`
 	// PendingError 非空 = 配置态这一项没算出来（例如没有启用的默认集群、评估器未注入），
 	// 此时每个 item 的 pending 都是 null。**如实报出来**，界面对应列显示"-"而不是 0。
 	PendingError string `json:"pending_error"`

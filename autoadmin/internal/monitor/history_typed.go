@@ -1,8 +1,10 @@
 package monitor
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -207,18 +209,28 @@ type alertHistoryResponse struct {
 	NotificationCount         int64           `json:"notification_count"`
 	NotificationDeliveryCount int64           `json:"notification_delivery_count"`
 	NotificationStatus        string          `json:"notification_status"`
+	VerifiedHostID            *int64          `json:"verified_host_id,omitempty"`
 }
 
 // notificationStatusFrom 的优先级与历史列表和计数查询的筛选保持一致。
-func notificationStatusFrom(count, failed, active, delivery int64) string {
+func notificationStatusFrom(count, failed, active, delivery, suppressed, sent int64) string {
 	if count == 0 {
 		return "none"
 	}
-	if failed > 0 || (active == 0 && delivery == 0) {
+	if failed > 0 {
 		return "failed"
+	}
+	if suppressed > 0 {
+		if sent > 0 {
+			return "partially_suppressed"
+		}
+		return "suppressed"
 	}
 	if active > 0 {
 		return "in_progress"
+	}
+	if delivery == 0 {
+		return "failed"
 	}
 	return "success"
 }
@@ -246,7 +258,7 @@ func alertHistoryResponseFrom(row db.ListAlertHistoriesRow) alertHistoryResponse
 		ResolvedByReconciliation: row.ResolvedByReconciliation, RuleGroup: row.RuleGroup,
 		RuleSnapshot: row.RuleSnapshot, RuleDetails: row.RuleSnapshot, Source: row.Source,
 		NotificationCount: row.NotificationCount, NotificationDeliveryCount: row.NotificationDeliveryCount,
-		NotificationStatus: notificationStatusFrom(row.NotificationCount, row.NotificationFailedCount, row.NotificationActiveCount, row.NotificationDeliveryCount),
+		NotificationStatus: notificationStatusFrom(row.NotificationCount, row.NotificationFailedCount, row.NotificationActiveCount, row.NotificationDeliveryCount, row.NotificationSuppressedCount, row.NotificationSentCount),
 	}
 }
 
@@ -265,7 +277,7 @@ func (handler *Handler) alertHistories(context *gin.Context, id int64) {
 	if id == 0 {
 		switch status := strings.TrimSpace(context.Query("notification_status")); status {
 		case "", "all":
-		case "none", "in_progress", "success", "failed":
+		case "none", "in_progress", "success", "failed", "suppressed", "partially_suppressed":
 			notificationStatus = status
 		default:
 			response.Error(context, apperror.New(apperror.CodeInvalidArgument, "无效的通知状态"))
@@ -313,6 +325,7 @@ func (handler *Handler) alertHistories(context *gin.Context, id int64) {
 			response.BusinessError(context, 404, "alert history not found", nil)
 			return
 		}
+		items[0].VerifiedHostID = handler.verifiedMaintenanceHost(context, items[0].ID, unmarshalAlertLabels(items[0].Labels))
 		response.Success(context, items[0])
 		return
 	}
@@ -337,18 +350,48 @@ type notificationDeliveryResponse struct {
 }
 
 type notificationEventResponse struct {
-	ID               int64                          `json:"id"`
-	CreateTime       time.Time                      `json:"create_time"`
-	UpdateTime       time.Time                      `json:"update_time"`
-	Remark           string                         `json:"remark"`
-	EventType        string                         `json:"event_type"`
-	DeduplicationKey string                         `json:"deduplication_key"`
-	Status           string                         `json:"status"`
-	AttemptCount     int64                          `json:"attempt_count"`
-	ErrorMessage     string                         `json:"error_message"`
-	SentAt           *time.Time                     `json:"sent_at"`
-	AlertID          int64                          `json:"alert_id"`
-	Deliveries       []notificationDeliveryResponse `json:"deliveries"`
+	ID                 int64                          `json:"id"`
+	CreateTime         time.Time                      `json:"create_time"`
+	UpdateTime         time.Time                      `json:"update_time"`
+	Remark             string                         `json:"remark"`
+	EventType          string                         `json:"event_type"`
+	DeduplicationKey   string                         `json:"deduplication_key"`
+	Status             string                         `json:"status"`
+	AttemptCount       int64                          `json:"attempt_count"`
+	ErrorMessage       string                         `json:"error_message"`
+	SentAt             *time.Time                     `json:"sent_at"`
+	AlertID            int64                          `json:"alert_id"`
+	Deliveries         []notificationDeliveryResponse `json:"deliveries"`
+	MaintenanceWindows []maintenanceDecisionResponse  `json:"maintenance_windows"`
+}
+
+type maintenanceDecisionResponse struct {
+	maintenanceWindowHit
+	DecidedAt time.Time `json:"decided_at"`
+}
+
+func (handler *Handler) verifiedMaintenanceHost(ctx context.Context, id int64, labels map[string]any) *int64 {
+	f := newMaintenanceFacts(alertNotificationTarget{id: id, labels: labels})
+	if err := handler.loadMaintenanceAssets(ctx, f); err != nil {
+		slog.Warn("无法确认维护窗口预填主机", "alert_id", id, "error", err)
+		return nil
+	}
+	if f.hostID == 0 {
+		return nil
+	}
+	return &f.hostID
+}
+
+func (handler *Handler) notificationDecisions(ctx context.Context, id int64) ([]maintenanceDecisionResponse, error) {
+	rows, err := db.New(handler.db).ListEventMaintenanceDecisions(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]maintenanceDecisionResponse, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, maintenanceDecisionResponse{maintenanceWindowHit{ID: row.WindowID, Title: row.Title, EndsAt: row.EndsAt}, row.DecidedAt})
+	}
+	return out, nil
 }
 
 func (handler *Handler) AlertNotificationStatus(context *gin.Context) {
@@ -385,6 +428,11 @@ func (handler *Handler) AlertNotificationStatus(context *gin.Context) {
 			EventType: eventRow.EventType, DeduplicationKey: eventRow.DeduplicationKey, Status: eventRow.Status,
 			AttemptCount: int64(eventRow.AttemptCount), ErrorMessage: eventRow.ErrorMessage, SentAt: nullTimePtr(eventRow.SentAt),
 			AlertID: eventRow.AlertID, Deliveries: deliveries,
+		}
+		event.MaintenanceWindows, err = handler.notificationDecisions(context, event.ID)
+		if err != nil {
+			response.Error(context, err)
+			return
 		}
 		// 没有任何投递明细却标记成功，说明状态不可信——不知道到底发没发给谁，必须改判失败并给出原因。
 		if len(deliveries) == 0 && event.Status == "success" {

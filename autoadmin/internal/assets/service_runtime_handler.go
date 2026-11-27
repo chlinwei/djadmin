@@ -86,10 +86,12 @@ func (handler *Handler) GetApplicationServiceLogConfig(context *gin.Context) {
 	// "逐条都关着"（用户会去逐条打开，却没有效果）。
 	// 默认档位也必须一起给：界面上的"继承服务默认"要写清默认是哪一档，否则用户只能靠猜
 	//（现场反馈"我怎么知道默认是什么呢"）。为 null = 由平台默认档（is_default）决定。
-	respond(context, ServiceLogConfig{
+	config := ServiceLogConfig{
 		Logs: items, LogCollectionEnabled: collection,
 		LogRetentionTier: defaultTier, ServiceCode: serviceCode,
-	}, nil)
+	}
+	err = handler.service.repository.loadSelectedLogNames(context.Request.Context(), &config)
+	respond(context, config, err)
 }
 
 // SetApplicationServiceLogCollection 服务级日志采集总开关：
@@ -273,6 +275,17 @@ func (handler *Handler) LogStatusSummary(context *gin.Context) {
 		return
 	}
 	summary, err := handler.service.LogStatusSummary(context.Request.Context(), serviceIDs)
+	if err == nil {
+		rows, lookupErr := handler.service.repository.queries.ListServiceDefaultTierNames(context.Request.Context(), normalizedServiceIDs(serviceIDs))
+		if lookupErr != nil {
+			respond(context, nil, lookupErr)
+			return
+		}
+		summary.TierNames = make(map[int64]string, len(rows))
+		for _, row := range rows {
+			summary.TierNames[row.ID] = row.Name
+		}
+	}
 	respond(context, summary, err)
 }
 

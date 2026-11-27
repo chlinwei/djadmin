@@ -1,7 +1,7 @@
 <template>
   <a-modal
     :open="open"
-    :title="deploymentId ? `编辑部署实例：${form.instance_name || '加载中'}` : '登记部署实例'"
+    :title="deploymentId ? `${readOnly ? '查看' : '编辑'}部署实例：${form.instance_name || '加载中'}` : '登记部署实例'"
     :width="820"
     :confirm-loading="saving"
     ok-text="保存"
@@ -9,8 +9,9 @@
     @ok="submit"
     @cancel="emit('update:open', false)"
   >
+    <template v-if="readOnly" #footer><a-button @click="emit('update:open', false)">关闭</a-button></template>
     <a-spin :spinning="loading">
-      <a-form ref="formRef" :model="form" :rules="rules" layout="vertical">
+      <a-form :disabled="readOnly" ref="formRef" :model="form" :rules="rules" layout="vertical">
         <a-row :gutter="16">
               <a-col :span="12">
                 <a-form-item name="host" label="主机">
@@ -24,7 +25,7 @@
                 </a-form-item>
               </a-col>
               <a-col :span="12"><a-form-item name="instance_name" label="实例名称" extra="同一主机的不同程序应登记为不同实例。"><a-input v-model:value="form.instance_name" placeholder="例如 tomcat-order-prod" /></a-form-item></a-col>
-              <a-col :span="12"><a-form-item label="启用"><EnabledSwitch v-model:checked="form.enabled" /></a-form-item></a-col>
+              <a-col :span="12"><a-form-item label="启用"><EnabledSwitch :read-only="readOnly" v-model:checked="form.enabled" /></a-form-item></a-col>
               <a-col :span="24"><a-form-item label="备注"><a-textarea v-model:value="form.remark" :rows="3" /></a-form-item></a-col>
         </a-row>
       </a-form>
@@ -34,6 +35,7 @@
 
 <script setup>
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
+import { formFields } from './assetFormValues'
 import { nextTick, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
@@ -46,6 +48,7 @@ import {
 } from '@/api/assets/application'
 
 const props = defineProps({
+  readOnly: Boolean,
   open: { type: Boolean, required: true },
   deploymentId: { type: Number, default: null },
   applicationServiceId: { type: Number, default: null },
@@ -71,6 +74,8 @@ const createInitialForm = () => ({
   remark: '',
 })
 const form = reactive(createInitialForm())
+// 实例更新接口整行保存；仅在编辑时保留不可见的运行字段，避免清空实例变量或把它们带入新增表单。
+let preservedRuntime = {}
 // 回填已有记录时会改写 host，需抑制主机联动，避免覆盖已保存的实例名。
 const applyingRecord = ref(false)
 const rules = {
@@ -83,42 +88,57 @@ const getHostInstanceName = (hostId) => hostOptions.value.find(
   (item) => String(item.value) === String(hostId),
 )?.instanceName || ''
 function resetForm() {
+  preservedRuntime = {}
   Object.assign(form, createInitialForm())
 }
 
-async function loadOptions() {
-  const hosts = await fetchAllPages(getHostList, serviceEnvironmentId.value ? { environment: serviceEnvironmentId.value } : {}, 30)
-  hostOptions.value = hosts.map((item) => ({
+async function loadOptions(environment) {
+  const hosts = await fetchAllPages(getHostList, environment ? { environment } : {}, 30)
+  return hosts.map((item) => ({
     label: `${item.instance_name || '-'} (${item.ip || '-'})`,
     value: item.id,
     instanceName: item.instance_name || '',
   }))
 }
 
-async function initialize() {
+async function initialize(isCurrent) {
   resetForm()
+  hostOptions.value = []
   serviceEnvironmentId.value = null
   loading.value = true
   applyingRecord.value = true
   try {
+    const response = props.deploymentId ? await getApplicationDeployment(props.deploymentId) : null
+    if (!isCurrent()) return
+    const data = response?.data?.data
+    if (props.readOnly && data) {
+      // 实例详情已有主机地址；查看不读取主机清单或携带运行变量进入表单。
+      Object.assign(form, formFields(createInitialForm(), data))
+      hostOptions.value = [{ value: data.host, label: [data.host_name, data.host_ip].filter(Boolean).join(' / ') || `主机 ${data.host}` }]
+      return
+    }
+    if (props.readOnly) return
     // 服务表单的环境可能尚未保存，必须优先使用父表单值，不能重新读回旧环境。
     if (props.environmentId !== undefined) {
       serviceEnvironmentId.value = props.environmentId
     } else if (props.applicationServiceId) {
       const serviceResponse = await getApplicationService(props.applicationServiceId)
+      if (!isCurrent()) return
       serviceEnvironmentId.value = serviceResponse?.data?.data?.environment || null
-    } else if (props.deploymentId) {
-      const deploymentResponse = await getApplicationDeployment(props.deploymentId)
-      serviceEnvironmentId.value = deploymentResponse?.data?.data?.environment || null
+    } else if (data) {
+      serviceEnvironmentId.value = data.environment || null
     }
-    await loadOptions()
-    if (props.deploymentId) {
-      const response = await getApplicationDeployment(props.deploymentId)
-      const data = response?.data?.data || {}
-      Object.assign(form, createInitialForm(), data)
+    const hosts = await loadOptions(serviceEnvironmentId.value)
+    if (!isCurrent()) return
+    hostOptions.value = hosts
+    if (data) {
+      preservedRuntime = Object.fromEntries(['runtime_variables', 'runtime_status', 'runtime_status_output', 'ha_role']
+        .filter(key => Object.hasOwn(data, key)).map(key => [key, data[key]]))
+      Object.assign(form, formFields(createInitialForm(), data))
       if (data.host && !hostOptions.value.some((item) => String(item.value) === String(data.host))) {
         // 已绑定主机可能已移出当前环境：保留准确回显，但不把它作为新增候选。
         const hostResponse = await getHostById(data.host)
+        if (!isCurrent()) return
         const host = hostResponse?.data?.data
         if (host?.id) hostOptions.value.push({
           value: host.id,
@@ -133,20 +153,24 @@ async function initialize() {
     }
     await nextTick()
   } finally {
-    applyingRecord.value = false
-    loading.value = false
+    if (isCurrent()) {
+      applyingRecord.value = false
+      loading.value = false
+    }
   }
 }
 
 async function submit() {
+  if (props.readOnly || loading.value) return
   try {
     await formRef.value?.validate()
   } catch {
     return
   }
-  const payload = { ...form }
+  const payload = { ...preservedRuntime, ...form }
   payload.id = props.deploymentId || undefined
 
+  if (props.readOnly) return
   saving.value = true
   try {
     const response = await saveApplicationDeployment(payload)
@@ -160,9 +184,12 @@ async function submit() {
   }
 }
 
-watch(() => props.open, (visible) => {
-  if (visible) initialize()
-})
+watch([() => props.open, () => props.deploymentId, () => props.readOnly], ([visible], _, onCleanup) => {
+  // 只接受本次打开的响应，慢查询不能把旧实例的主机或运行变量写进另一条记录。
+  let current = true
+  onCleanup(() => { current = false })
+  if (visible) initialize(() => current)
+}, { immediate: true })
 watch(() => form.host, (hostId, previousHostId) => {
   if (applyingRecord.value) return
   // 仅在名称为空或仍是上一台主机的默认值时跟随主机，保留用户自定义名称。

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -46,6 +47,7 @@ type alertNotificationTarget struct {
 	startedAt    time.Time
 	resolvedAt   *time.Time
 	generatorURL string
+	released     bool
 }
 
 // smtpSender 抽出 SMTP 发信能力（默认 handler.sendSMTPMedia），便于单测注入假实现。
@@ -69,17 +71,49 @@ func mergeAlertLabels(labels map[string]any, alertname, severity, instance strin
 // 幂等建事件。返回 (事件 id, 是否新建了事件)——原实现建完事件再按 deduplication_key 查一次 id，
 // 直接从插入结果取回 ID，不再按去重键查询。
 func (handler *Handler) enqueueAlertNotification(target alertNotificationTarget, eventType string) (int64, bool, error) {
-	medias, _, err := handler.matchedPolicyMedias(context.Background(), target, eventType)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if hits := handler.activeMaintenance(ctx, target, now); len(hits) > 0 {
+		// 事件与抑制依据同时提交，避免进程崩溃后把普通 pending 误当作从未静音。
+		tx, err := handler.db.BeginTx(ctx, nil)
+		if err != nil {
+			return 0, false, err
+		}
+		defer tx.Rollback()
+		q := db.New(tx)
+		id, created, err := createNotificationEvent(ctx, q, target.id, eventType, now)
+		if err != nil || !created {
+			return 0, false, err
+		}
+		if err = saveMaintenanceDecision(ctx, q, id, hits, now, false); err != nil {
+			return 0, false, err
+		}
+		return id, true, tx.Commit()
+	}
+	q := db.New(handler.db)
+	if eventType == "resolved" {
+		count, err := q.CountFiringMaintenanceDecisions(ctx, target.id)
+		if err != nil {
+			return 0, false, err
+		}
+		if count > 0 {
+			return createNotificationEvent(ctx, q, target.id, eventType, now)
+		}
+	}
+	medias, _, err := handler.matchedPolicyMedias(ctx, target, eventType)
 	if err != nil {
 		return 0, false, err
 	}
 	if len(medias) == 0 {
 		return 0, false, nil
 	}
-	now := time.Now().UTC()
-	return database.InsertIfAbsentResult(db.New(handler.db).CreateAlertNotificationEventIfAbsent(context.Background(), db.CreateAlertNotificationEventIfAbsentParams{
+	return createNotificationEvent(ctx, q, target.id, eventType, now)
+}
+
+func createNotificationEvent(ctx context.Context, q *db.Queries, alertID int64, eventType string, now time.Time) (int64, bool, error) {
+	return database.InsertIfAbsentResult(q.CreateAlertNotificationEventIfAbsent(ctx, db.CreateAlertNotificationEventIfAbsentParams{
 		CreateTime: now, UpdateTime: now, EventType: eventType,
-		DeduplicationKey: dedupeKey(target.id, eventType), AlertID: target.id,
+		DeduplicationKey: dedupeKey(alertID, eventType), AlertID: alertID,
 	}))
 }
 
@@ -94,7 +128,10 @@ func (handler *Handler) enqueueWebhookNotifications(targets []alertNotificationT
 	enqueued := 0
 	eventIDs := make([]int64, 0)
 	for _, target := range targets {
-		eventID, created, err := handler.enqueueAlertNotification(target, target.state)
+		eventID, created, err := handler.consumeNotificationIntent(target)
+		if err != nil {
+			slog.Error("告警通知入队失败", "alert_id", target.id, "event", target.state, "error", err)
+		}
 		if err != nil || !created {
 			continue
 		}
@@ -107,8 +144,16 @@ func (handler *Handler) enqueueWebhookNotifications(targets []alertNotificationT
 // dispatchAlertNotificationEvent 在事务提交后的 goroutine 中执行（webhook 响应不等待）。
 // 对齐 tasks.send_alert_notification：单次尝试 + 指数退避重试（最多 5 次重试）。
 func (handler *Handler) dispatchAlertNotificationEvent(eventID int64) {
+	// 扫描与 webhook 可能同时发现相同事件；单 API 进程内只保留一个退避循环。
+	if _, busy := handler.activeDispatch.LoadOrStore(eventID, true); busy {
+		return
+	}
+	defer handler.activeDispatch.Delete(eventID)
 	for attempt := 1; ; attempt++ {
 		retryable, err := handler.sendAlertNotificationEvent(eventID)
+		if err != nil {
+			slog.Error("告警通知投递异常，持久化待办稍后重评", "event_id", eventID, "error", err)
+		}
 		if err == nil && !retryable {
 			return
 		}
@@ -135,7 +180,17 @@ func (handler *Handler) sendAlertNotificationEvent(eventID int64) (bool, error) 
 	if err != nil {
 		return false, err
 	}
-	if dispatch.Status == notificationEventSuccess {
+	// 同一告警的触发与恢复不能交错发信，否则恢复快照可能漏掉刚刚成功的地址。
+	lock := &handler.notificationLocks[uint64(dispatch.ID)%uint64(len(handler.notificationLocks))]
+	if !lock.TryLock() {
+		lock.Lock()
+		dispatch, err = queries.GetAlertNotificationEventDispatch(ctx, eventID)
+	}
+	defer lock.Unlock()
+	if err != nil {
+		return false, err
+	}
+	if dispatch.Status == notificationEventSuccess || dispatch.Status == "failed" || dispatch.Status == "skipped" || dispatch.Status == "partial_skipped" {
 		return false, nil
 	}
 	eventType := dispatch.EventType
@@ -145,19 +200,38 @@ func (handler *Handler) sendAlertNotificationEvent(eventID int64) (bool, error) 
 		instance: dispatch.Instance, state: eventType,
 		labels: unmarshalAlertLabels(dispatch.Labels), annotations: parseAnnotations(dispatch.Annotations),
 		startedAt: dispatch.StartedAt, resolvedAt: nullTimePtr(dispatch.ResolvedAt), generatorURL: dispatch.GeneratorUrl,
+		released: dispatch.SuppressionCount > 0,
 	}
 
+	if held, err := handler.holdNotification(ctx, eventID, target); held || err != nil {
+		return false, err
+	}
+	if target.released && eventType == "firing" && dispatch.State != "firing" {
+		// 恢复意图已随历史转态提交；只结束这个触发事件，不批量重放跨状态的通知。
+		return false, handler.finishMuted(ctx, eventID, "维护期间告警已恢复，不再补发触发通知")
+	}
+	priorOnly := target.released && eventType == "resolved"
+	if eventType == "resolved" && !priorOnly {
+		prior, err := queries.CountFiringMaintenanceDecisions(ctx, target.id)
+		if err != nil {
+			return false, err
+		}
+		priorOnly = prior > 0
+	}
 	medias, userGroupIDs, err := handler.matchedPolicyMedias(ctx, target, eventType)
 	if err != nil {
 		return false, err
 	}
 	now := time.Now().UTC()
 	if len(medias) == 0 {
+		if target.released || priorOnly {
+			return false, handler.finishMuted(ctx, eventID, "维护结束后当前策略无可投递媒介")
+		}
 		// 入队时已筛过一次，走到这里说明媒介在入队后被停用或策略树已变更；不可重试。
-		_ = queries.MarkAlertNotificationEventFailed(ctx, db.MarkAlertNotificationEventFailedParams{
+		err = queries.MarkAlertNotificationEventFailed(ctx, db.MarkAlertNotificationEventFailedParams{
 			ErrorMessage: "媒介在入队后被停用或策略树已变更", UpdateTime: now, ID: eventID,
 		})
-		return false, nil
+		return false, err
 	}
 	if err = queries.MarkAlertNotificationEventSending(ctx, db.MarkAlertNotificationEventSendingParams{
 		UpdateTime: now, ID: eventID,
@@ -168,6 +242,27 @@ func (handler *Handler) sendAlertNotificationEvent(eventID int64) (bool, error) 
 	errors := make([]string, 0)
 	retryable := false
 	deliveryCount := 0
+	type addressKey struct {
+		mediaID int64
+		userID  int32
+		address string
+	}
+	var priorRecipients map[addressKey]bool
+	if priorOnly {
+		rows, err := queries.ListMaintenanceRecoveryRecipients(ctx, target.id)
+		if err != nil {
+			return false, err
+		}
+		if len(rows) == 0 {
+			return false, handler.finishMuted(ctx, eventID, "没有实际收到触发通知的可用接收方")
+		}
+		priorRecipients = make(map[addressKey]bool, len(rows))
+		for _, row := range rows {
+			if row.UserID.Valid && row.MediaID.Valid {
+				priorRecipients[addressKey{row.MediaID.Int64, row.UserID.Int32, row.Address}] = true
+			}
+		}
+	}
 	for _, media := range medias {
 		if media.mediaType != "email" {
 			// 当前仅实现 Email，其余媒介类型后续补充。
@@ -201,7 +296,7 @@ func (handler *Handler) sendAlertNotificationEvent(eventID int64) (bool, error) 
 				bindings = append(bindings, bindingRow{userID: row.UserID, username: row.Username, recipients: row.Recipients, timezone: row.Timezone})
 			}
 		}
-		if len(bindings) == 0 {
+		if len(bindings) == 0 && !priorOnly {
 			errors = append(errors, fmt.Sprintf("媒介 %q 没有任何用户绑定", media.name))
 			continue
 		}
@@ -220,18 +315,39 @@ func (handler *Handler) sendAlertNotificationEvent(eventID int64) (bool, error) 
 					continue
 				}
 				seen[recipient] = true
+				// 历史成功只作上限：撤销的组/绑定/地址不能因补发恢复而重新获授权。
+				if priorOnly && !priorRecipients[addressKey{media.id, binding.userID, recipient}] {
+					continue
+				}
 				deliveryCount++
-				handler.deliverAlertNotification(eventID, media, int64(binding.userID), binding.username, recipient, config, target, location, &errors, &retryable)
+				if held, err := handler.deliverAlertNotification(eventID, media, int64(binding.userID), binding.username, recipient, config, target, location, &errors, &retryable); held || err != nil {
+					return false, err
+				}
 			}
 		}
 	}
 
+	if deliveryCount == 0 && priorOnly {
+		return false, handler.finishMuted(ctx, eventID, "当前策略与绑定下没有实际收到触发通知的接收方")
+	}
 	if deliveryCount == 0 && len(errors) == 0 {
 		errors = append(errors, "匹配的告警媒介没有可投递的用户地址")
 	}
 
 	now = time.Now().UTC()
 	if len(errors) == 0 {
+		if target.released {
+			// 新策略可能撤销部分等待补发的地址。它们不应补发，也不能凭其他地址成功标成全部成功。
+			rows, err := queries.ListAlertNotificationDeliveries(ctx, eventID)
+			if err != nil {
+				return false, err
+			}
+			for _, row := range rows {
+				if row.Status == "suppressed" {
+					return false, handler.finishMuted(ctx, eventID, "已按当前策略投递；其余维护抑制地址不再符合接收条件")
+				}
+			}
+		}
 		err = queries.MarkAlertNotificationEventSuccess(ctx, db.MarkAlertNotificationEventSuccessParams{
 			SentAt: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: eventID,
 		})
@@ -253,7 +369,7 @@ func (handler *Handler) sendAlertNotificationEvent(eventID int64) (bool, error) 
 
 // deliverAlertNotification 投递单个地址：get-or-create delivery（唯一键 event,media,user,address），
 // 已 success 的跳过，否则置 sending、attempt_count+1，逐地址发信并按结果落 success/failed。
-func (handler *Handler) deliverAlertNotification(eventID int64, media alertNotificationMedia, userID int64, username, recipient string, config map[string]any, target alertNotificationTarget, location *time.Location, errors *[]string, retryable *bool) {
+func (handler *Handler) deliverAlertNotification(eventID int64, media alertNotificationMedia, userID int64, username, recipient string, config map[string]any, target alertNotificationTarget, location *time.Location, errors *[]string, retryable *bool) (bool, error) {
 	queries := db.New(handler.db)
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -267,24 +383,46 @@ func (handler *Handler) deliverAlertNotification(eventID int64, media alertNotif
 	if err != nil {
 		*errors = append(*errors, fmt.Sprintf("%s / %s / %s: %v", username, media.name, recipient, err))
 		*retryable = true
-		return
+		return false, nil
 	}
 
 	deliveryStatus, err := queries.GetAlertNotificationDeliveryStatus(ctx, deliveryID)
 	if err != nil {
 		*errors = append(*errors, fmt.Sprintf("%s / %s / %s: %v", username, media.name, recipient, err))
 		*retryable = true
-		return
+		return false, nil
 	}
 	if deliveryStatus == notificationEventSuccess {
-		return
+		return false, nil
 	}
-	if err = queries.MarkAlertNotificationDeliverySending(ctx, db.MarkAlertNotificationDeliverySendingParams{
+	if held, err := handler.holdNotification(ctx, eventID, target); held || err != nil {
+		return held, err
+	}
+	if target.released && target.state == "firing" {
+		// 收件人多时，前一个地址的 SMTP 调用期间可能已经恢复；余下的触发不应再补发。
+		current, err := queries.GetAlertNotificationEventDispatch(ctx, eventID)
+		if err != nil {
+			return false, err
+		}
+		if current.State != "firing" {
+			return true, handler.finishMuted(ctx, eventID, "补发过程中告警已恢复，停止触发通知")
+		}
+	}
+	if deliveryStatus == "sending" {
+		// SMTP 与数据库不共享事务，进程退出时此地址可能已被接收，不能盲目重发。
+		*errors = append(*errors, fmt.Sprintf("%s / %s / %s: 上次投递结果未确认，须人工核对", username, media.name, recipient))
+		return false, nil
+	}
+	claimed, err := queries.MarkAlertNotificationDeliverySending(ctx, db.MarkAlertNotificationDeliverySendingParams{
 		UpdateTime: now, ID: deliveryID,
-	}); err != nil {
+	})
+	if err != nil {
 		*errors = append(*errors, fmt.Sprintf("%s / %s / %s: %v", username, media.name, recipient, err))
 		*retryable = true
-		return
+		return false, nil
+	}
+	if claimed != 1 {
+		return false, fmt.Errorf("投递 %d 已被其他派发器认领", deliveryID)
 	}
 
 	mail, renderErr := renderConfiguredAlertMail(config, target, location)
@@ -292,22 +430,29 @@ func (handler *Handler) deliverAlertNotification(eventID int64, media alertNotif
 	if renderErr != nil {
 		errorMessage = fmt.Sprintf("消息模板渲染失败：%v", renderErr)
 	} else {
+		if target.released && target.state == "firing" {
+			mail.Subject = "维护已结束，告警仍未恢复：" + mail.Subject
+			mail.Body = fmt.Sprintf("维护已结束，告警仍未恢复。原始触发时间：%s\n\n%s", target.startedAt.In(location).Format(time.RFC3339), mail.Body)
+		}
 		success, errorMessage = handler.smtpSend(config, mail.Subject, mail.Body, []string{recipient})
 	}
 	now = time.Now().UTC()
 	if success {
-		_ = queries.MarkAlertNotificationDeliverySuccess(ctx, db.MarkAlertNotificationDeliverySuccessParams{
+		err = queries.MarkAlertNotificationDeliverySuccess(ctx, db.MarkAlertNotificationDeliverySuccessParams{
 			SentAt: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: deliveryID,
 		})
-		return
+		return false, err
 	}
-	_ = queries.MarkAlertNotificationDeliveryFailed(ctx, db.MarkAlertNotificationDeliveryFailedParams{
+	if err := queries.MarkAlertNotificationDeliveryFailed(ctx, db.MarkAlertNotificationDeliveryFailedParams{
 		ErrorMessage: errorMessage, UpdateTime: now, ID: deliveryID,
-	})
+	}); err != nil {
+		return false, err
+	}
 	*errors = append(*errors, fmt.Sprintf("%s / %s / %s: %s", username, media.name, recipient, errorMessage))
 	if renderErr == nil {
 		*retryable = true
 	}
+	return false, nil
 }
 
 func buildAlertEmailSubject(target alertNotificationTarget) string {
@@ -363,17 +508,35 @@ func (handler *Handler) reconcileStaleAlerts() {
 	eventIDs := make([]int64, 0)
 	for _, row := range stale {
 		now := time.Now().UTC()
-		affected, err := queries.ResolveStaleAlert(ctx, db.ResolveStaleAlertParams{
+		tx, err := handler.db.BeginTx(ctx, nil)
+		if err != nil {
+			slog.Error("失联告警事务失败", "alert_id", row.ID, "error", err)
+			continue
+		}
+		q := db.New(tx)
+		affected, err := q.ResolveStaleAlert(ctx, db.ResolveStaleAlertParams{
 			ResolvedAt: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: row.ID,
 		})
 		if err != nil || affected == 0 {
+			tx.Rollback()
+			continue
+		}
+		if err = q.RecordNotificationIntent(ctx, db.RecordNotificationIntentParams{AlertID: row.ID, EventType: "resolved"}); err != nil {
+			tx.Rollback()
+			slog.Error("失联告警恢复意图写入失败", "alert_id", row.ID, "error", err)
+			continue
+		}
+		if err = tx.Commit(); err != nil {
+			slog.Error("失联告警恢复事务提交失败", "alert_id", row.ID, "error", err)
 			continue
 		}
 		target := alertNotificationTarget{
 			id: row.ID, alertname: row.Alertname, severity: row.Severity,
 			instance: row.Instance, state: "resolved", labels: unmarshalAlertLabels(row.Labels),
 		}
-		if eventID, created, enqueueErr := handler.enqueueAlertNotification(target, "resolved"); enqueueErr == nil && created {
+		if eventID, created, enqueueErr := handler.consumeNotificationIntent(target); enqueueErr != nil {
+			slog.Error("失联恢复通知入队失败", "alert_id", row.ID, "error", enqueueErr)
+		} else if created {
 			eventIDs = append(eventIDs, eventID)
 		}
 	}

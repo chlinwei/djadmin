@@ -38,13 +38,8 @@
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
-              <a-tooltip title="查看详情" placement="top">
-                <a-button v-permission="'assets:applications:view'" data-view-template type="link" size="small" class="detail-action" @click="openView(record)">
-                  <FontAwesomeIcon :icon="['fas', 'eye']" />
-                  <span>详情</span>
-                </a-button>
-              </a-tooltip>
-              <a-tooltip title="编辑">
+              <ViewRecordButton v-if="canView && !canUpdate" data-view-template @click="openView(record)" />
+              <a-tooltip v-if="canView && canUpdate" title="编辑">
                 <a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openEdit(record)">
                   <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                 </a-button>
@@ -71,7 +66,7 @@
     :open="templateDialogOpen"
     :template-id="selectedTemplateId"
     :copy-from-id="selectedTemplateCopyId"
-    :read-only="templateReadOnly"
+    :read-only="templateReadOnly || (!!selectedTemplateId && !canUpdate)"
     :initial-application-id="application?.id"
     @update:open="templateDialogOpen = $event"
     @saved="handleTemplateSaved"
@@ -79,6 +74,8 @@
 </template>
 
 <script setup>
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
+import { canCreate, canDelete, canView, canUpdate } from './assetPermissions'
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
@@ -127,24 +124,28 @@ async function loadTemplates() {
 }
 
 function openCreate() {
+  if (!canCreate.value) return
   templateReadOnly.value = false
   selectedTemplateId.value = null
   selectedTemplateCopyId.value = null
   templateDialogOpen.value = true
 }
 function openEdit(record) {
+  if (!canView.value || !canUpdate.value) return
   templateReadOnly.value = false
   selectedTemplateId.value = record.id
   selectedTemplateCopyId.value = null
   templateDialogOpen.value = true
 }
 function openCopy(record) {
+  if (!canView.value || !canCreate.value) return
   templateReadOnly.value = false
   selectedTemplateId.value = null
   selectedTemplateCopyId.value = record.id
   templateDialogOpen.value = true
 }
 function openView(record) {
+  if (!canView.value) return
   templateReadOnly.value = true
   selectedTemplateId.value = record.id
   selectedTemplateCopyId.value = null
@@ -157,11 +158,13 @@ async function handleTemplateSaved() {
 }
 
 function confirmDelete(record) {
+  if (!canDelete.value) return
   openDeleteConfirm({
     title: '确认删除部署模板',
     summary: '已被逻辑服务引用的模板不能删除；未被引用的模板连同其端口/路径/日志定义等子项一起删除。',
     items: [`${props.application?.name || '应用'} / ${record.name}`],
     onConfirm: async () => {
+      if (!canDelete.value) return
       const response = await batchDeleteApplicationDeploymentTemplates([record.id])
       // 批删接口是"逐条汇总、HTTP 仍 200"，必须看每条 ok：
       // 模板被引用/删除受外键保护时后端返回 ok:false，不看就会把失败当成功。

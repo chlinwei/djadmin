@@ -161,14 +161,14 @@ describe('TemplateManagerDialog', () => {
     expect(view).not.toBeNull()
     expect(view.classList.contains('ant-btn-link')).toBe(true)
     expect(view.classList.contains('detail-action')).toBe(true)
-    expect(view.textContent.trim()).toBe('详情')
+    expect(view.textContent.trim()).toBe('查看')
     const tooltip = wrapper.findAllComponents({ name: 'ATooltip' })
-      .find((item) => item.props('title') === '查看详情')
+      .find((item) => item.props('title') === '查看')
     expect(tooltip.props('placement')).toBe('top')
     view.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }))
     await new Promise((resolve) => setTimeout(resolve, 150))
     await flushPromises()
-    expect(document.body.querySelector('.ant-tooltip-inner')?.textContent).toBe('查看详情')
+    expect(document.body.querySelector('.ant-tooltip-inner')?.textContent).toBe('查看')
     expect([...document.body.querySelectorAll('tbody button:not([role="switch"])')].filter((button) => button.style.display !== 'none')).toEqual([view])
     expect(document.body.querySelector('tbody button[role="switch"]').disabled).toBe(true)
     expect(document.body.querySelector('.template-manager-toolbar button').style.display).toBe('none')
@@ -192,6 +192,8 @@ describe('TemplateManagerDialog', () => {
     expect(wrapper.vm.templates).toEqual([
       expect.objectContaining({ id: 2, name: 'tomcat-systemd' }),
     ])
+    expect(document.body.querySelector('[data-view-template]')).toBeNull()
+    expect(wrapper.findAllComponents({ name: 'ATooltip' }).some(item => item.props('title') === '编辑')).toBe(true)
     wrapper.unmount()
   })
 

@@ -21,9 +21,11 @@ import * as applicationApi from '@/api/assets/application'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { init as initChart } from 'echarts'
 import ServiceTreePage from './index.vue'
+import { checkPermission } from '@/directives/permission/permission'
 
 let panelObserver
 beforeEach(() => {
+  checkPermission.mockReturnValue(true)
   initChart.mockClear()
   vi.stubGlobal('ResizeObserver', class {
     constructor(callback) {
@@ -65,12 +67,12 @@ const ServiceTreeNodeContentStub = {
 }
 const BusinessSystemDialogStub = {
   name: 'BusinessSystemDialog',
-  props: ['open', 'systemId', 'initialProjectId'],
+  props: ['open', 'systemId', 'initialProjectId', 'readOnly'],
   template: '<div class="business-system-dialog-stub" />',
 }
 const ApplicationServiceDialogStub = {
   name: 'ApplicationServiceDialog',
-  props: ['open', 'serviceId', 'initialBusinessSystemId', 'initialEnvironmentId'],
+  props: ['open', 'serviceId', 'initialBusinessSystemId', 'initialEnvironmentId', 'readOnly'],
   template: '<div class="application-service-dialog-stub" />',
 }
 const ServiceDependencyWorkspaceStub = {
@@ -341,6 +343,24 @@ describe('service-tree capacity charts', () => {
 })
 
 describe('service-tree/index.vue 业务系统 CRUD 入口', () => {
+  it.each([
+    [[], true, true],
+    [['assets:service-tree:manage'], false, true],
+    [['assets:applications:update'], true, true],
+    [['assets:service-tree:manage', 'assets:applications:update'], false, false],
+  ])('将查看或编辑模式传给共享配置表单：%j', async (actions, businessReadOnly, serviceReadOnly) => {
+    checkPermission.mockImplementation(code => code.endsWith(':view') || actions.includes(code))
+    const wrapper = await mountPage()
+    try {
+      const content = wrapper.findComponent(ServiceTreeNodeContentStub)
+      content.vm.$emit('edit-business-system', { id: 7 })
+      await flushPromises()
+      expect(wrapper.findComponent(BusinessSystemDialogStub).props()).toMatchObject({ open: true, systemId: 7, readOnly: businessReadOnly })
+      content.vm.$emit('edit-service', { id: 21 })
+      await flushPromises()
+      expect(wrapper.findComponent(ApplicationServiceDialogStub).props()).toMatchObject({ open: true, serviceId: 21, readOnly: serviceReadOnly })
+    } finally { wrapper.unmount() }
+  })
   it('全部业务/项目节点显示新增业务系统按钮，其他节点隐藏', async () => {
     const wrapper = await mountPage()
     await flushPromises()

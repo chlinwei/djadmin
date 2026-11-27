@@ -1,7 +1,7 @@
 <template>
   <a-modal
     :open="open"
-    :title="serviceId ? `编辑逻辑服务：${form.name || '加载中'}` : copyServiceId ? '复制逻辑服务' : clusterProfileId ? '创建集群' : '新增逻辑服务'"
+    :title="serviceId ? `${readOnly ? '查看' : '编辑'}逻辑服务：${form.name || '加载中'}` : copyServiceId ? '复制逻辑服务' : clusterProfileId ? '创建集群' : '新增逻辑服务'"
     :width="760"
     :confirm-loading="saving"
     :mask-closable="false"
@@ -10,6 +10,7 @@
     @ok="submit"
     @cancel="emit('update:open', false)"
   >
+    <template v-if="readOnly" #footer><a-button @click="emit('update:open', false)">关闭</a-button></template>
     <a-spin :spinning="loading">
       <a-alert
         v-if="loadError"
@@ -22,14 +23,14 @@
           <a-button size="small" type="link" @click="initialize">重试</a-button>
         </template>
       </a-alert>
-      <a-form ref="formRef" :model="form" :rules="rules" layout="vertical">
+      <a-form :disabled="readOnly" ref="formRef" :model="form" :rules="rules" layout="vertical">
         <a-row :gutter="16">
           <a-col :span="12"><a-form-item name="name" label="服务名称"><a-input v-model:value="form.name" /></a-form-item></a-col>
           <a-col :span="12"><a-form-item name="code" label="服务编码"><a-input v-model:value="form.code" placeholder="例如 order-cache-prod" /></a-form-item></a-col>
           <a-col :span="12">
             <a-form-item name="business_system" label="业务系统">
-              <a-select v-model:value="form.business_system" :disabled="scopeLocked" show-search :filter-option="filterOption" :options="businessSystemOptions" :getPopupContainer="getPopupContainer" :virtual="false">
-                <template #notFoundContent>
+              <a-select v-model:value="form.business_system" :disabled="scopeLocked || readOnly" show-search :filter-option="filterOption" :options="businessSystemOptions" :getPopupContainer="getPopupContainer" :virtual="false">
+                <template v-if="!readOnly && checkPermission('assets:service-tree:manage')" #notFoundContent>
                   <div class="inline-create-empty"><span>还没有可用业务系统</span><a-button type="link" @click.stop="businessSystemDialogOpen = true"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;新建业务系统</a-button></div>
                 </template>
               </a-select>
@@ -37,18 +38,18 @@
           </a-col>
           <a-col :span="12">
             <a-form-item name="environment" label="环境">
-              <a-select v-model:value="form.environment" :disabled="scopeLocked" :options="environmentOptions" placeholder="请选择环境" :getPopupContainer="getPopupContainer" :virtual="false">
-                <template #notFoundContent>
+              <a-select v-model:value="form.environment" :disabled="scopeLocked || readOnly" :options="environmentOptions" placeholder="请选择环境" :getPopupContainer="getPopupContainer" :virtual="false">
+                <template v-if="!readOnly && canCreate" #notFoundContent>
                   <div class="inline-create-empty"><span>当前业务系统还没有环境</span><a-button type="link" @click.stop="environmentDialogOpen = true"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;新建环境</a-button></div>
                 </template>
               </a-select>
             </a-form-item>
           </a-col>
-          <a-col v-if="!clusterProfileId" :span="12"><a-form-item name="topology_type" label="部署形态"><a-segmented v-model:value="form.topology_type" :options="topologyOptions" /></a-form-item></a-col>
+          <a-col v-if="!clusterProfileId" :span="12"><a-form-item name="topology_type" label="部署形态"><a-segmented :disabled="readOnly" v-model:value="form.topology_type" :options="topologyOptions" /></a-form-item></a-col>
           <a-col v-if="form.topology_type === 'cluster'" :span="12">
             <a-form-item name="cluster_profile" label="集群模型">
               <a-select v-model:value="form.cluster_profile" show-search :filter-option="filterOption" :options="availableProfileOptions" :getPopupContainer="getPopupContainer" :virtual="false">
-                <template #notFoundContent>
+                <template v-if="!readOnly && canCreate" #notFoundContent>
                   <div class="inline-create-empty"><span>还没有可用集群模型</span><a-button type="link" @click.stop="clusterProfileDialogOpen = true"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;新建集群模型</a-button></div>
                 </template>
               </a-select>
@@ -57,7 +58,7 @@
           <a-col v-if="form.topology_type === 'standalone' || !profileHasFixedApplication" :span="12">
             <a-form-item name="application" label="应用">
               <a-select v-model:value="form.application" show-search :filter-option="filterOption" :options="applicationOptions" :getPopupContainer="getPopupContainer" :virtual="false">
-                <template #notFoundContent>
+                <template v-if="!readOnly && canCreate" #notFoundContent>
                   <div class="inline-create-empty"><span>还没有可用应用</span><a-button type="link" @click.stop="applicationDialogOpen = true"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;新建应用</a-button></div>
                 </template>
               </a-select>
@@ -67,7 +68,7 @@
           <a-col :span="12">
             <a-form-item name="application_version" label="应用版本">
               <a-select v-model:value="form.application_version" show-search :filter-option="filterOption" :options="versionOptions" :getPopupContainer="getPopupContainer" :virtual="false">
-                <template #notFoundContent>
+                <template v-if="!readOnly && canCreate" #notFoundContent>
                   <div class="inline-create-empty">
                     <span>{{ form.application ? '当前应用还没有可用版本' : '请先选择应用' }}</span>
                     <a-button type="link" :disabled="!form.application" @click.stop="openVersionCreator">
@@ -81,7 +82,7 @@
           <a-col :span="12">
             <a-form-item name="deployment_template" label="部署模板">
               <a-select v-model:value="form.deployment_template" show-search :filter-option="filterOption" :options="templateOptions" :getPopupContainer="getPopupContainer" :virtual="false" :placeholder="form.application ? '请选择部署模板' : '请先选择应用'">
-                <template #notFoundContent>
+                <template v-if="!readOnly && canCreate" #notFoundContent>
                   <div class="inline-create-empty">
                     <span>{{ form.application ? '当前应用还没有可用部署模板' : '请先选择应用' }}</span>
                     <a-button type="link" :disabled="!form.application" @click.stop="openTemplateCreator">
@@ -104,6 +105,7 @@
               />
               <a-table
                 :columns="macroTableColumns"
+                :scroll="{ x: 800 }"
                 :data-source="templateMacros"
                 :pagination="false"
                 row-key="name"
@@ -115,7 +117,7 @@
                   <template v-if="column.key === 'name'"><code>{{ macroKeyLabel(record.name) }}</code></template>
                   <template v-else-if="column.key === 'value'">
                     <a-input
-                      :value="macroValue(record)"
+                      :value="displayMacro(record.name, macroValue(record), readOnly)"
                       :status="isMacroMissing(record) ? 'error' : ''"
                       :placeholder="record.value ? '' : '必填（模板未给默认值）'"
                       @update:value="setMacroValue(record.name, $event)"
@@ -145,21 +147,21 @@
           <a-col :span="24">
             <a-form-item :label="isHaCluster ? '成员实例（至少 2 个）' : form.topology_type === 'load_balancer' ? '后端成员实例' : '部署实例'" required>
               <a-space wrap>
-                <a-button class="add-deployment-button" @click="openDeploymentDialog()">新增部署实例</a-button>
+                <a-button v-if="!readOnly && canCreate" class="add-deployment-button" @click="openDeploymentDialog()">新增部署实例</a-button>
               </a-space>
             </a-form-item>
           </a-col>
           <a-col v-for="deploymentId in selectedDeploymentIds" :key="deploymentId" :span="24">
             <div class="member-row">
               <span class="member-name">{{ deploymentLabel(deploymentId) }}</span>
-              <EnabledSwitch v-model:checked="memberEnabled[deploymentId]" />
+              <EnabledSwitch :read-only="readOnly" v-model:checked="memberEnabled[deploymentId]" />
               <a-space>
-                <a-tooltip title="编辑"><a-button size="small" @click="openDeploymentDialog(deploymentId)">编辑</a-button></a-tooltip>
-                <a-tooltip title="删除"><a-button class="delBtn" danger size="small" @click="confirmDeleteDeployment(deploymentId)">删除</a-button></a-tooltip>
+                <AssetFormAction :editable="!readOnly" @open="openDeploymentDialog(deploymentId)" />
+                <a-tooltip v-if="!readOnly" title="删除"><a-button class="delBtn" danger size="small" @click="confirmDeleteDeployment(deploymentId)">删除</a-button></a-tooltip>
               </a-space>
             </div>
           </a-col>
-          <a-col :span="12"><a-form-item label="启用"><EnabledSwitch v-model:checked="form.enabled" /></a-form-item></a-col>
+          <a-col :span="12"><a-form-item label="启用"><EnabledSwitch :read-only="readOnly" v-model:checked="form.enabled" /></a-form-item></a-col>
           <a-col :span="24">
             <a-divider orientation="left">日志</a-divider>
           </a-col>
@@ -202,6 +204,7 @@
       </a-form>
     </a-spin>
     <DeploymentDialog
+      :read-only="readOnly || (!!selectedDeploymentId && !canUpdate)"
       :open="deploymentDialogOpen"
       :deployment-id="selectedDeploymentId"
       :application-service-id="form.id"
@@ -210,22 +213,26 @@
       @saved="handleDeploymentSaved"
     />
     <BusinessSystemDialog
+      v-if="!readOnly"
       :open="businessSystemDialogOpen"
       @update:open="businessSystemDialogOpen = $event"
       @saved="handleBusinessSystemCreated"
     />
     <BusinessEnvironmentDialog
+      v-if="!readOnly"
       :open="environmentDialogOpen"
       @update:open="environmentDialogOpen = $event"
       @saved="handleEnvironmentCreated"
     />
     <ClusterProfileDialog
+      v-if="!readOnly"
       :open="clusterProfileDialogOpen"
       :initial-application-id="form.application"
       @update:open="clusterProfileDialogOpen = $event"
       @saved="handleClusterProfileCreated"
     />
     <Dialog
+      v-if="!readOnly"
       :open="applicationDialogOpen"
       :item_id="-1"
       title="新增应用"
@@ -234,12 +241,14 @@
       @saved="handleApplicationCreated"
     />
     <VersionDialog
+      v-if="!readOnly"
       :open="versionDialogOpen"
       :application="selectedApplication"
       @update:open="versionDialogOpen = $event"
       @created="handleVersionCreated"
     />
     <TemplateDialog
+      v-if="!readOnly"
       :open="templateDialogOpen"
       :initial-application-id="form.application"
       @update:open="templateDialogOpen = $event"
@@ -250,6 +259,10 @@
 
 <script setup>
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
+import AssetFormAction from './AssetFormAction.vue'
+import { canCreate, canUpdate, canView } from './assetPermissions'
+import { displayMacro, formFields, isSensitiveMacro } from './assetFormValues'
+import { checkPermission } from '@/directives/permission/permission'
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { tableLocale } from '@/util/tableStyle'
@@ -266,18 +279,21 @@ import VersionDialog from './VersionDialog.vue'
 import {
   getApplicationDeploymentList,
   getApplicationDeploymentTemplateList,
+  getApplicationDeploymentTemplate,
   getApplicationList,
   getApplicationService,
   getApplicationVersionList,
   getBusinessEnvironmentList,
   getBusinessSystemList,
   getClusterProfileList,
+  getClusterProfile,
   saveApplicationService,
 } from '@/api/assets/application'
 import { getLogRetentionTiers } from '@/api/monitor'
 import { retentionText } from '@/util/logRetention'
 
 const props = defineProps({
+  readOnly: Boolean,
   open: { type: Boolean, required: true },
   serviceId: { type: Number, default: null },
   copyServiceId: { type: Number, default: null },
@@ -310,7 +326,7 @@ const memberEnabled = reactive({})
 const environmentRecords = ref([])
 const retentionTierRecords = ref([])
 const retentionTierOptions = computed(() => retentionTierRecords.value
-  .filter((item) => item.enabled)
+  .filter((item) => props.readOnly || item.enabled)
   .map((item) => ({ label: item.retention_value ? `${item.name}（${retentionText(item)}）` : item.name, value: item.id })))
 
 // 服务档位必填，单条日志可继承它，不再继承平台默认档。
@@ -331,7 +347,7 @@ const form = reactive(initialForm())
 // 环境属于业务系统；锁定环境时一并锁定业务系统，避免联动修改绕过服务的固定归属。
 const scopeLocked = computed(() => Boolean(props.serviceId || props.initialEnvironmentId))
 const environmentOptions = computed(() => environmentRecords.value
-  .filter((item) => item.enabled)
+  .filter((item) => props.readOnly || item.enabled)
   .map((item) => ({ label: item.name, value: item.id })))
 const selectedApplication = computed(() => {
   const option = applicationOptions.value.find((item) => item.value === form.application)
@@ -359,23 +375,23 @@ const rules = computed(() => ({
     : [],
 }))
 const availableProfileOptions = computed(() => profileRecords.value
-  .filter((item) => item.enabled)
+  .filter((item) => props.readOnly || item.enabled)
   .map((item) => ({ label: item.name, value: item.id })))
 const versionOptions = computed(() => versionRecords.value
   .filter((item) => item.application === form.application)
   .map((item) => ({ label: item.version, value: item.id })))
 const templateOptions = computed(() => templateRecords.value
-  .filter((item) => item.application === form.application && item.enabled)
-  .filter((item) => isHaCluster.value ? item.control_type === 'external_ha' : item.control_type !== 'external_ha')
+  .filter((item) => item.application === form.application && (props.readOnly || item.enabled))
+  .filter((item) => props.readOnly || (isHaCluster.value ? item.control_type === 'external_ha' : item.control_type !== 'external_ha'))
   .map((item) => ({ label: item.name, value: item.id })))
 const selectedTemplate = computed(() => templateRecords.value.find((item) => item.id === form.deployment_template) || null)
 const templateMacros = computed(() => selectedTemplate.value?.macro_definitions || [])
-const macroTableColumns = [
+const macroTableColumns = computed(() => [
   { title: '宏 Key', key: 'name', width: 220 },
   { title: '值', key: 'value', width: 280 },
   { title: '说明', key: 'description' },
-  { title: '操作', key: 'action', width: 110 },
-]
+  ...(props.readOnly ? [] : [{ title: '操作', key: 'action', width: 110, fixed: 'right' }]),
+])
 const macroKeyLabel = (name) => `\${${name}}`
 // 取服务级覆盖值。**用"取值是否 undefined"判断有没有覆盖，不要用 hasOwnProperty**：
 // Vue 3.5 里 hasOwnProperty 建立的依赖在"新增键"时不失效（取值依赖会失效），用它会让
@@ -397,10 +413,12 @@ const missingMacros = computed(() => templateMacros.value
 const isMacroMissing = (macro) => missingMacros.value.some((item) => item.name === macro.name)
 const missingMacrosText = computed(() => missingMacros.value.map((macro) => macroKeyLabel(macro.name)).join('、'))
 function setMacroValue(name, value) {
+  if (props.readOnly) return
   // 清空只是编辑中的空覆盖，只有显式重置才删除覆盖并恢复继承。
   form.macro_values[name] = value ?? ''
 }
 function resetMacroValue(name) {
+  if (props.readOnly) return
   delete form.macro_values[name]
 }
 const deploymentOptionLabel = (item) => `${item.instance_name} (${item.host_name || item.host_ip || '-'})`
@@ -413,6 +431,7 @@ function deploymentLabel(deploymentId) {
 }
 
 function openVersionCreator() {
+  if (props.readOnly || !canCreate.value) return
   if (!form.application) {
     message.warning('请先选择应用')
     return
@@ -421,7 +440,7 @@ function openVersionCreator() {
 }
 
 function handleBusinessSystemCreated(system) {
-  if (!system?.id) return
+  if (props.readOnly || !system?.id) return
   businessSystemOptions.value = [
     ...businessSystemOptions.value.filter((item) => item.value !== system.id),
     { label: system.project_name ? `${system.project_name} / ${system.name}` : system.name, value: system.id },
@@ -432,7 +451,7 @@ function handleBusinessSystemCreated(system) {
 }
 
 function handleEnvironmentCreated(environment) {
-  if (!environment?.id) return
+  if (props.readOnly || !environment?.id) return
   environmentRecords.value = [...environmentRecords.value.filter((item) => item.id !== environment.id), environment]
   form.environment = environment.id
   environmentDialogOpen.value = false
@@ -440,7 +459,7 @@ function handleEnvironmentCreated(environment) {
 }
 
 function handleApplicationCreated(application) {
-  if (!application?.id) return
+  if (props.readOnly || !application?.id) return
   applicationOptions.value = [...applicationOptions.value.filter((item) => item.value !== application.id), { label: application.name, value: application.id }]
   form.application = application.id
   applicationDialogOpen.value = false
@@ -448,7 +467,7 @@ function handleApplicationCreated(application) {
 }
 
 function handleClusterProfileCreated(profile) {
-  if (!profile?.id) return
+  if (props.readOnly || !profile?.id) return
   profileRecords.value = [...profileRecords.value.filter((item) => item.id !== profile.id), profile]
   form.cluster_profile = profile.id
   if (profile.application) form.application = profile.application
@@ -457,6 +476,7 @@ function handleClusterProfileCreated(profile) {
 }
 
 function openTemplateCreator() {
+  if (props.readOnly || !canCreate.value) return
   if (!form.application) {
     message.warning('请先选择应用')
     return
@@ -465,7 +485,7 @@ function openTemplateCreator() {
 }
 
 function handleVersionCreated(version) {
-  if (!version?.id) return
+  if (props.readOnly || !version?.id) return
   versionRecords.value = [...versionRecords.value.filter((item) => item.id !== version.id), version]
   form.application_version = version.id
   versionDialogOpen.value = false
@@ -473,7 +493,7 @@ function handleVersionCreated(version) {
 }
 
 function handleTemplateCreated(template) {
-  if (!template?.id) return
+  if (props.readOnly || !template?.id) return
   templateRecords.value = [...templateRecords.value.filter((item) => item.id !== template.id), template]
   form.deployment_template = template.id
   templateDialogOpen.value = false
@@ -481,6 +501,7 @@ function handleTemplateCreated(template) {
 }
 
 async function openDeploymentDialog(deploymentId = null) {
+  if (deploymentId == null ? props.readOnly || !canCreate.value : !canView.value) return
   // 已有实例独立保存；编辑不能被父服务未完成的字段或尚未保存的关联阻塞。
   if (deploymentId != null) {
     selectedDeploymentId.value = deploymentId
@@ -488,6 +509,7 @@ async function openDeploymentDialog(deploymentId = null) {
     return
   }
   // 部署实例强依赖服务上的版本与模板，缺失时先在本表单补齐，避免子弹窗提交必然失败。
+  const current = loadGeneration
   try {
     await formRef.value.validate(['application_version', 'deployment_template'])
     if (!form.id) {
@@ -500,12 +522,14 @@ async function openDeploymentDialog(deploymentId = null) {
     // 校验失败由表单显示字段提示，不让正常的校验拒绝冒到按钮事件层。
     return
   }
+  if (current !== loadGeneration || props.readOnly || !canCreate.value) return
   if (!form.id) {
     const payload = { ...form, draft: true }
     payload.cluster_profile = payload.topology_type === 'cluster' ? payload.cluster_profile : null
     try {
       const response = await saveApplicationService(payload)
-      Object.assign(form, response?.data?.data || {})
+      if (current !== loadGeneration) return
+      form.id = response?.data?.data?.id
       emit('saved')
     } catch (error) {
       message.error(error?.response?.data?.msg || error?.message || '保存服务草稿失败')
@@ -513,13 +537,14 @@ async function openDeploymentDialog(deploymentId = null) {
     }
   }
   await nextTick()
+  if (current !== loadGeneration || props.readOnly) return
   formRef.value?.clearValidate()
   selectedDeploymentId.value = deploymentId
   deploymentDialogOpen.value = true
 }
 
 function handleDeploymentSaved(deployment) {
-  if (!deployment?.id) return
+  if (props.readOnly || !deployment?.id) return
   if (deploymentRecords.value.some((item) => item.id === deployment.id)) {
     deploymentRecords.value = deploymentRecords.value.map((item) => item.id === deployment.id ? { ...item, ...deployment } : item)
   } else {
@@ -533,12 +558,14 @@ function handleDeploymentSaved(deployment) {
 }
 
 function confirmDeleteDeployment(deploymentId) {
+  if (props.readOnly) return
   const deployment = deploymentRecords.value.find((item) => item.id === deploymentId)
   openDeleteConfirm({
     title: '删除部署实例',
     summary: '删除后该实例将从当前逻辑服务中移除。',
     items: [deploymentLabel(deploymentId)],
     onConfirm: async () => {
+      if (props.readOnly) return
       selectedDeploymentIds.value = selectedDeploymentIds.value.filter((id) => id !== deploymentId)
       delete memberEnabled[deploymentId]
       message.success(`${deployment?.instance_name || '部署实例'}已从当前逻辑服务移除`)
@@ -546,49 +573,77 @@ function confirmDeleteDeployment(deploymentId) {
   })
 }
 
+async function loadEditOptions(current) {
+  const loaders = [
+    ['业务系统', () => fetchAllPages(getBusinessSystemList, { enabled: true })],
+    ['环境', () => fetchAllPages(getBusinessEnvironmentList, { enabled: true })],
+    ['应用', () => fetchAllPages(getApplicationList, { enabled: true })],
+    ['应用版本', () => fetchAllPages(getApplicationVersionList, { enabled: true })],
+    ['部署模板', () => fetchAllPages(getApplicationDeploymentTemplateList, { enabled: true })],
+    ['集群模型', () => fetchAllPages(getClusterProfileList, { enabled: true })],
+    ['部署实例', () => fetchAllPages(getApplicationDeploymentList)],
+    // 保留档位：服务级"默认保留档位"下拉的选项（逐条档位在日志中心改）。
+    ['保留档位', () => fetchAllPages(getLogRetentionTiers, { enabled: true })],
+  ]
+  const results = await Promise.all(loaders.map(async ([label, loader]) => {
+    try {
+      return { label, records: await loader() }
+    } catch (error) {
+      return { label, error }
+    }
+  }))
+  if (current !== loadGeneration) return
+  const failedLabels = results.filter((result) => result.error).map((result) => result.label)
+  if (failedLabels.length) loadError.value = `${failedLabels.join('、')}加载失败，请点击重试`
+  const records = Object.fromEntries(results.map((result) => [result.label, result.records || []]))
+  const systems = records['业务系统']
+  const environments = records['环境']
+  const applications = records['应用']
+  const versions = records['应用版本']
+  const templates = records['部署模板']
+  const profiles = records['集群模型']
+  const deployments = records['部署实例']
+  businessSystemOptions.value = systems.map((item) => ({ label: item.name, value: item.id }))
+  environmentRecords.value = environments
+  applicationOptions.value = applications.map((item) => ({ label: item.name, value: item.id }))
+  versionRecords.value = versions
+  templateRecords.value = templates
+  profileRecords.value = profiles
+  deploymentRecords.value = deployments
+  retentionTierRecords.value = records['保留档位']
+}
+
+// 查看只查询已选模板、模型及本服务的成员，不要求主机、监控等模块的候选列表权限。
+async function loadSelectedOptions(data, current) {
+  const [template, profile, members] = await Promise.all([
+    data.deployment_template && getApplicationDeploymentTemplate(data.deployment_template),
+    data.cluster_profile && getClusterProfile(data.cluster_profile),
+    data.member_instances?.length ? fetchAllPages(getApplicationDeploymentList, { application_service: data.id }) : [],
+  ])
+  if (current !== loadGeneration) return
+  businessSystemOptions.value = [{ value: data.business_system, label: data.business_system_name }]
+  applicationOptions.value = [{ value: data.application, label: data.application_name }]
+  environmentRecords.value = [{ id: data.environment, name: data.environment_name, enabled: true }]
+  versionRecords.value = [{ id: data.application_version, version: data.application_version_name, application: data.application }]
+  templateRecords.value = template ? [template.data.data] : []
+  profileRecords.value = profile ? [profile.data.data] : []
+  deploymentRecords.value = members
+  retentionTierRecords.value = data.log_retention_tier ? [{ id: data.log_retention_tier, name: data.log_retention_tier_name || `档位 ${data.log_retention_tier}`, enabled: true }] : []
+}
+
+// 同一个弹窗可先查看 A 再编辑 B；旧详情或候选不得覆盖新表单。
+let loadGeneration = 0
 async function initialize() {
+  const current = ++loadGeneration
   Object.assign(form, initialForm())
   loadError.value = ''
   loading.value = true
   try {
-    const loaders = [
-      ['业务系统', () => fetchAllPages(getBusinessSystemList, { enabled: true })],
-      ['环境', () => fetchAllPages(getBusinessEnvironmentList, { enabled: true })],
-      ['应用', () => fetchAllPages(getApplicationList, { enabled: true })],
-      ['应用版本', () => fetchAllPages(getApplicationVersionList, { enabled: true })],
-      ['部署模板', () => fetchAllPages(getApplicationDeploymentTemplateList, { enabled: true })],
-      ['集群模型', () => fetchAllPages(getClusterProfileList, { enabled: true })],
-      ['部署实例', () => fetchAllPages(getApplicationDeploymentList)],
-      // 保留档位：服务级"默认保留档位"下拉的选项（逐条档位在日志中心改）。
-      ['保留档位', () => fetchAllPages(getLogRetentionTiers, { enabled: true })],
-    ]
-    const results = await Promise.all(loaders.map(async ([label, loader]) => {
-      try {
-        return { label, records: await loader() }
-      } catch (error) {
-        return { label, error }
-      }
-    }))
-    const failedLabels = results.filter((result) => result.error).map((result) => result.label)
-    if (failedLabels.length) loadError.value = `${failedLabels.join('、')}加载失败，请点击重试`
-    const records = Object.fromEntries(results.map((result) => [result.label, result.records || []]))
-    const systems = records['业务系统']
-    const environments = records['环境']
-    const applications = records['应用']
-    const versions = records['应用版本']
-    const templates = records['部署模板']
-    const profiles = records['集群模型']
-    const deployments = records['部署实例']
-    businessSystemOptions.value = systems.map((item) => ({ label: item.name, value: item.id }))
-    environmentRecords.value = environments
-    applicationOptions.value = applications.map((item) => ({ label: item.name, value: item.id }))
-    versionRecords.value = versions
-    templateRecords.value = templates
-    profileRecords.value = profiles
-    deploymentRecords.value = deployments
-    retentionTierRecords.value = records['保留档位']
+    if (!props.readOnly) await loadEditOptions(current)
+    if (current !== loadGeneration) return
     if (props.copyServiceId && !props.serviceId) {
       const response = await getApplicationService(props.copyServiceId)
+      if (current !== loadGeneration) return
       const data = response?.data?.data
       if (!data?.id) throw new Error('无法读取待复制的逻辑服务')
       // 只复制配置白名单，禁止带入源服务身份、成员、采集认证和运行状态。
@@ -599,13 +654,16 @@ async function initialize() {
       }
       form.name = `${data.name}-copy`
       form.code = `${data.code}-copy`
-      form.macro_values = { ...(data.macro_values || {}) }
+      form.macro_values = Object.fromEntries(Object.entries(data.macro_values || {}).filter(([name]) => !isSensitiveMacro(name)))
       selectedDeploymentIds.value = []
       for (const key of Object.keys(memberEnabled)) delete memberEnabled[key]
     } else if (props.serviceId) {
       const response = await getApplicationService(props.serviceId)
+      if (current !== loadGeneration) return
       const data = response?.data?.data || {}
-      Object.assign(form, initialForm(), data)
+      if (props.readOnly) await loadSelectedOptions(data, current)
+      if (current !== loadGeneration) return
+      Object.assign(form, formFields(initialForm(), data))
       form.macro_values = { ...(data.macro_values || {}) }
       // 后端 member_instances 为部署 ID 数组（无覆盖记录时无 enabled 信息，默认启用）
       selectedDeploymentIds.value = (data.member_instances || [])
@@ -634,13 +692,14 @@ async function initialize() {
     await nextTick()
     formRef.value?.clearValidate()
   } catch (error) {
-    loadError.value = error?.response?.data?.msg || error?.message || '加载逻辑服务失败'
+    if (current === loadGeneration) loadError.value = error?.response?.data?.msg || error?.message || '加载逻辑服务失败'
   } finally {
-    loading.value = false
+    if (current === loadGeneration) loading.value = false
   }
 }
 
 async function submit() {
+  if (props.readOnly || loading.value) return
   // 校验失败是正常交互（红字提示补字段），catch 住避免未处理的 Promise 拒绝刷控制台
   try {
     await formRef.value.validate()
@@ -658,6 +717,7 @@ async function submit() {
     message.error(`模板宏值不能为空：${missingMacrosText.value}（请填写值，或重置为模板默认值）`)
     return
   }
+  if (props.readOnly) return
   saving.value = true
   try {
     const payload = { ...form }
@@ -685,20 +745,23 @@ async function submit() {
   }
 }
 
-watch(() => props.open, (visible) => {
+watch([() => props.open, () => props.serviceId, () => props.copyServiceId, () => props.readOnly], ([visible]) => {
+  loadGeneration++
+  for (const dialog of [deploymentDialogOpen, businessSystemDialogOpen, environmentDialogOpen, clusterProfileDialogOpen,
+    applicationDialogOpen, versionDialogOpen, templateDialogOpen]) dialog.value = false
   if (visible) {
-    deploymentDialogOpen.value = false
     selectedDeploymentIds.value = []
     for (const key of Object.keys(memberEnabled)) delete memberEnabled[key]
     initialize()
   }
-})
+}, { immediate: true })
 // 改应用 / 改集群模型时只清理不再适用的版本与模板。
 // **不要**顺手过滤 selectedDeploymentIds：成员属于这个逻辑服务，且可能同时挂在别的应用下的服务上，
 // 按 application_id 过滤会把已绑定的实例静默剔除出成员列表（2026-09-18 yilake nginx 现场：
 // 库里关联还在，编辑弹窗里成员却是空的，保存时又把空成员写回去）。
 // 移除成员只走成员行的删除按钮（confirmDeleteDeployment），那是显式动作。
 watch(() => form.application, () => {
+  if (props.readOnly) return
   if (form.application_version && !versionOptions.value.some((item) => item.value === form.application_version)) {
     form.application_version = null
   }
@@ -707,6 +770,7 @@ watch(() => form.application, () => {
   }
 })
 watch(() => form.deployment_template, (templateId) => {
+  if (props.readOnly) return
   // 初始化时保留详情中的宏覆盖值，列表记录不包含完整宏定义。
   if (loading.value) return
   const definitions = templateRecords.value.find((item) => item.id === templateId)?.macro_definitions || []
@@ -717,6 +781,7 @@ watch(() => form.deployment_template, (templateId) => {
   form.macro_values = values
 })
 watch(() => form.topology_type, (topology) => {
+  if (props.readOnly) return
   if (topology === 'standalone') {
     form.cluster_profile = null
     form.access_address = ''
@@ -730,6 +795,7 @@ watch(() => form.topology_type, (topology) => {
   }
 })
 watch(() => form.cluster_profile, () => {
+  if (props.readOnly) return
   if (form.topology_type === 'cluster' && selectedProfile.value?.application) {
     form.application = selectedProfile.value.application
   }

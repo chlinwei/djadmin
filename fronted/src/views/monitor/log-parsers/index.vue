@@ -66,7 +66,8 @@
         >
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'name'">
-              <span class="pipeline-name">{{ record.name }}</span>
+              <a-button v-if="checkPermission('monitor:view')" type="link" @click="openEdit(record)">{{ record.name }}</a-button>
+              <span v-else class="pipeline-name">{{ record.name }}</span>
             </template>
             <template v-else-if="column.key === 'description'">
               <span style="white-space: pre-wrap; overflow-wrap: anywhere">{{ record.description || '-' }}</span>
@@ -96,13 +97,14 @@
             </template>
             <template v-else-if="column.key === 'action'">
               <a-space :size="6">
+                <ViewRecordButton v-if="checkPermission('monitor:view') && !checkPermission('monitor:update')" @click="openEdit(record)" />
                 <a-tooltip title="编辑">
-                  <a-button v-if="checkPermission('monitor:update')" type="primary" @click="openEdit(record)">
+                  <a-button v-if="checkPermission('monitor:view') && checkPermission('monitor:update')" type="primary" @click="openEdit(record)">
                     <FontAwesomeIcon :icon="['fa', 'edit']" />
                   </a-button>
                 </a-tooltip>
                 <a-tooltip title="解析试算" placement="top">
-                  <a-button data-simulate-rule @click="openTest(record)">
+                  <a-button v-if="checkPermission('monitor:view')" data-simulate-rule @click="openTest(record)">
                     <ExperimentOutlined />
                   </a-button>
                 </a-tooltip>
@@ -123,12 +125,25 @@
             </div>
             <a-table size="small" row-key="id" :columns="filterColumns" :data-source="visibleFilterRules" :loading="filterLoading" :pagination="false" :scroll="{ x: 1000 }" :locale="{ emptyText: '当前应用暂无采集过滤规则' }">
               <template #bodyCell="{ column, record }">
-                <template v-if="column.key === 'name'"><span class="pipeline-name">{{ record.name }}</span></template>
+                <template v-if="column.key === 'name'">
+                  <a-button v-if="checkPermission('monitor:view')" type="link" @click="openFilterEdit(record)">{{ record.name }}</a-button>
+                  <span v-else class="pipeline-name">{{ record.name }}</span>
+                </template>
                 <template v-else-if="column.key === 'rule_type'"><a-tag :color="record.rule_type === 'exclude' ? 'orange' : 'green'">{{ filterRuleTypeLabel(record.rule_type) }}</a-tag></template>
                 <template v-else-if="column.key === 'description'"><span style="white-space: pre-wrap; overflow-wrap: anywhere">{{ record.description || '-' }}</span></template>
                 <template v-else-if="column.key === 'pattern'"><code>{{ record.pattern }}</code></template>
                 <template v-else-if="column.key === 'enabled'"><EnabledSwitch v-model:checked="record.enabled" :endpoint="`monitor/log-collection-filter-rules/${record.id}/`" permission="monitor:update" /></template>
-                <template v-else-if="column.key === 'action'"><a-space :size="6"><a-tooltip title="编辑"><a-button v-if="checkPermission('monitor:update')" type="primary" @click="openFilterEdit(record)"><FontAwesomeIcon :icon="['fa', 'edit']" /></a-button></a-tooltip><a-tooltip title="删除"><a-button v-if="checkPermission('monitor:delete')" class="delBtn" danger type="primary" @click="confirmDeleteFilter(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip></a-space></template>
+                <template v-else-if="column.key === 'action'">
+                  <a-space :size="6">
+                    <ViewRecordButton v-if="checkPermission('monitor:view') && !checkPermission('monitor:update')" @click="openFilterEdit(record)" />
+                    <a-tooltip title="编辑" placement="top">
+                      <a-button v-if="checkPermission('monitor:view') && checkPermission('monitor:update')" type="primary" @click="openFilterEdit(record)"><FontAwesomeIcon :icon="['fa', 'edit']" /></a-button>
+                    </a-tooltip>
+                    <a-tooltip title="删除" placement="top">
+                      <a-button v-if="checkPermission('monitor:delete')" class="delBtn" danger type="primary" @click="confirmDeleteFilter(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button>
+                    </a-tooltip>
+                  </a-space>
+                </template>
               </template>
             </a-table>
           </a-tab-pane>
@@ -179,7 +194,7 @@
 
     <a-modal
       v-model:open="editorOpen"
-      :title="isSimulationEntry ? `解析试算：${editingOriginalName}` : editingOriginalName ? `编辑处理规则：${editingOriginalName}` : '新增日志处理规则'"
+      :title="isSimulationEntry ? `解析试算：${editingOriginalName}` : editingOriginalName ? `${canPublish ? '编辑' : '查看'}处理规则：${editingOriginalName}` : '新增日志处理规则'"
       :width="960"
       centered
       :confirm-loading="saving"
@@ -194,31 +209,14 @@
         v-if="!canPublish || activeTab === 'test'"
         type="info"
         show-icon
-        :message="canPublish
+        :message="canTestProcessors
           ? '仅对当前样例进行解析试算，不保存或发布规则，不下发配置，不写入日志索引。'
           : '当前为只读查看：规则配置不可修改，仅可更换日志样例进行试算；不保存或发布规则，不下发配置，不写入日志索引。'"
         style="margin-bottom: 12px"
       />
       <a-tabs v-model:activeKey="activeTab">
         <a-tab-pane key="preprocess" tab="发送前处理（Filebeat）">
-          <a-descriptions v-if="!canPublish" bordered :column="2" size="small">
-            <a-descriptions-item label="规则名称" :span="2">{{ form.name || '-' }}</a-descriptions-item>
-            <a-descriptions-item label="说明" :span="2">
-              <span style="white-space: pre-wrap; overflow-wrap: anywhere">{{ form.description || '-' }}</span>
-            </a-descriptions-item>
-            <a-descriptions-item label="所属应用" :span="2">
-              {{ form.application ? applicationNameById.get(String(form.application)) || `应用 ID：${form.application}` : '通用（不限应用）' }}
-            </a-descriptions-item>
-            <a-descriptions-item label="日志格式">
-              {{ inputFormatOptions.find((option) => option.value === form.input_format)?.label || form.input_format }}
-            </a-descriptions-item>
-            <a-descriptions-item label="多行合并">{{ form.multiline_enabled ? '开启' : '关闭' }}</a-descriptions-item>
-            <template v-if="form.multiline_enabled">
-              <a-descriptions-item label="首行正则">{{ form.start_pattern || '-' }}</a-descriptions-item>
-              <a-descriptions-item label="合并超时（毫秒）">{{ form.flush_timeout }}</a-descriptions-item>
-            </template>
-          </a-descriptions>
-          <a-form v-else ref="formRef" :model="form" :rules="formRules" layout="vertical">
+          <a-form :disabled="!canPublish" ref="formRef" :model="form" :rules="formRules" layout="vertical">
             <a-form-item name="name" label="规则名称">
               <a-input
                 v-model:value="form.name"
@@ -240,7 +238,7 @@
                 v-model:value="form.application"
                 allow-clear
                 placeholder="留空表示不限应用的通用规则"
-                :options="applicationOptions"
+                :options="canPublish ? applicationOptions : selectedApplicationOption(form)"
                 :getPopupContainer="getPopupContainer"
                 :virtual="false"
               />
@@ -248,7 +246,7 @@
             <a-row :gutter="16">
               <a-col :span="12">
                 <a-form-item name="input_format" label="日志格式">
-                  <a-segmented v-model:value="form.input_format" :options="inputFormatOptions" block />
+                  <a-segmented :disabled="!canPublish" v-model:value="form.input_format" :options="inputFormatOptions" block />
                 </a-form-item>
               </a-col>
               <a-col :span="12">
@@ -291,7 +289,7 @@
             <a-form-item label="样例格式">
               <a-segmented v-model:value="sampleMode" :options="sampleModeOptions" />
             </a-form-item>
-            <a-form-item v-if="canPublish">
+            <a-form-item v-if="canTestProcessors">
               <template #label>
                 <a-tooltip title="可选。与日志中心「条件丢弃」相同：粘贴条件对应的处理器数组，调试时会模拟包装 pipeline：先跑本规则的解析，再执行丢弃（要求规则已发布）。" placement="top">
                   <span>条件丢弃预览（可选，模拟包装串联）</span>
@@ -376,13 +374,14 @@
       </a-tabs>
     </a-modal>
 
-    <a-modal v-model:open="filterEditorOpen" :title="filterForm.id ? `编辑过滤规则：${filterForm.name}` : '新增采集过滤规则'" :confirm-loading="filterSaving" ok-text="保存" cancel-text="取消" @ok="saveFilterRule">
+    <a-modal v-model:open="filterEditorOpen" :title="filterForm.id ? `${filterReadOnly ? '查看' : '编辑'}过滤规则：${filterForm.name}` : '新增采集过滤规则'" :confirm-loading="filterSaving" ok-text="保存" cancel-text="取消" @ok="saveFilterRule">
+      <template v-if="filterReadOnly" #footer><a-button @click="filterEditorOpen = false">关闭</a-button></template>
       <a-form ref="filterFormRef" :model="filterForm" :rules="filterFormRules" layout="vertical">
-        <a-form-item name="name" label="规则名称"><a-input v-model:value="filterForm.name" placeholder="例如 error-critical-only" /></a-form-item>
-        <a-form-item name="application" label="所属应用"><a-select v-model:value="filterForm.application" allow-clear placeholder="留空表示通用规则" :options="applicationOptions" :getPopupContainer="getPopupContainer" :virtual="false" /></a-form-item>
+        <a-form-item name="name" label="规则名称"><a-input :disabled="filterReadOnly" v-model:value="filterForm.name" placeholder="例如 error-critical-only" /></a-form-item>
+        <a-form-item name="application" label="所属应用"><a-select :disabled="filterReadOnly" v-model:value="filterForm.application" allow-clear placeholder="留空表示通用规则" :options="filterReadOnly ? selectedApplicationOption(filterForm) : applicationOptions" :getPopupContainer="getPopupContainer" :virtual="false" /></a-form-item>
         <a-form-item label="说明">
           <a-textarea
-            v-model:value="filterForm.description"
+            :disabled="filterReadOnly" v-model:value="filterForm.description"
             :rows="3"
             :maxlength="2000"
             show-count
@@ -390,17 +389,17 @@
           />
         </a-form-item>
         <a-form-item name="rule_type" label="规则类型">
-          <a-segmented v-model:value="filterForm.rule_type" :options="filterRuleTypeOptions" block />
+          <a-segmented :disabled="filterReadOnly" v-model:value="filterForm.rule_type" :options="filterRuleTypeOptions" block />
           <div class="field-hint">
             保留（include）= 只采匹配的记录；排除（exclude）= 丢掉匹配的记录。两者同时配时先保留、后排除。
             方向由规则自己声明，落槽时校验一致——反着用会只采到噪声。
           </div>
         </a-form-item>
         <a-form-item name="pattern" label="匹配正则">
-          <a-textarea v-model:value="filterForm.pattern" :rows="3" :placeholder="filterForm.rule_type === 'exclude' ? '例如 (?i)healthcheck|/ping|DEBUG' : '例如 (?i)(error|failed|critical|fatal)'" spellcheck="false" />
+          <a-textarea :disabled="filterReadOnly" v-model:value="filterForm.pattern" :rows="3" :placeholder="filterForm.rule_type === 'exclude' ? '例如 (?i)healthcheck|/ping|DEBUG' : '例如 (?i)(error|failed|critical|fatal)'" spellcheck="false" />
           <div class="field-hint">Go RE2 方言（与 Filebeat 同一个引擎）：不支持 \uXXXX（要写 \x{XXXX}）与断言；过滤发生在多行合并之后，<code>^</code> 只匹配整条记录的开头。</div>
         </a-form-item>
-        <a-form-item label="启用"><EnabledSwitch v-model:checked="filterForm.enabled" /></a-form-item>
+        <a-form-item label="启用"><EnabledSwitch :disabled="filterReadOnly" v-model:checked="filterForm.enabled" /></a-form-item>
         <a-form-item label="试算（可选）">
           <a-textarea v-model:value="filterSample" :rows="5" placeholder="粘几行日志，下面显示这条规则会保留/丢掉哪些行——白名单写错的代价是数据永久丢失，先算一次。" spellcheck="false" />
           <div v-if="filterSample.trim()" class="filter-sample-result">
@@ -449,6 +448,7 @@
 </template>
 
 <script setup>
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { checkPermission } from '@/directives/permission/permission'
@@ -494,6 +494,7 @@ const activeTab = ref('preprocess')
 const catalogTab = ref('processing')
 const formRef = ref(null)
 const filterFormRef = ref(null)
+const filterReadOnly = computed(() => Boolean(filterForm.id) && !checkPermission('monitor:update'))
 const filterEditorOpen = ref(false)
 const sampleMode = ref('raw')
 const sampleText = ref('2026-08-27 13:00:00 INFO service started')
@@ -539,7 +540,8 @@ const form = reactive({
   flush_timeout: 1000,
   bodyText: '',
 })
-const canPublish = computed(() => checkPermission(form.id ? 'monitor:update' : 'monitor:create'))
+const canTestProcessors = computed(() => checkPermission(form.id ? 'monitor:update' : 'monitor:create'))
+const canPublish = computed(() => !isSimulationEntry.value && canTestProcessors.value)
 const filterForm = reactive({ id: null, name: '', application: null, description: '', pattern: '', rule_type: 'include', enabled: true })
 const filterRuleTypeOptions = [
   { label: '保留（include）', value: 'include' },
@@ -570,9 +572,24 @@ const filterSampleKept = computed(() => (filterForm.rule_type === 'exclude'
 const filterSampleDropped = computed(() => (filterForm.rule_type === 'exclude'
   ? filterSampleMatched.value
   : filterSampleLines.value.filter((line) => !filterSampleMatched.value.includes(line))))
+// 只读分组和表单只使用规则已关联的应用，不依赖资产目录权限。
+const visibleApplications = computed(() => {
+  const byId = new Map()
+  for (const rule of [...processingRules.value, ...collectionFilterRules.value]) {
+    if (rule.application) byId.set(rule.application, {
+      id: rule.application, name: rule.application_name || `应用 #${rule.application}`,
+      code: rule.application_code || byId.get(rule.application)?.code,
+    })
+  }
+  for (const app of applications.value) byId.set(app.id, app)
+  return [...byId.values()]
+})
 const applicationOptions = computed(() =>
-  applications.value.map((item) => ({ label: item.name, value: item.id })),
+  visibleApplications.value.map((item) => ({ label: item.name, value: item.id })),
 )
+function selectedApplicationOption(rule) {
+  return rule.application ? [{ value: rule.application, label: rule.application_name || `应用 #${rule.application}` }] : []
+}
 
 // 左侧分组：数量统一由当前集群的规则列表当场统计，避免每个应用再发一次请求。
 // 除已建应用外额外给出“全部”与“通用”（application 为空，不限应用的规则）两个入口。
@@ -588,7 +605,7 @@ const applicationGroups = computed(() => {
   }
   return [
     { key: 'all', label: '全部规则', count: processingRules.value.length },
-    ...applications.value.map((item) => ({
+    ...visibleApplications.value.map((item) => ({
       key: String(item.id),
       label: item.name,
       // code 只用于筛选匹配（列表里显示 name，与应用下拉的口径一致）。
@@ -647,7 +664,7 @@ const usageCountByRule = computed(() => new Set(ruleUsages.value.map((item) => i
 // 「所属应用」列：usage 行只带 application id，应用名用左侧菜单已加载的应用列表就地反查。
 const applicationNameById = computed(() => {
   const byId = new Map()
-  for (const item of applications.value) byId.set(String(item.id), item.name)
+  for (const item of visibleApplications.value) byId.set(String(item.id), item.name)
   return byId
 })
 
@@ -863,6 +880,7 @@ function resetEditor() {
 
 function openCreate() {
   if (!checkPermission('monitor:create')) return
+  if (!applications.value.length) loadApplications()
   resetEditor()
   // 从左侧已选应用入口新建时直接带入归属，避免再手选一次
   const selectedApplicationId = Number(selectedApplicationKey.value)
@@ -872,6 +890,7 @@ function openCreate() {
 }
 
 function openEdit(record) {
+  if (!checkPermission('monitor:view')) return
   resetEditor()
   editingOriginalName.value = record.name
   Object.assign(form, {
@@ -884,6 +903,7 @@ function openEdit(record) {
 }
 
 function openTest(record) {
+  if (!checkPermission('monitor:view')) return
   openEdit(record)
   isSimulationEntry.value = true
   activeTab.value = 'test'
@@ -891,6 +911,7 @@ function openTest(record) {
 
 function openFilterCreate() {
   if (!checkPermission('monitor:create')) return
+  if (!applications.value.length) loadApplications()
   filterSample.value = ''
   Object.assign(filterForm, { id: null, name: '', application: null, description: '', pattern: '', rule_type: 'include', enabled: true })
   const selectedApplicationId = Number(selectedApplicationKey.value)
@@ -899,10 +920,9 @@ function openFilterCreate() {
 }
 
 function openFilterEdit(record) {
-  if (!checkPermission('monitor:update')) return
+  if (!checkPermission('monitor:view')) return
+  filterSample.value = ''
   Object.assign(filterForm, record)
-  // 迁移前建的规则没有类型字段，一律按 include（白名单）处理。
-  if (!filterForm.rule_type) filterForm.rule_type = 'include'
   filterEditorOpen.value = true
 }
 
@@ -947,7 +967,7 @@ async function saveFilterRule() {
 }
 
 async function publishPipeline() {
-  if (!checkPermission(form.id ? 'monitor:update' : 'monitor:create')) return
+  if (!canPublish.value) return
   try {
     await formRef.value?.validate()
   } catch {
@@ -1055,7 +1075,7 @@ async function simulate() {
       rule_name: form.name,
       application_id: form.application || null,
     }
-    if (canPublish.value && extraProcessorsText.value.trim()) {
+    if (canTestProcessors.value && extraProcessorsText.value.trim()) {
       let extra
       try {
         extra = JSON.parse(extraProcessorsText.value)
@@ -1118,7 +1138,8 @@ function confirmDeleteFilter(record) {
 }
 
 onMounted(() => {
-  loadApplications()
+  // 可编辑用户的导航还列出无规则的应用；只读记录依靠规则自身的关联名称分组。
+  if (checkPermission('monitor:update')) loadApplications()
   loadClusters()
   loadFilterRules()
 })

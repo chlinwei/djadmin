@@ -313,21 +313,22 @@ func (handler *Handler) matchedPolicyMedias(ctx context.Context, target alertNot
 // ---- 管理 API ----
 
 type notificationPolicyItem struct {
-	ID               int64           `json:"id"`
-	ParentID         *int64          `json:"parent_id"`
-	Name             string          `json:"name"`
-	Position         int             `json:"position"`
-	Remark           string          `json:"remark"`
-	Matchers         json.RawMessage `json:"matchers"`
-	MediaIDs         *[]int64        `json:"media_ids"`
-	MediaNames       []string        `json:"media_names"`
-	UserGroupIDs     *[]int64        `json:"user_group_ids"`
-	UserGroupNames   []string        `json:"user_group_names"`
-	NotifyOnFiring   bool            `json:"notify_on_firing"`
-	NotifyOnResolved bool            `json:"notify_on_resolved"`
-	IsRoot           bool            `json:"is_root"`
-	CreateTime       time.Time       `json:"create_time"`
-	UpdateTime       time.Time       `json:"update_time"`
+	ID               int64             `json:"id"`
+	ParentID         *int64            `json:"parent_id"`
+	Name             string            `json:"name"`
+	Position         int               `json:"position"`
+	Remark           string            `json:"remark"`
+	Matchers         json.RawMessage   `json:"matchers"`
+	ScopeNames       map[string]string `json:"scope_names"`
+	MediaIDs         *[]int64          `json:"media_ids"`
+	MediaNames       []string          `json:"media_names"`
+	UserGroupIDs     *[]int64          `json:"user_group_ids"`
+	UserGroupNames   []string          `json:"user_group_names"`
+	NotifyOnFiring   bool              `json:"notify_on_firing"`
+	NotifyOnResolved bool              `json:"notify_on_resolved"`
+	IsRoot           bool              `json:"is_root"`
+	CreateTime       time.Time         `json:"create_time"`
+	UpdateTime       time.Time         `json:"update_time"`
 }
 
 func (handler *Handler) ListNotificationPolicies(context *gin.Context) {
@@ -359,6 +360,30 @@ func (handler *Handler) listNotificationPolicies(ctx context.Context) ([]notific
 			item.ParentID = &parentID
 		} else {
 			item.IsRoot = true
+		}
+		// 只返回本策略关联的节点；环境条件匹配全局环境，不伪造业务分支路径。
+		var matchers []policyMatcher
+		if err := json.Unmarshal(item.Matchers, &matchers); err != nil {
+			return nil, err
+		}
+		item.ScopeNames = make(map[string]string)
+		for _, matcher := range matchers {
+			if matcher.Type != "tree" {
+				continue
+			}
+			key := fmt.Sprintf("%s:%d", matcher.NodeType, matcher.ID)
+			var name string
+			if matcher.NodeType == "environment" {
+				name, err = db.New(handler.db).GetBusinessEnvironmentNameByID(ctx, matcher.ID)
+			} else {
+				name, err = maintenanceScopeName(ctx, db.New(handler.db), maintenanceMatcher{policyMatcher: matcher})
+			}
+			if err == sql.ErrNoRows {
+				name = fmt.Sprintf("资产已不存在（%s）", key)
+			} else if err != nil {
+				return nil, err
+			}
+			item.ScopeNames[key] = name
 		}
 		if jsonColumnSet(row.MediaIds) {
 			mediaIDs := []int64{}
@@ -392,7 +417,9 @@ func (handler *Handler) userGroupNamesByIDs(ctx context.Context, groupIDs []int6
 		name, err := queries.GetUserGroupName(ctx, groupID)
 		if err == nil {
 			names = append(names, name)
-		} else if err != sql.ErrNoRows {
+		} else if err == sql.ErrNoRows {
+			names = append(names, fmt.Sprintf("用户组 #%d（已删除）", groupID))
+		} else {
 			return nil, err
 		}
 	}
@@ -406,7 +433,9 @@ func (handler *Handler) mediaNamesByIDs(ctx context.Context, mediaIDs []int64) (
 		name, err := queries.GetAlertMediaName(ctx, mediaID)
 		if err == nil {
 			names = append(names, name)
-		} else if err != sql.ErrNoRows {
+		} else if err == sql.ErrNoRows {
+			names = append(names, fmt.Sprintf("媒介 #%d（已删除）", mediaID))
+		} else {
 			return nil, err
 		}
 	}

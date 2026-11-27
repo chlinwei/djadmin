@@ -11,7 +11,7 @@ import { buildLevelMetrics, buildLevelRows, levelDimension, servicesUnderScope }
 function service(overrides = {}) {
   return {
     id: 1, code: 'order-api', name: 'order-api', business_system: 7, environment: 71,
-    environment_name: '生产环境', log_collection_enabled: true, log_retention_tier_id: 3,
+    environment_name: '生产环境', log_collection_enabled: true, log_retention_tier: 3,
     ...overrides,
   }
 }

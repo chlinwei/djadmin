@@ -124,6 +124,14 @@ func (handler *Handler) AlertWebhook(context *gin.Context) {
 		created++
 		notificationTargets = append(notificationTargets, alertNotificationTarget{id: newAlertID, alertname: alertname, severity: mapString(alert.Labels, "severity"), instance: mapString(alert.Labels, "instance"), state: "firing", labels: nonNilMap(alert.Labels)})
 	}
+	// 历史转态与待入队意图原子落库；若提交后 API 重启，扫描器继续正常的策略预判/去重。
+	for _, target := range notificationTargets {
+		if err := queries.RecordNotificationIntent(context, db.RecordNotificationIntentParams{AlertID: target.id, EventType: target.state}); err != nil {
+			tx.Rollback()
+			context.JSON(500, gin.H{"error": "persist notification intent failed"})
+			return
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		context.JSON(500, gin.H{"error": "persist alerts failed"})
 		return

@@ -92,14 +92,15 @@ describe('用户组操作权限', () => {
     store.state.role_codes = [role]
     const warning = vi.spyOn(message, 'warning').mockImplementation(() => {})
     await loadPage()
-    expect(wrapper.findAll('button')).toHaveLength(0)
+    expect(wrapper.findAll('button').map(button => button.text())).toEqual(['查看'])
     expect(wrapper.find('.member-add-row').exists()).toBe(false)
     expect(wrapper.findAll('thead th').map((header) => header.text())).toEqual(['用户'])
     expect(wrapper.text()).toContain('admin')
     expect(getUserList).not.toHaveBeenCalled()
     wrapper.vm.openCreateModal()
     wrapper.vm.openEditModal(groups[0])
-    expect(wrapper.vm.modalVisible).toBe(false)
+    expect(wrapper.vm.modalVisible).toBe(true)
+    expect(wrapper.vm.groupReadOnly).toBe(true)
     wrapper.vm.groupForm = { name: '不应写入', remark: '' }
     await wrapper.vm.saveGroup()
     wrapper.vm.editingId = 11

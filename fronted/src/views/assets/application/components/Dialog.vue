@@ -6,8 +6,9 @@
             :bodyStyle="{ maxHeight: '72vh', overflowY: 'auto' }"
             @ok="handleOk" @cancel="handleCancel" @afterClose="handleAfterClose">
 
+            <template v-if="readOnly" #footer><a-button @click="handleCancel">关闭</a-button></template>
             <a-spin :spinning="loading">
-            <a-form :model="form" ref="formRef" name="basic" :label-col="{ span: 8 }"
+            <a-form :disabled="readOnly" :model="form" ref="formRef" name="basic" :label-col="{ span: 8 }"
                 :wrapper-col="{ span: 16 }" autocomplete="off" :rules="get_rules(form)">
                 <a-form-item name="name" label="应用名称">
                     <a-input v-model:value="form.name" />
@@ -25,7 +26,7 @@
                     <a-textarea v-model:value="form.description" />
                 </a-form-item>
                 <a-form-item label="允许使用">
-                    <EnabledSwitch v-model:checked="form.enabled" />
+                    <EnabledSwitch :read-only="readOnly" v-model:checked="form.enabled" />
                 </a-form-item>
                 <a-form-item name="remark" label="备注">
                     <a-textarea v-model:value="form.remark" />
@@ -37,6 +38,7 @@
 </template>
 <script setup>
 import EnabledSwitch from '@/components/EnabledSwitch.vue'
+import { formFields } from './assetFormValues'
 import { ref, watch } from 'vue';
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 
@@ -54,6 +56,7 @@ const formRef = ref(null)
 const loading = ref(false)
 const props = defineProps(
     {
+        readOnly: Boolean,
         open: {
             type: Boolean,
             default: false,
@@ -129,26 +132,21 @@ const getItemById  = (id) =>{
 
 
 
-const handleOk = (e) => {
-    const res = formRef.value?.validate().then((r1) => {
-        const obj = { ...form.value };
-        if (obj.id == -1) {
-            SaveOrCreateApplication(obj).then(result => {
-                message.success("新增"+ props.appname+"成功");
-                emits('saved', result?.data?.data)
-                emits('initList')
-                emits('update:open', false)
-            })
-        } else {
-            SaveOrCreateApplication(obj).then(result => {
-                message.success("保存"+ props.appname +"成功");
-                emits('initList')
-                emits('update:open', false);
-            })
-        }
-    })
-
-};
+const handleOk = async () => {
+    if (props.readOnly || loading.value || !props.open) return
+    try {
+        await formRef.value.validate()
+    } catch {
+        return
+    }
+    if (props.readOnly || !props.open) return
+    const creating = props.item_id === -1
+    const result = await SaveOrCreateApplication({ ...form.value })
+    message.success(`${creating ? '新增' : '保存'}${props.appname}成功`)
+    if (creating) emits('saved', result?.data?.data)
+    emits('initList')
+    emits('update:open', false)
+}
 
 
 
@@ -170,14 +168,11 @@ watch(
         getItemById(id).then(res => {
             if (currentToken !== detailLoadToken || !props.open || props.item_id !== id) return
             const data = res.data.data || {}
-            form.value = {
-                ...createInitialForm(),
-                ...data,
-            }
+            form.value = formFields(createInitialForm(), data)
         }).finally(() => {
             if (currentToken === detailLoadToken) loading.value = false
         })
-    },
+    }, { immediate: true },
 )
 
 

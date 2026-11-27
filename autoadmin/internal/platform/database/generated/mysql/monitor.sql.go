@@ -155,6 +155,8 @@ WHERE (ah.id = ? OR ? IS NULL)
   AND (? = TRUE OR CAST(? AS CHAR) = CASE
     WHEN NOT EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id) THEN 'none'
     WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status = 'failed') THEN 'failed'
+    WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('suppressed','skipped','partial_muted','partial_skipped')) THEN
+      CASE WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id = ah.id AND nd.status='success') THEN 'partially_suppressed' ELSE 'suppressed' END
     WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('pending','sending')) THEN 'in_progress'
     WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id = ah.id) THEN 'success'
     ELSE 'failed'
@@ -1892,26 +1894,28 @@ func (q *Queries) GetAlertNotificationDeliveryStatus(ctx context.Context, id int
 const getAlertNotificationEventDispatch = `-- name: GetAlertNotificationEventDispatch :one
 SELECT e.event_type, e.attempt_count, e.status,
        a.id, a.alertname, a.severity, a.instance, a.state, a.labels,
-       a.annotations, a.started_at, a.resolved_at, a.generator_url
+       a.annotations, a.started_at, a.resolved_at, a.generator_url,
+       (SELECT COUNT(*) FROM monitor_maintenance_suppression s WHERE s.event_id=e.id) AS suppression_count
 FROM monitor_alert_notification_event e
 JOIN monitor_alert_history a ON a.id = e.alert_id
 WHERE e.id = ?
 `
 
 type GetAlertNotificationEventDispatchRow struct {
-	EventType    string          `json:"event_type"`
-	AttemptCount uint32          `json:"attempt_count"`
-	Status       string          `json:"status"`
-	ID           int64           `json:"id"`
-	Alertname    string          `json:"alertname"`
-	Severity     string          `json:"severity"`
-	Instance     string          `json:"instance"`
-	State        string          `json:"state"`
-	Labels       json.RawMessage `json:"labels"`
-	Annotations  json.RawMessage `json:"annotations"`
-	StartedAt    time.Time       `json:"started_at"`
-	ResolvedAt   sql.NullTime    `json:"resolved_at"`
-	GeneratorUrl string          `json:"generator_url"`
+	EventType        string          `json:"event_type"`
+	AttemptCount     uint32          `json:"attempt_count"`
+	Status           string          `json:"status"`
+	ID               int64           `json:"id"`
+	Alertname        string          `json:"alertname"`
+	Severity         string          `json:"severity"`
+	Instance         string          `json:"instance"`
+	State            string          `json:"state"`
+	Labels           json.RawMessage `json:"labels"`
+	Annotations      json.RawMessage `json:"annotations"`
+	StartedAt        time.Time       `json:"started_at"`
+	ResolvedAt       sql.NullTime    `json:"resolved_at"`
+	GeneratorUrl     string          `json:"generator_url"`
+	SuppressionCount int64           `json:"suppression_count"`
 }
 
 // 事件与告警关键字段一次取齐（原实现分两条语句读同一行，合并为一条）：
@@ -1933,6 +1937,7 @@ func (q *Queries) GetAlertNotificationEventDispatch(ctx context.Context, id int6
 		&i.StartedAt,
 		&i.ResolvedAt,
 		&i.GeneratorUrl,
+		&i.SuppressionCount,
 	)
 	return i, err
 }
@@ -2962,7 +2967,9 @@ SELECT ah.id, ah.create_time, ah.update_time, ah.remark, ah.fingerprint, ah.aler
        (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id) AS notification_count,
        (SELECT COUNT(*) FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id = ah.id) AS notification_delivery_count,
        (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status = 'failed') AS notification_failed_count,
-       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('pending','sending')) AS notification_active_count
+       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('pending','sending')) AS notification_active_count,
+       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('suppressed','skipped','partial_muted','partial_skipped')) AS notification_suppressed_count,
+       (SELECT COUNT(*) FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id=ah.id AND nd.status='success') AS notification_sent_count
 FROM monitor_alert_history ah
 WHERE (ah.id = ? OR ? IS NULL)
   AND (ah.state = ? OR ? IS NULL)
@@ -2974,6 +2981,8 @@ WHERE (ah.id = ? OR ? IS NULL)
   AND (? = TRUE OR CAST(? AS CHAR) = CASE
     WHEN NOT EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id) THEN 'none'
     WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status = 'failed') THEN 'failed'
+    WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('suppressed','skipped','partial_muted','partial_skipped')) THEN
+      CASE WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id = ah.id AND nd.status='success') THEN 'partially_suppressed' ELSE 'suppressed' END
     WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('pending','sending')) THEN 'in_progress'
     WHEN EXISTS (SELECT 1 FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id = ah.id) THEN 'success'
     ELSE 'failed'
@@ -2998,29 +3007,31 @@ type ListAlertHistoriesParams struct {
 }
 
 type ListAlertHistoriesRow struct {
-	ID                        int64           `json:"id"`
-	CreateTime                time.Time       `json:"create_time"`
-	UpdateTime                time.Time       `json:"update_time"`
-	Remark                    sql.NullString  `json:"remark"`
-	Fingerprint               string          `json:"fingerprint"`
-	Alertname                 string          `json:"alertname"`
-	Severity                  string          `json:"severity"`
-	Instance                  string          `json:"instance"`
-	Labels                    json.RawMessage `json:"labels"`
-	Annotations               json.RawMessage `json:"annotations"`
-	GeneratorUrl              string          `json:"generator_url"`
-	State                     string          `json:"state"`
-	StartedAt                 time.Time       `json:"started_at"`
-	ResolvedAt                sql.NullTime    `json:"resolved_at"`
-	LastSeenAt                time.Time       `json:"last_seen_at"`
-	ResolvedByReconciliation  bool            `json:"resolved_by_reconciliation"`
-	RuleGroup                 string          `json:"rule_group"`
-	RuleSnapshot              json.RawMessage `json:"rule_snapshot"`
-	Source                    string          `json:"source"`
-	NotificationCount         int64           `json:"notification_count"`
-	NotificationDeliveryCount int64           `json:"notification_delivery_count"`
-	NotificationFailedCount   int64           `json:"notification_failed_count"`
-	NotificationActiveCount   int64           `json:"notification_active_count"`
+	ID                          int64           `json:"id"`
+	CreateTime                  time.Time       `json:"create_time"`
+	UpdateTime                  time.Time       `json:"update_time"`
+	Remark                      sql.NullString  `json:"remark"`
+	Fingerprint                 string          `json:"fingerprint"`
+	Alertname                   string          `json:"alertname"`
+	Severity                    string          `json:"severity"`
+	Instance                    string          `json:"instance"`
+	Labels                      json.RawMessage `json:"labels"`
+	Annotations                 json.RawMessage `json:"annotations"`
+	GeneratorUrl                string          `json:"generator_url"`
+	State                       string          `json:"state"`
+	StartedAt                   time.Time       `json:"started_at"`
+	ResolvedAt                  sql.NullTime    `json:"resolved_at"`
+	LastSeenAt                  time.Time       `json:"last_seen_at"`
+	ResolvedByReconciliation    bool            `json:"resolved_by_reconciliation"`
+	RuleGroup                   string          `json:"rule_group"`
+	RuleSnapshot                json.RawMessage `json:"rule_snapshot"`
+	Source                      string          `json:"source"`
+	NotificationCount           int64           `json:"notification_count"`
+	NotificationDeliveryCount   int64           `json:"notification_delivery_count"`
+	NotificationFailedCount     int64           `json:"notification_failed_count"`
+	NotificationActiveCount     int64           `json:"notification_active_count"`
+	NotificationSuppressedCount int64           `json:"notification_suppressed_count"`
+	NotificationSentCount       int64           `json:"notification_sent_count"`
 }
 
 func (q *Queries) ListAlertHistories(ctx context.Context, arg ListAlertHistoriesParams) ([]ListAlertHistoriesRow, error) {
@@ -3077,6 +3088,8 @@ func (q *Queries) ListAlertHistories(ctx context.Context, arg ListAlertHistories
 			&i.NotificationDeliveryCount,
 			&i.NotificationFailedCount,
 			&i.NotificationActiveCount,
+			&i.NotificationSuppressedCount,
+			&i.NotificationSentCount,
 		); err != nil {
 			return nil, err
 		}
@@ -3557,7 +3570,9 @@ SELECT ah.id, ah.fingerprint, ah.started_at,
        (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id) AS notification_count,
        (SELECT COUNT(*) FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id = ah.id) AS notification_delivery_count,
        (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status = 'failed') AS notification_failed_count,
-       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('pending','sending')) AS notification_active_count
+       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('pending','sending')) AS notification_active_count,
+       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('suppressed','skipped','partial_muted','partial_skipped')) AS notification_suppressed_count,
+       (SELECT COUNT(*) FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id=ah.id AND nd.status='success') AS notification_sent_count
 FROM monitor_alert_history ah
 WHERE ah.source = 'prometheus' AND ah.state = 'firing'
   AND ah.started_at >= ?
@@ -3570,13 +3585,15 @@ type ListCurrentAlertNotificationSummariesParams struct {
 }
 
 type ListCurrentAlertNotificationSummariesRow struct {
-	ID                        int64     `json:"id"`
-	Fingerprint               string    `json:"fingerprint"`
-	StartedAt                 time.Time `json:"started_at"`
-	NotificationCount         int64     `json:"notification_count"`
-	NotificationDeliveryCount int64     `json:"notification_delivery_count"`
-	NotificationFailedCount   int64     `json:"notification_failed_count"`
-	NotificationActiveCount   int64     `json:"notification_active_count"`
+	ID                          int64     `json:"id"`
+	Fingerprint                 string    `json:"fingerprint"`
+	StartedAt                   time.Time `json:"started_at"`
+	NotificationCount           int64     `json:"notification_count"`
+	NotificationDeliveryCount   int64     `json:"notification_delivery_count"`
+	NotificationFailedCount     int64     `json:"notification_failed_count"`
+	NotificationActiveCount     int64     `json:"notification_active_count"`
+	NotificationSuppressedCount int64     `json:"notification_suppressed_count"`
+	NotificationSentCount       int64     `json:"notification_sent_count"`
 }
 
 func (q *Queries) ListCurrentAlertNotificationSummaries(ctx context.Context, arg ListCurrentAlertNotificationSummariesParams) ([]ListCurrentAlertNotificationSummariesRow, error) {
@@ -3596,6 +3613,8 @@ func (q *Queries) ListCurrentAlertNotificationSummaries(ctx context.Context, arg
 			&i.NotificationDeliveryCount,
 			&i.NotificationFailedCount,
 			&i.NotificationActiveCount,
+			&i.NotificationSuppressedCount,
+			&i.NotificationSentCount,
 		); err != nil {
 			return nil, err
 		}
@@ -6485,10 +6504,10 @@ func (q *Queries) MarkAlertNotificationDeliveryFailed(ctx context.Context, arg M
 	return err
 }
 
-const markAlertNotificationDeliverySending = `-- name: MarkAlertNotificationDeliverySending :exec
+const markAlertNotificationDeliverySending = `-- name: MarkAlertNotificationDeliverySending :execrows
 UPDATE monitor_alert_notification_delivery
 SET status='sending', attempt_count=attempt_count+1, error_message='', update_time=?
-WHERE id=?
+WHERE id=? AND status IN ('pending','failed','suppressed')
 `
 
 type MarkAlertNotificationDeliverySendingParams struct {
@@ -6496,9 +6515,12 @@ type MarkAlertNotificationDeliverySendingParams struct {
 	ID         int64     `json:"id"`
 }
 
-func (q *Queries) MarkAlertNotificationDeliverySending(ctx context.Context, arg MarkAlertNotificationDeliverySendingParams) error {
-	_, err := q.db.ExecContext(ctx, markAlertNotificationDeliverySending, arg.UpdateTime, arg.ID)
-	return err
+func (q *Queries) MarkAlertNotificationDeliverySending(ctx context.Context, arg MarkAlertNotificationDeliverySendingParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markAlertNotificationDeliverySending, arg.UpdateTime, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const markAlertNotificationDeliverySuccess = `-- name: MarkAlertNotificationDeliverySuccess :exec

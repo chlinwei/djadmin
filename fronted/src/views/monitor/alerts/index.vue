@@ -118,6 +118,7 @@
               </template>
               <template #expandedRowRender="{ record }">
                 <div v-if="record.type !== 'separator'" class="alert-rule-detail">
+                  <router-link v-if="canCreateWindow && (record.record.name || record.record.labels?.alertname)" :to="windowLink(record.record)">创建维护窗口</router-link>
                   <p><strong>PromQL：</strong>{{ record.record.rule_details?.query || '-' }}</p>
                   <p v-if="Object.keys(record.record.rule_details?.labels || {}).length"><strong>标签：</strong>{{ formatKeyValues(record.record.rule_details.labels) }}</p>
                   <p v-if="record.record.rule_details?.annotations?.summary"><strong>summary：</strong>{{ record.record.rule_details.annotations.summary }}</p>
@@ -256,6 +257,7 @@
                 </template>
                 <template #expandedRowRender="{ record }">
                   <div v-if="record.type !== 'separator'" class="alert-rule-detail">
+                    <router-link v-if="canCreateWindow && record.record.alertname" :to="windowLink(record.record)">创建维护窗口</router-link>
                     <p><strong>PromQL：</strong>{{ record.record.rule_details?.query || '-' }}</p>
                     <p v-if="Object.keys(record.record.rule_details?.labels || {}).length"><strong>标签：</strong>{{ formatKeyValues(record.record.rule_details.labels) }}</p>
                     <p v-if="record.record.rule_details?.annotations?.summary"><strong>summary：</strong>{{ record.record.rule_details.annotations.summary }}</p>
@@ -295,6 +297,11 @@
           <a-tag :color="stateColor(chainDetail.alert.state)">{{ chainDetail.alert.state || 'unknown' }}</a-tag>
         </a-descriptions-item>
       </a-descriptions>
+      <a-alert v-if="chainDetail.maintenance.length" type="info" show-icon message="正式媒介通知命中过维护窗口" style="margin-bottom: 12px">
+        <template #description>
+          <div v-for="w in chainDetail.maintenance" :key="w.id">{{ w.title }} · 判定于 {{ formatActiveAt(w.decided_at) }}</div>
+        </template>
+      </a-alert>
 
       <!-- 全局诊断问题 -->
       <a-alert
@@ -418,6 +425,7 @@ import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISOStringByUserTimezone } from '@/util/timezoneRange'
 import store from '@/store'
+import { checkPermission } from '@/directives/permission/permission'
 
 defineOptions({
   name: 'MonitorAlertsPage',
@@ -425,6 +433,14 @@ defineOptions({
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 const userTimezone = computed(() => store.state.user?.timezone || 'Asia/Shanghai')
+const canCreateWindow = computed(() => ['monitor:view', 'monitor:maintenance:view', 'monitor:maintenance:create'].every(checkPermission))
+function windowLink(row) {
+  const historyId = row.history_id || row.id
+  return { path: '/monitor/notification/maintenance', query: {
+    alertname: row.alertname || row.name || row.labels.alertname,
+    ...(historyId ? { history_id: String(historyId) } : {}),
+  } }
+}
 
 const activeTabKey = ref('current')
 
@@ -463,6 +479,8 @@ const notificationFilterOptions = [
   { label: '发送中', value: 'in_progress' },
   { label: '全部成功', value: 'success' },
   { label: '存在失败', value: 'failed' },
+  { label: '维护抑制', value: 'suppressed' },
+  { label: '部分维护抑制', value: 'partially_suppressed' },
 ]
 
 const stateFilterOptions = computed(() => {
@@ -732,6 +750,7 @@ const notificationLoading = ref(false)
 
 // 单条历史告警的完整通知链路（P2）：策略树评估 → 出口媒介 → 用户绑定 → 事件/投递明细
 const chainDetail = reactive({
+  maintenance: [],
   alert: {
     alertname: '',
     instance: '',
@@ -765,6 +784,10 @@ function notificationStatusColor(status) {
 
 function notificationStatusLabel(status) {
   return {
+    suppressed: '维护抑制',
+    partial_muted: '部分已发送，其余维护抑制',
+    skipped: '维护结束，无需补发',
+    partial_skipped: '部分已发送，其余无需补发',
     pending: '等待发送',
     sending: '发送中',
     success: '已发送',
@@ -782,6 +805,8 @@ function notificationBadgeStatus(status) {
 
 function notificationSummaryLabel(status) {
   return {
+    suppressed: '维护抑制',
+    partially_suppressed: '部分维护抑制',
     success: '全部成功',
     failed: '存在失败',
     in_progress: '发送中',
@@ -802,6 +827,7 @@ async function openNotificationStatus(alertId) {
   notificationLoading.value = true
   chainDetail.alert = { alertname: '', instance: '', state: '' }
   chainDetail.summary_issues = []
+  chainDetail.maintenance = []
   chainDetail.policy = null
   chainDetail.medias = []
   try {
@@ -814,6 +840,7 @@ async function openNotificationStatus(alertId) {
       state: data.alert?.state || '',
     }
     chainDetail.summary_issues = Array.isArray(data.summary_issues) ? data.summary_issues : []
+    chainDetail.maintenance = data.event?.maintenance_windows || []
     chainDetail.policy = data.policy_tree || null
     chainDetail.medias = Array.isArray(data.medias) ? data.medias : []
   } catch (error) {

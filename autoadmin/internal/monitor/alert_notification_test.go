@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"testing"
@@ -114,7 +115,9 @@ func notificationTestHandler(t *testing.T) (*Handler, sqlmock.Sqlmock, *sql.DB) 
 		t.Fatalf("sqlmock: %v", err)
 	}
 	t.Cleanup(func() { database.Close() })
-	return &Handler{db: database}, mock, database
+	return &Handler{db: database, maintenanceLookup: func(context.Context, alertNotificationTarget, time.Time) ([]maintenanceWindowHit, error) {
+		return nil, nil
+	}}, mock, database
 }
 
 // policyTreeRows 根节点：matchers=[] 恒命中，出口媒介 [2]。
@@ -185,7 +188,9 @@ func TestEnqueueWebhookNotificationsCounts(t *testing.T) {
 	// 第一个目标命中并创建事件；第二个目标预判无媒介不建事件。
 	expectPolicyMediaHit(mock, "公司邮箱", "email")
 	expectAlertNotificationEventInsert(mock, "firing", "7:firing", 7, 9, true)
+	mock.ExpectExec("CompleteNotificationIntent").WithArgs(7, "firing").WillReturnResult(sqlmock.NewResult(0, 1))
 	expectPolicyMediaMiss(mock)
+	mock.ExpectExec("CompleteNotificationIntent").WithArgs(8, "firing").WillReturnResult(sqlmock.NewResult(0, 1))
 	count, ids := handler.enqueueWebhookNotifications([]alertNotificationTarget{
 		{id: 7, alertname: "HighDiskUsage", severity: "warning", state: "firing", labels: map[string]any{"severity": "warning"}},
 		{id: 8, alertname: "Other", severity: "info", state: "firing", labels: map[string]any{"severity": "info"}},
@@ -203,11 +208,15 @@ func TestEnqueueWebhookNotificationsCounts(t *testing.T) {
 // eventRow 对应 GetAlertNotificationEventDispatch：事件字段（含 status/attempt_count，
 // 原实现分两条语句读同一行，现在合并为一条）与告警关键字段一次返回。
 func eventRow() *sqlmock.Rows {
+	return dispatchTestRow("firing", "pending", "resolved", 0)
+}
+
+func dispatchTestRow(eventType, status, state string, suppressed int64) *sqlmock.Rows {
 	startedAt := time.Date(2026, 9, 17, 8, 0, 0, 0, time.FixedZone("UTC+8", 8*60*60))
-	return sqlmock.NewRows([]string{"event_type", "attempt_count", "status", "id", "alertname", "severity", "instance", "state", "labels", "annotations", "started_at", "resolved_at", "generator_url"}).
-		AddRow("firing", int64(0), "pending", int64(7), "HighDiskUsage", "warning", "host-1", "resolved",
+	return sqlmock.NewRows([]string{"event_type", "attempt_count", "status", "id", "alertname", "severity", "instance", "state", "labels", "annotations", "started_at", "resolved_at", "generator_url", "suppression_count"}).
+		AddRow(eventType, int64(0), status, int64(7), "HighDiskUsage", "warning", "host-1", state,
 			[]byte(`{"severity":"warning","environment":"production"}`), []byte(`{"summary":"磁盘空间不足","description":"可用空间低于 10%"}`),
-			startedAt, startedAt.Add(time.Minute), "https://prometheus.example.com/graph?expr=disk")
+			startedAt, startedAt.Add(time.Minute), "https://prometheus.example.com/graph?expr=disk", suppressed)
 }
 
 func TestSendAlertNotificationEventNoBindings(t *testing.T) {

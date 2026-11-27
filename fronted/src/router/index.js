@@ -151,6 +151,11 @@ export const staticRouterMap = [
                 component: () => import('../views/monitor/notification-policies/index.vue'),
             },
             {
+                path: '/monitor/notification/maintenance',
+                name: '维护窗口',
+                component: () => import('../views/monitor/maintenance/index.vue'),
+            },
+            {
                 path: '/monitor/notification-policies',
                 redirect: '/monitor/notification/policies',
             },

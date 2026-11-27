@@ -60,7 +60,8 @@
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'name' || column.key === 'description'">
             <a-tooltip :title="record[column.key]" placement="top">
-              <span class="template-cell-text">{{ record[column.key] }}</span>
+              <a v-if="column.key === 'name' && hasPermission('view')" class="template-cell-text" @click="openTemplateModal(record)">{{ record.name }}</a>
+              <span v-else class="template-cell-text">{{ record[column.key] }}</span>
             </a-tooltip>
           </template>
           <template v-else-if="column.key === 'category'">
@@ -82,9 +83,8 @@
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
-              <a-tooltip :title="record.category === 'software_package' ? '由监控软件仓库自动管理，请前往对应软件包编辑页修改' : '编辑'">
+              <a-tooltip v-if="hasPermission('view') && canEditTemplate(record)" title="编辑">
                 <a-button
-                  v-if="hasPermission('update') && record.category !== 'software_package'"
                   size="small"
                   type="primary"
                   @click="openTemplateModal(record)"
@@ -92,6 +92,7 @@
                   <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                 </a-button>
               </a-tooltip>
+              <ViewRecordButton v-else-if="hasPermission('view')" @click="openTemplateModal(record)" />
               <a-tooltip title="下载">
                 <a-button
                   v-if="hasPermission('view')"
@@ -121,7 +122,7 @@
     </a-card>
 
     <a-modal
-      :title="templateEdit.id ? '编辑模板' : '新增模板'"
+      :title="templateReadOnly ? '查看模板' : templateEdit.id ? '编辑模板' : '新增模板'"
       :open="templateModalVisible"
       :confirmLoading="submitting"
       :width="900"
@@ -130,23 +131,24 @@
       @ok="submitTemplate"
       @cancel="templateModalVisible = false"
     >
-      <a-form layout="vertical">
+      <template v-if="templateReadOnly" #footer><a-button @click="templateModalVisible = false">关闭</a-button></template>
+      <a-form layout="vertical" :disabled="templateReadOnly">
         <a-form-item label="模板名称" required>
-          <a-input v-model:value="templateEdit.name" />
+          <a-input :readonly="templateReadOnly" v-model:value="templateEdit.name" />
         </a-form-item>
         <a-form-item label="分类" required>
-          <a-select v-model:value="templateEdit.category" :options="categoryOptions" :disabled="isAgentTemplate" :getPopupContainer="getPopupContainer" />
+          <a-select v-model:value="templateEdit.category" :options="templateEdit.category === 'general' ? categoryOptions : [{ value: templateEdit.category, label: isAgentTemplate ? 'Agent 安装专用' : '软件包安装/卸载专用' }]" :disabled="templateReadOnly || isAgentTemplate" :getPopupContainer="getPopupContainer" />
         </a-form-item>
         <a-form-item label="类型" required>
-          <a-segmented v-model:value="templateEdit.content_format" :options="contentFormatOptions" block @change="handleContentFormatChange" />
+          <a-segmented :disabled="templateReadOnly" v-model:value="templateEdit.content_format" :options="contentFormatOptions" block @change="handleContentFormatChange" />
           <div class="upload-tip">
             Playbook 存标准 YAML；Shell 脚本只写裸脚本，执行时由平台包装成单任务 playbook（以 root 运行，任务的 run_as 会切换用户）。
           </div>
         </a-form-item>
         <a-form-item label="描述">
-          <a-input v-model:value="templateEdit.description" />
+          <a-input :readonly="templateReadOnly" v-model:value="templateEdit.description" />
         </a-form-item>
-        <a-form-item v-if="templateEdit.id && !isShellTemplate" label="模板文件导入">
+        <a-form-item v-if="!templateReadOnly && templateEdit.id && !isShellTemplate" label="模板文件导入">
           <a-space>
             <a-upload
               accept=".yml,.yaml"
@@ -162,7 +164,7 @@
           </a-space>
         </a-form-item>
         <a-form-item :label="isShellTemplate ? '脚本内容（Bash）' : '模板内容（YAML）'" required>
-          <a-space style="margin-bottom: 8px;">
+          <a-space v-if="!templateReadOnly" style="margin-bottom: 8px;">
             <a-button
               type="primary"
               ghost
@@ -178,7 +180,7 @@
             <div ref="lineNumberGutterRef" class="template-editor-gutter" aria-hidden="true">
               <div v-for="line in templateLineNumbers" :key="line" class="template-editor-line-number">{{ line }}</div>
             </div>
-            <textarea
+            <textarea :readonly="templateReadOnly"
               v-model="templateEdit.content"
               class="template-editor-textarea"
               rows="14"
@@ -236,6 +238,7 @@
 </template>
 
 <script setup>
+import ViewRecordButton from '@/components/ViewRecordButton.vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { createPagination, tableLocale } from '@/util/tableStyle'
 import { message } from 'ant-design-vue'
@@ -251,6 +254,7 @@ import {
   createPlaybook,
   deleteShellcheckBinary,
   downloadPlaybookFile,
+  getPlaybook,
   getPlaybookList,
   getShellcheckStatus,
   uploadPlaybookFile,
@@ -286,6 +290,10 @@ const rows = ref([])
 const loading = ref(false)
 const submitting = ref(false)
 const playbookCheckingSyntax = ref(false)
+const canEditTemplate = (record) => hasPermission('update') && record.category !== 'software_package'
+// Use the fetched category, not editable draft fields, to decide whether writes are allowed.
+const openedCategory = ref(null)
+const templateReadOnly = computed(() => !!templateEdit.id && !canEditTemplate({ category: openedCategory.value }))
 const templateModalVisible = ref(false)
 const uploadingTemplateId = ref(null)
 const downloadingTemplateId = ref(null)
@@ -343,6 +351,7 @@ function openShellcheckModal() {
 }
 
 async function handleShellcheckUpload(options) {
+  if (!hasPermission('update')) return
   const file = options?.file
   if (!file) return
   const formData = new FormData()
@@ -365,6 +374,7 @@ async function handleShellcheckUpload(options) {
 }
 
 async function removeShellcheckBinary() {
+  if (!hasPermission('update')) return
   await deleteShellcheckBinary()
   message.success('已删除上传的 ShellCheck 二进制')
   await loadShellcheckStatus()
@@ -453,7 +463,10 @@ function resetTemplateEdit() {
   templateEdit.category = 'general'
 }
 
-function openTemplateModal(record = null) {
+async function openTemplateModal(record = null) {
+  if (!hasPermission(record ? 'view' : 'create')) return
+  if (record) record = (await getPlaybook(record.id)).data.data
+  openedCategory.value = record?.category
   resetTemplateEdit()
   if (record) {
     templateEdit.id = record.id
@@ -464,7 +477,7 @@ function openTemplateModal(record = null) {
     templateEdit.category = record.category || 'general'
   }
   templateModalVisible.value = true
-  if (templateEdit.content_format === 'shell') loadShellcheckStatus()
+  if (!templateReadOnly.value && templateEdit.content_format === 'shell') loadShellcheckStatus()
 }
 
 // 切换到 Shell 时若内容为空，自动填入内存检查示例，降低上手成本。
@@ -502,6 +515,7 @@ function triggerFileDownload(blob, filename) {
 }
 
 async function checkTemplateSyntax() {
+  if (templateReadOnly.value || !hasPermission(templateEdit.id ? 'update' : 'create')) return
   if (!String(templateEdit.content || '').trim()) {
     message.error('请先输入模板内容')
     return
@@ -526,6 +540,7 @@ async function checkTemplateSyntax() {
 }
 
 async function handleTemplateUpload(options) {
+  if (templateReadOnly.value || !hasPermission(templateEdit.id ? 'update' : 'create')) return
   const file = options?.file
   if (!templateEdit.id || !file) {
     options?.onError?.(new Error('invalid upload request'))
@@ -576,6 +591,7 @@ async function downloadTemplate(record) {
 }
 
 async function submitTemplate() {
+  if (templateReadOnly.value || !hasPermission(templateEdit.id ? 'update' : 'create')) return
   if (!String(templateEdit.name || '').trim()) {
     message.error('模板名称为必填项')
     return

@@ -48,7 +48,7 @@ func TestPrometheusAlertsIncludeRuleDetails(t *testing.T) {
 	fingerprint := alertFingerprint(map[string]any{"alertname": "HighDiskUsage", "severity": "warning", "instance": "h:9100"})
 	mock.ExpectQuery("ListCurrentAlertNotificationSummaries").
 		WithArgs(activeAt, sqlmock.AnyArg()).
-		WillReturnRows(currentAlertNotificationTestRows().AddRow(42, fingerprint, activeAt.Add(10*time.Minute), 2, 1, 1, 0))
+		WillReturnRows(currentAlertNotificationTestRows().AddRow(42, fingerprint, activeAt.Add(10*time.Minute), 2, 1, 1, 0, 0, 0))
 
 	handler := &Handler{db: database, client: server.Client()}
 	router := gin.New()
@@ -102,7 +102,7 @@ func TestPrometheusAlertsIncludeRuleDetails(t *testing.T) {
 func currentAlertNotificationTestRows() *sqlmock.Rows {
 	return sqlmock.NewRows([]string{
 		"id", "fingerprint", "started_at", "notification_count", "notification_delivery_count",
-		"notification_failed_count", "notification_active_count",
+		"notification_failed_count", "notification_active_count", "notification_suppressed_count", "notification_sent_count",
 	})
 }
 
@@ -124,10 +124,10 @@ func TestCurrentAlertNotificationsDoNotLinkPreviousOrAmbiguousOccurrences(t *tes
 	results := []gin.H{{}, {}, {}, {}}
 	mock.ExpectQuery("ListCurrentAlertNotificationSummaries").WithArgs(olderAt, observedAt).
 		WillReturnRows(currentAlertNotificationTestRows().
-			AddRow(1, "matching", activeAt, 0, 0, 0, 0).
-			AddRow(2, "stale", olderAt, 1, 1, 0, 0).
-			AddRow(3, "ambiguous", activeAt, 1, 1, 0, 0).
-			AddRow(4, "ambiguous", activeAt.Add(time.Minute), 1, 1, 0, 0))
+			AddRow(1, "matching", activeAt, 0, 0, 0, 0, 0, 0).
+			AddRow(2, "stale", olderAt, 1, 1, 0, 0, 0, 0).
+			AddRow(3, "ambiguous", activeAt, 1, 1, 0, 0, 0, 0).
+			AddRow(4, "ambiguous", activeAt.Add(time.Minute), 1, 1, 0, 0, 0, 0))
 	if err := handler.attachCurrentAlertNotifications(context.Background(), alerts, observedAt, results); err != nil {
 		t.Fatal(err)
 	}

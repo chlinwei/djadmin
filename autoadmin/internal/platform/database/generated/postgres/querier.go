@@ -13,6 +13,7 @@ import (
 
 type Querier interface {
 	ActivateAgentPackage(ctx context.Context, id uint64) (int64, error)
+	AddMaintenanceWindowAudit(ctx context.Context, arg AddMaintenanceWindowAuditParams) error
 	AddRoleMenu(ctx context.Context, arg AddRoleMenuParams) error
 	AddSharedLogSourceLink(ctx context.Context, arg AddSharedLogSourceLinkParams) error
 	AddUserRole(ctx context.Context, arg AddUserRoleParams) error
@@ -51,6 +52,8 @@ type Querier interface {
 	ClearDefaultLogRetentionTier(ctx context.Context, id int64) error
 	ClearSoftwarePackageInstallTemplate(ctx context.Context, id int64) error
 	ClearSoftwarePackageUninstallTemplate(ctx context.Context, id int64) error
+	CloseMaintenanceWindow(ctx context.Context, arg CloseMaintenanceWindowParams) error
+	CompleteNotificationIntent(ctx context.Context, arg CompleteNotificationIntentParams) error
 	CompleteScheduledTask(ctx context.Context, arg CompleteScheduledTaskParams) error
 	CountAPITokensByApiID(ctx context.Context, apiID string) (int64, error)
 	CountActiveAgentInstallJobs(ctx context.Context, hostIds []int64) (int64, error)
@@ -106,6 +109,7 @@ type Querier interface {
 	CountCredentials(ctx context.Context, pattern sql.NullString) (int64, error)
 	CountDeploymentTemplates(ctx context.Context, arg CountDeploymentTemplatesParams) (int64, error)
 	CountElasticsearchClusters(ctx context.Context, arg CountElasticsearchClustersParams) (int64, error)
+	CountFiringMaintenanceDecisions(ctx context.Context, alertID int64) (int64, error)
 	CountHostCredentialsByCredential(ctx context.Context, credentialID int64) (int64, error)
 	CountHostGroups(ctx context.Context, pattern sql.NullString) (int64, error)
 	CountHosts(ctx context.Context, arg CountHostsParams) (int64, error)
@@ -135,6 +139,7 @@ type Querier interface {
 	// 修改请改 MySQL 源后重新派生；规则见 internal/platform/database/derive 与
 	// docs/architecture/SQL_DESIGN.md §4.6。
 	CountLoginAudits(ctx context.Context, arg CountLoginAuditsParams) (int64, error)
+	CountMaintenanceWindows(ctx context.Context) (int64, error)
 	CountMonitorHostTotals(ctx context.Context) (CountMonitorHostTotalsRow, error)
 	// 宿主列表的过滤：搜索 / 单层组 / exporter 纳管状态 / 日志采集纳管状态。
 	// managed_filter 与 filebeat_filter 是 'true'/'false'/NULL 三态，用 CASE 表达"命中/未命中/不过滤"。
@@ -186,6 +191,7 @@ type Querier interface {
 	CountSoftwarePackageSyncConflict(ctx context.Context, arg CountSoftwarePackageSyncConflictParams) (int64, error)
 	CountSoftwarePackageVariantConflict(ctx context.Context, arg CountSoftwarePackageVariantConflictParams) (int64, error)
 	CountSoftwarePackages(ctx context.Context, arg CountSoftwarePackagesParams) (int64, error)
+	CountSuccessfulEventDeliveries(ctx context.Context, eventID int64) (int64, error)
 	CountTasks(ctx context.Context, arg CountTasksParams) (int64, error)
 	// 用户绑定（含媒介的 media_type/media_enabled）复用 user.sql 的 ListUserAlertMediaBindings。
 	CountUserGroupMemberships(ctx context.Context, arg CountUserGroupMembershipsParams) (int64, error)
@@ -271,6 +277,7 @@ type Querier interface {
 	CreateLogRetentionTier(ctx context.Context, arg CreateLogRetentionTierParams) (int64, error)
 	CreateLogTargetInstallHistory(ctx context.Context, arg CreateLogTargetInstallHistoryParams) (int64, error)
 	CreateLoginAudit(ctx context.Context, arg CreateLoginAuditParams) error
+	CreateMaintenanceWindow(ctx context.Context, arg CreateMaintenanceWindowParams) (int64, error)
 	CreateMenu(ctx context.Context, arg CreateMenuParams) (int32, error)
 	// 已纳管（host_id, exporter_type 唯一键冲突）时跳过：MySQL 的 INSERT IGNORE 影响行数为 0，
 	// PG 侧派生为 ON CONFLICT DO NOTHING（被跳过时 RETURNING 不返回行）。
@@ -439,6 +446,7 @@ type Querier interface {
 	// 删除目标前解除安装历史的外键引用（历史本身保留，供追溯）。
 	DetachInstallHistoryFromLogTarget(ctx context.Context, logCollectionTargetID sql.NullInt64) error
 	DisableAPIToken(ctx context.Context, arg DisableAPITokenParams) error
+	EditMaintenanceWindow(ctx context.Context, arg EditMaintenanceWindowParams) error
 	// conflict: service_id, log_definition_id, deployment_id
 	EnsureLogFormatTarget(ctx context.Context, arg EnsureLogFormatTargetParams) error
 	ExpireTargetInstallHistory(ctx context.Context, arg ExpireTargetInstallHistoryParams) (int64, error)
@@ -617,6 +625,11 @@ type Querier interface {
 	// host_id 用于复用 logcollect 的批量渲染装载；host_instance_name 是 agent 会话的路由键
 	// （注意是 assets_host.instance_name，不是部署实例自己的 instance_name）。
 	GetLogVerifyInstanceContext(ctx context.Context, arg GetLogVerifyInstanceContextParams) (GetLogVerifyInstanceContextRow, error)
+	// 本文件由 make derive 从 db/queries/mysql/maintenance_window_queries.sql 派生，禁止手改。
+	// 修改请改 MySQL 源后重新派生；规则见 internal/platform/database/derive 与
+	// docs/architecture/SQL_DESIGN.md §4.6。
+	GetMaintenanceHost(ctx context.Context, id int64) (GetMaintenanceHostRow, error)
+	GetMaintenanceWindow(ctx context.Context, id int64) (MonitorMaintenanceWindow, error)
 	// 本文件由 make derive 从 db/queries/mysql/menu.sql 派生，禁止手改。
 	// 修改请改 MySQL 源后重新派生；规则见 internal/platform/database/derive 与
 	// docs/architecture/SQL_DESIGN.md §4.6。
@@ -687,6 +700,7 @@ type Querier interface {
 	ListAPITokens(ctx context.Context) ([]ListAPITokensRow, error)
 	// 机器令牌校验：过期判定改成应用层传时间（原实现用 UTC_TIMESTAMP(6)）。
 	ListActiveAgentTokens(ctx context.Context, now sql.NullTime) ([]ListActiveAgentTokensRow, error)
+	ListActiveMaintenanceWindows(ctx context.Context, arg ListActiveMaintenanceWindowsParams) ([]MonitorMaintenanceWindow, error)
 	ListAgentHostTargets(ctx context.Context, hostIds []int64) ([]ListAgentHostTargetsRow, error)
 	ListAlertHistories(ctx context.Context, arg ListAlertHistoriesParams) ([]ListAlertHistoriesRow, error)
 	ListAlertMedia(ctx context.Context, arg ListAlertMediaParams) ([]MonitorAlertMedium, error)
@@ -782,6 +796,7 @@ type Querier interface {
 	// 按 code 反推"该业务系统下的环境"时，必须带上 project_id 才不会把**别的项目里同 code 的
 	// 业务系统**的环境也算进来（现场：yilake/aos 只该有 poc，却多出另一个项目同名 aos 的 test）。
 	ListEnabledServiceStreamDims(ctx context.Context) ([]ListEnabledServiceStreamDimsRow, error)
+	ListEventMaintenanceDecisions(ctx context.Context, eventID int64) ([]ListEventMaintenanceDecisionsRow, error)
 	ListExporterPackagePorts(ctx context.Context) ([]ListExporterPackagePortsRow, error)
 	// Includes formerly associated hosts that still have an applied service fingerprint.
 	// Removing a member must not make an offline host disappear from the cleanup safety check.
@@ -855,6 +870,9 @@ type Querier interface {
 	ListLogProcessingRules(ctx context.Context, arg ListLogProcessingRulesParams) ([]MonitorLogProcessingRule, error)
 	ListLogRetentionTiers(ctx context.Context, arg ListLogRetentionTiersParams) ([]MonitorLogRetentionTier, error)
 	ListLoginAudits(ctx context.Context, arg ListLoginAuditsParams) ([]AuditLoginLog, error)
+	ListMaintenanceRecoveryRecipients(ctx context.Context, alertID int64) ([]ListMaintenanceRecoveryRecipientsRow, error)
+	ListMaintenanceWindowSuppressionCounts(ctx context.Context, windowIds []int64) ([]ListMaintenanceWindowSuppressionCountsRow, error)
+	ListMaintenanceWindows(ctx context.Context, arg ListMaintenanceWindowsParams) ([]MonitorMaintenanceWindow, error)
 	ListManagedLogTargetConfigs(ctx context.Context) ([]ListManagedLogTargetConfigsRow, error)
 	ListMenuIDsByRoleID(ctx context.Context, roleID int32) ([]int32, error)
 	ListMenus(ctx context.Context) ([]SysMenu, error)
@@ -877,6 +895,7 @@ type Querier interface {
 	ListMountProjectHosts(ctx context.Context, projectID sql.NullInt64) ([]ListMountProjectHostsRow, error)
 	// 挂载点解析：应用组@逻辑服务 → 该服务的部署实例（精确绑定）。
 	ListMountServiceInstances(ctx context.Context, serviceID int64) ([]ListMountServiceInstancesRow, error)
+	ListNotificationIntents(ctx context.Context, arg ListNotificationIntentsParams) ([]ListNotificationIntentsRow, error)
 	// ---- 通知策略树（monitor_notification_policy）----
 	// 树加载与管理列表共用一条：列集取并集（树的加载忽略 create_time/update_time）。
 	// media_ids / user_group_ids 用左连接的 NULL 表达"继承父节点"，不能 COALESCE 成空串。
@@ -920,6 +939,11 @@ type Querier interface {
 	ListSecurityIssueHistory(ctx context.Context, arg ListSecurityIssueHistoryParams) ([]SecurityIssueHistory, error)
 	ListSecurityIssueMilestones(ctx context.Context, arg ListSecurityIssueMilestonesParams) ([]SecurityIssueHistory, error)
 	ListSecurityIssues(ctx context.Context, arg ListSecurityIssuesParams) ([]ListSecurityIssuesRow, error)
+	ListSelectedLogFilterNames(ctx context.Context, ids []int64) ([]ListSelectedLogFilterNamesRow, error)
+	// 本文件由 make derive 从 db/queries/mysql/log_selected_names.sql 派生，禁止手改。
+	// 修改请改 MySQL 源后重新派生；规则见 internal/platform/database/derive 与
+	// docs/architecture/SQL_DESIGN.md §4.6。
+	ListSelectedLogTierNames(ctx context.Context, ids []int64) ([]ListSelectedLogTierNamesRow, error)
 	// 逻辑服务**当前生效**的档位集合（服务 × 档位对，可能多条）。
 	//
 	// 用途：判定一条已有的 data stream 是不是"改档位后留下的历史流"——流的档位不在该服务的生效集合里
@@ -930,6 +954,7 @@ type Querier interface {
 	// 没有任何日志定义的服务不会出现在结果里 → 它的所有档位都不生效 → 存量流全部判为历史流
 	// （与"这个服务现在什么都不采"一致）。
 	ListServiceActiveStreamTiers(ctx context.Context) ([]ListServiceActiveStreamTiersRow, error)
+	ListServiceDefaultTierNames(ctx context.Context, ids []int64) ([]ListServiceDefaultTierNamesRow, error)
 	// Deletion must also clean disabled clusters: they can still contain historical logs.
 	ListServiceDeletionClusterIDs(ctx context.Context) ([]int64, error)
 	ListServiceDeletionDeployments(ctx context.Context, serviceID int64) ([]int64, error)
@@ -1006,6 +1031,7 @@ type Querier interface {
 	ListTemplateLogDefinitions(ctx context.Context, deploymentTemplateID int64) ([]ListTemplateLogDefinitionsRow, error)
 	ListTemplatePaths(ctx context.Context, deploymentTemplateID int64) ([]ListTemplatePathsRow, error)
 	ListTemplatePorts(ctx context.Context, deploymentTemplateID int64) ([]ListTemplatePortsRow, error)
+	ListUnfinishedNotificationIDs(ctx context.Context, arg ListUnfinishedNotificationIDsParams) ([]int64, error)
 	ListUninstallableFilebeatPackages(ctx context.Context) ([]ListUninstallableFilebeatPackagesRow, error)
 	// 用户中心的"我的告警媒介绑定"与 monitor 的通知链路诊断（user-chain）共用一条：
 	// 后两者要的 media_type / media_enabled 补在列尾（身份域只按字段名取前几列，不受影响）。
@@ -1042,6 +1068,7 @@ type Querier interface {
 	LockHistoricalStreamTiers(ctx context.Context) ([]int64, error)
 	LockLogCollectionFilterRuleEnabled(ctx context.Context, id int64) (bool, error)
 	LockLogRetentionTierEnabled(ctx context.Context, id int64) (bool, error)
+	LockMaintenanceWindow(ctx context.Context, id int64) (MonitorMaintenanceWindow, error)
 	LockOwnAlertMediaBindingEnabled(ctx context.Context, arg LockOwnAlertMediaBindingEnabledParams) (LockOwnAlertMediaBindingEnabledRow, error)
 	// 本文件由 make derive 从 db/queries/mysql/enabled.sql 派生，禁止手改。
 	// 修改请改 MySQL 源后重新派生；规则见 internal/platform/database/derive 与
@@ -1066,7 +1093,7 @@ type Querier interface {
 	MarkAgentJobRunning(ctx context.Context, arg MarkAgentJobRunningParams) error
 	MarkAgentTokenUsed(ctx context.Context, arg MarkAgentTokenUsedParams) error
 	MarkAlertNotificationDeliveryFailed(ctx context.Context, arg MarkAlertNotificationDeliveryFailedParams) error
-	MarkAlertNotificationDeliverySending(ctx context.Context, arg MarkAlertNotificationDeliverySendingParams) error
+	MarkAlertNotificationDeliverySending(ctx context.Context, arg MarkAlertNotificationDeliverySendingParams) (int64, error)
 	MarkAlertNotificationDeliverySuccess(ctx context.Context, arg MarkAlertNotificationDeliverySuccessParams) error
 	MarkAlertNotificationEventFailed(ctx context.Context, arg MarkAlertNotificationEventFailedParams) error
 	MarkAlertNotificationEventPending(ctx context.Context, arg MarkAlertNotificationEventPendingParams) error
@@ -1095,9 +1122,16 @@ type Querier interface {
 	// 指纹变化并下发成功后：记下发时间与指纹。
 	MarkLogTargetConfigSynced(ctx context.Context, arg MarkLogTargetConfigSyncedParams) error
 	MarkLogTargetInstallPending(ctx context.Context, arg MarkLogTargetInstallPendingParams) error
+	MarkMaintenanceDecision(ctx context.Context, arg MarkMaintenanceDecisionParams) error
 	MarkTargetInstallPending(ctx context.Context, arg MarkTargetInstallPendingParams) error
 	MaxBaselineCategorySort(ctx context.Context, baselineID int64) (int64, error)
 	MaxBaselineItemSort(ctx context.Context, categoryID int64) (int64, error)
+	// 本文件由 make derive 从 db/queries/mysql/maintenance_delivery.sql 派生，禁止手改。
+	// 修改请改 MySQL 源后重新派生；规则见 internal/platform/database/derive 与
+	// docs/architecture/SQL_DESIGN.md §4.6。
+	// conflict: event_id, window_id
+	RecordMaintenanceSuppression(ctx context.Context, arg RecordMaintenanceSuppressionParams) error
+	RecordNotificationIntent(ctx context.Context, arg RecordNotificationIntentParams) error
 	RecoverExhaustedLogFormatTargets(ctx context.Context, arg RecoverExhaustedLogFormatTargetsParams) error
 	// 计数从 item 表重算，不依赖应用层累加（并发下应用层累加必然漂移）。
 	RefreshLogBatchJobProgress(ctx context.Context, arg RefreshLogBatchJobProgressParams) error
@@ -1141,6 +1175,7 @@ type Querier interface {
 	SkipInspectionTarget(ctx context.Context, arg SkipInspectionTargetParams) error
 	StoreBaselineDispatch(ctx context.Context, arg StoreBaselineDispatchParams) error
 	StoreInspectionDispatch(ctx context.Context, arg StoreInspectionDispatchParams) error
+	SuppressOutstandingDeliveries(ctx context.Context, arg SuppressOutstandingDeliveriesParams) error
 	TouchInspectionTaskLastRun(ctx context.Context, arg TouchInspectionTaskLastRunParams) error
 	TouchSharedLogSource(ctx context.Context, id int64) error
 	TryLockSchedulerTask(ctx context.Context, id int64) (SchedulerScheduledtask, error)

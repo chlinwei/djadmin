@@ -325,7 +325,7 @@ func (handler *Handler) alertHistories(context *gin.Context, id int64) {
 			response.BusinessError(context, 404, "alert history not found", nil)
 			return
 		}
-		items[0].VerifiedHostID = handler.verifiedMaintenanceHost(context, items[0].ID, unmarshalAlertLabels(items[0].Labels))
+		items[0].VerifiedHostID = handler.verifiedMaintenanceHost(context, items[0].ID, items[0].Instance, unmarshalAlertLabels(items[0].Labels))
 		response.Success(context, items[0])
 		return
 	}
@@ -370,8 +370,8 @@ type maintenanceDecisionResponse struct {
 	DecidedAt time.Time `json:"decided_at"`
 }
 
-func (handler *Handler) verifiedMaintenanceHost(ctx context.Context, id int64, labels map[string]any) *int64 {
-	f := newMaintenanceFacts(alertNotificationTarget{id: id, labels: labels})
+func (handler *Handler) verifiedMaintenanceHost(ctx context.Context, id int64, instance string, labels map[string]any) *int64 {
+	f := newMaintenanceFacts(alertNotificationTarget{id: id, instance: instance, labels: labels})
 	if err := handler.loadMaintenanceAssets(ctx, f); err != nil {
 		slog.Warn("无法确认维护窗口预填主机", "alert_id", id, "error", err)
 		return nil

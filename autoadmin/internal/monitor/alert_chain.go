@@ -601,7 +601,7 @@ func (handler *Handler) AlertChainEvaluation(context *gin.Context) {
 		"alert": gin.H{
 			"id": historyID, "alertname": alertname, "state": state,
 			"labels": mergedLabels, "started_at": startedAt,
-			"verified_host_id": handler.verifiedMaintenanceHost(context, historyID, labels),
+			"verified_host_id": handler.verifiedMaintenanceHost(context, historyID, instance, labels),
 		},
 		"policy_tree": gin.H{
 			"matched_path_ids": pathIDs,

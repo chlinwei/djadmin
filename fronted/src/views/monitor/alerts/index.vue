@@ -379,7 +379,9 @@
                   </a-tag>
                   <a-tag :color="notificationStatusColor(media.event.status)">{{ notificationStatusLabel(media.event.status) }}</a-tag>
                   <a-tag>尝试 {{ media.event.attempt_count }} 次</a-tag>
-                  <span v-if="media.event.error" class="chain-event-error">错误：{{ media.event.error }}</span>
+                  <span v-if="media.event.error" :class="isMaintenanceDecision(media.event) ? 'chain-event-reason' : 'chain-event-error'">
+                    {{ isMaintenanceDecision(media.event) ? '说明' : '错误' }}：{{ media.event.error }}
+                  </span>
                 </a-space>
               </div>
 
@@ -782,6 +784,12 @@ function notificationStatusColor(status) {
   return 'orange'
 }
 
+function isMaintenanceDecision(event) {
+  // 补发进入 sending 时后端暂时保留上一次维护抑制原因，直到投递结果更新。
+  return ['suppressed', 'partial_muted', 'skipped', 'partial_skipped'].includes(event.status)
+    || (event.status === 'sending' && event.error.startsWith('维护窗口抑制通知：'))
+}
+
 function notificationStatusLabel(status) {
   return {
     suppressed: '维护抑制',
@@ -1046,9 +1054,16 @@ onBeforeUnmount(() => {
   color: rgba(0, 0, 0, 0.45);
 }
 
+.chain-event-error, .chain-event-reason {
+  word-break: break-all;
+}
+
 .chain-event-error {
   color: #cf1322;
-  word-break: break-all;
+}
+
+.chain-event-reason {
+  color: rgba(0, 0, 0, 0.65);
 }
 
 .chain-no-delivery {

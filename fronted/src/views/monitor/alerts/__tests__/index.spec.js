@@ -98,6 +98,44 @@ describe('告警页：当前告警与历史告警的「问题」列', () => {
         wrapper.unmount()
       }
     })
+
+    it('shows maintenance decisions as explanations and delivery failures as errors', async () => {
+      const { getPrometheusAlerts, getAlertNotificationChain } = await import('@/api/monitor')
+      getPrometheusAlerts.mockResolvedValueOnce({ data: { data: {
+        status: 'success',
+        results: [{ name: 'HighCpuUsage', state: 'firing', instance: '10.25.66.177:9100', history_id: 42, notification_count: 1, notification_status: 'suppressed' }],
+      } } })
+      const events = [
+        { status: 'suppressed', error: '维护窗口抑制通知：test' },
+        { status: 'partial_muted', error: '维护窗口抑制其余通知' },
+        { status: 'skipped', error: '维护期间告警已恢复，不再补发' },
+        { status: 'partial_skipped', error: '其余地址不再符合接收条件' },
+        { status: 'sending', error: '维护窗口抑制通知：test' },
+        { status: 'failed', error: 'SMTP 连接失败' },
+        { status: 'pending', error: '等待重试：连接失败' },
+        { status: 'sending', error: '上次发送失败' },
+      ]
+      getAlertNotificationChain.mockResolvedValueOnce({ data: { data: {
+        alert: { alertname: 'HighCpuUsage', state: 'firing' },
+        policy_tree: { matched_path: '默认策略', levels: [] },
+        medias: events.map((event, index) => ({
+          id: index + 1, name: `媒介${index + 1}`, enabled: true,
+          event: { ...event, event_type: 'firing', attempt_count: 0 }, deliveries: [],
+        })),
+      } } })
+
+      const wrapper = await mountPage()
+      try {
+        await wrapper.get('button.notification-summary-action').trigger('click')
+        await flushPromises()
+        const reasons = Array.from(document.querySelectorAll('.chain-event-reason'), (node) => node.textContent.trim())
+        const errors = Array.from(document.querySelectorAll('.chain-event-error'), (node) => node.textContent.trim())
+        expect(reasons).toEqual(events.slice(0, 5).map((event) => `说明：${event.error}`))
+        expect(errors).toEqual(events.slice(5).map((event) => `错误：${event.error}`))
+      } finally {
+        wrapper.unmount()
+      }
+    })
   })
 
   it('shows the 问题 column in both tabs, with the same text source', async () => {

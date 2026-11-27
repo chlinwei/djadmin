@@ -454,6 +454,7 @@ type ListLogConfigAuditHostsRow = postgres.ListLogConfigAuditHostsRow
 type ListLogProcessingRulesParams = postgres.ListLogProcessingRulesParams
 type ListLogRetentionTiersParams = postgres.ListLogRetentionTiersParams
 type ListLoginAuditsParams = postgres.ListLoginAuditsParams
+type ListMaintenanceHostsByIPRow = postgres.ListMaintenanceHostsByIPRow
 type ListMaintenanceRecoveryRecipientsRow = postgres.ListMaintenanceRecoveryRecipientsRow
 type ListMaintenanceWindowSuppressionCountsRow = postgres.ListMaintenanceWindowSuppressionCountsRow
 type ListMaintenanceWindowsParams = postgres.ListMaintenanceWindowsParams

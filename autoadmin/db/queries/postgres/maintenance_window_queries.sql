@@ -5,6 +5,9 @@
 -- name: GetMaintenanceHost :one
 SELECT id, COALESCE(instance_name,'') AS name FROM assets_host WHERE id=sqlc.arg(id);
 
+-- name: ListMaintenanceHostsByIP :many
+SELECT id, COALESCE(instance_name,'') AS name FROM assets_host WHERE ip=sqlc.arg(ip) LIMIT 2;
+
 -- name: CountMaintenanceWindows :one
 SELECT COUNT(*) FROM monitor_maintenance_window WHERE status <> 'deleted';
 

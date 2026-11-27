@@ -28,6 +28,29 @@ func requireNotificationMocks(t *testing.T, mock sqlmock.Sqlmock) {
 	}
 }
 
+func TestMaintenanceSuppressesNotificationByInstanceIP(t *testing.T) {
+	h, mock, _ := notificationTestHandler(t)
+	h.maintenanceLookup = h.matchedMaintenanceWindows
+	now := time.Now().UTC()
+	hits := []maintenanceWindowHit{{1, "服务器维护", now.Add(time.Hour)}}
+	mock.ExpectQuery("ListActiveMaintenanceWindows").WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(maintenanceRows(1, "open", `[{"type":"host","id":222}]`, now.Add(-time.Hour), hits[0].EndsAt))
+	mock.ExpectQuery("ListMaintenanceHostsByIP").WithArgs("10.25.66.177").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(222, "177"))
+	mock.ExpectQuery("ListHostAlertScopeNodes").WithArgs(int64(222)).
+		WillReturnRows(sqlmock.NewRows([]string{"service_id", "business_system_id", "environment_id", "project_id"}))
+	mock.ExpectBegin()
+	expectAlertNotificationEventInsert(mock, "firing", "7:firing", 7, 1, true)
+	expectHits(mock, 1, []maintenanceWindowHit{{1, "patch", hits[0].EndsAt}})
+	expectDecision(mock, 1, "suppressed")
+	mock.ExpectCommit()
+	id, created, err := h.enqueueAlertNotification(alertNotificationTarget{id: 7, instance: "10.25.66.177:9100"}, "firing")
+	if err != nil || !created || id != 1 {
+		t.Fatalf("id=%d created=%t err=%v", id, created, err)
+	}
+	requireNotificationMocks(t, mock)
+}
+
 func TestMaintenanceOverlapSurvivesRestartAndFirstEnd(t *testing.T) {
 	h, m, pool := notificationTestHandler(t)
 	now := time.Now().UTC()

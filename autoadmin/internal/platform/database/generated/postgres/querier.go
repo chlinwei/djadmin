@@ -870,6 +870,7 @@ type Querier interface {
 	ListLogProcessingRules(ctx context.Context, arg ListLogProcessingRulesParams) ([]MonitorLogProcessingRule, error)
 	ListLogRetentionTiers(ctx context.Context, arg ListLogRetentionTiersParams) ([]MonitorLogRetentionTier, error)
 	ListLoginAudits(ctx context.Context, arg ListLoginAuditsParams) ([]AuditLoginLog, error)
+	ListMaintenanceHostsByIP(ctx context.Context, ip sql.NullString) ([]ListMaintenanceHostsByIPRow, error)
 	ListMaintenanceRecoveryRecipients(ctx context.Context, alertID int64) ([]ListMaintenanceRecoveryRecipientsRow, error)
 	ListMaintenanceWindowSuppressionCounts(ctx context.Context, windowIds []int64) ([]ListMaintenanceWindowSuppressionCountsRow, error)
 	ListMaintenanceWindows(ctx context.Context, arg ListMaintenanceWindowsParams) ([]MonitorMaintenanceWindow, error)

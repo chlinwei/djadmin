@@ -466,6 +466,7 @@ type ListLogConfigAuditHostsRow = mysql.ListLogConfigAuditHostsRow
 type ListLogProcessingRulesParams = mysql.ListLogProcessingRulesParams
 type ListLogRetentionTiersParams = mysql.ListLogRetentionTiersParams
 type ListLoginAuditsParams = mysql.ListLoginAuditsParams
+type ListMaintenanceHostsByIPRow = mysql.ListMaintenanceHostsByIPRow
 type ListMaintenanceRecoveryRecipientsRow = mysql.ListMaintenanceRecoveryRecipientsRow
 type ListMaintenanceWindowSuppressionCountsRow = mysql.ListMaintenanceWindowSuppressionCountsRow
 type ListMaintenanceWindowsParams = mysql.ListMaintenanceWindowsParams

@@ -966,12 +966,19 @@ const {
     exporter_managed: overviewManagedFilter.value || undefined,
   }),
   // "Exporter 状态"列与 exporters 摘要 chip 都要展示真实 systemctl 运行状态：列表加载后为当前页
-  // 已纳管的 exporter 逐台查一次（离线主机跳过，否则每次刷新弹一屏错误 toast）。
+  // 已纳管且任务不在执行中的 exporter 逐台查一次（离线主机跳过）。
   refreshRowStatuses: async (hosts) => {
-    const targetIds = hosts
-      .filter((item) => item.host_agent_online)
-      .flatMap((item) => (Array.isArray(item.exporters) ? item.exporters.map((exporter) => exporter.id) : []))
-      .filter(Boolean)
+    const targetIds = []
+    for (const host of hosts) {
+      for (const exporter of host.exporters || []) {
+        if (!exporter.id) continue
+        if (exporter.install_status === 'pending') {
+          invalidateServiceStatus(exporter.id)
+        } else if (host.host_agent_online) {
+          targetIds.push(exporter.id)
+        }
+      }
+    }
     await Promise.all(targetIds.map((id) => refreshServiceStatus(id)))
   },
 })
@@ -993,6 +1000,13 @@ const managedDeleteLoading = reactive({})
 // 按 record.id 缓存每行最近一次查询到的服务运行状态，让“服务状态”列常驻展示，
 // 不需要每次都重新打开弹窗；弹窗仍用于查看完整 systemctl 输出。
 const serviceStatusMap = reactive({})
+const serviceStatusGeneration = {}
+
+function invalidateServiceStatus(targetId) {
+  // 安装期间的旧状态和在途查询都不能代表任务完成后的服务状态。
+  serviceStatusGeneration[targetId] = (serviceStatusGeneration[targetId] || 0) + 1
+  serviceStatusMap[targetId] = { needsRefresh: true }
+}
 // 列表里的 runtime_status 是上次安装/启停/查状态时落库的快照，服务在平台外被停掉
 // 不会变，所以展示时优先用这份"点过查状态/自动刷新时真实 systemctl status"的结果。
 const serviceStatusModalVisible = ref(false)
@@ -1743,7 +1757,7 @@ function exporterActionTooltip(record) {
 
 
 // "Exporter 状态"列和 exporters 摘要 chip 都要展示真实 systemctl 运行状态。
-// 列表加载后立即为当前页已纳管的 exporter 目标逐台查询一次（不区分摘要/详情模式，
+// 列表加载后为当前页非安装/卸载中的已纳管 exporter 逐台查询一次（不区分摘要/详情模式，
 // 两种模式的状态展示都来自 serviceStatusMap 缓存，不查就会一直显示 install_status 的"运行中"）。
 // 只查 host_agent_online=true 的主机：agent 离线时查询必失败（后端报 host agent is offline），
 // 全量查会每次刷新弹一屏错误 toast；离线主机继续显示纳管状态，等上线后自动恢复真实状态。
@@ -1781,16 +1795,22 @@ function realServiceStatusInfo(targetId) {
 
 // 合并"纳管(managed_enabled)+安装(install_status)"成一个人话状态，
 // 供 exporters 摘要标签和"Exporter 状态"列共用，避免两个字段各自展示让人费解。
-// 优先用最近一次真实 systemctl status 的结果（serviceStatusMap 缓存），
-// 否则回退到纳管/安装状态——那只是"预期状态"，服务停了它也不会变。
+// 安装/卸载未结束时优先展示任务状态；结束后以重新查询的 systemctl 结果为准。
 function exporterStatusInfo(item) {
-  const real = realServiceStatusInfo(item?.id)
-  if (real) return real
   const installStatus = String(item?.install_status || '').toLowerCase()
   const enabled = Boolean(item?.managed_enabled)
   if (installStatus === 'pending') {
     return { text: enabled ? '安装中' : '卸载中', color: 'processing' }
   }
+  const cached = serviceStatusMap[item?.id]
+  if (cached?.needsRefresh) {
+    if (installStatus === 'failed') {
+      return { text: enabled ? '安装失败' : '卸载失败', color: 'error' }
+    }
+    return { text: '状态待确认', color: 'default' }
+  }
+  const real = realServiceStatusInfo(item?.id)
+  if (real) return real
   if (installStatus === 'failed') {
     return { text: enabled ? '安装失败' : '卸载失败', color: 'error' }
   }
@@ -2043,6 +2063,7 @@ async function handleManagedRedispatch(record) {
   try {
     const res = await retryManagedTarget(record.id)
     const latest = parseApiData(res)
+    invalidateServiceStatus(record.id)
     // 立即同步后端返回的新 job_id，避免列表刷新前仍指向旧任务。
     if (latest && typeof latest === 'object') {
       Object.assign(record, latest)
@@ -2135,6 +2156,10 @@ function openManagedTargetDeleteConfirm(record) {
 }
 
 async function handleCheckServiceStatus(record) {
+  const generation = serviceStatusGeneration[record.id] || 0
+  const duringInstall = overviewHosts.value.some((host) =>
+    (host.exporters || []).some((exporter) => exporter.id === record.id && exporter.install_status === 'pending'),
+  )
   managedServiceStatusLoading[record.id] = true
   try {
     const createRes = await checkManagedTargetServiceStatus(record.id)
@@ -2142,13 +2167,16 @@ async function handleCheckServiceStatus(record) {
     if (!job || !job.status) return
 
     // 写入“服务状态”列缓存（常驻展示），同时保留完整 stdout/stderr 供点击标签时查看详情。
-    serviceStatusMap[record.id] = {
-      status: job.status,
-      exitCode: job.exit_code,
-      stdout: job.stdout,
-      stderr: job.stderr,
-      checkedAt: new Date().toISOString(),
+    if (!duringInstall && generation === (serviceStatusGeneration[record.id] || 0)) {
+      serviceStatusMap[record.id] = {
+        status: job.status,
+        exitCode: job.exit_code,
+        stdout: job.stdout,
+        stderr: job.stderr,
+        checkedAt: new Date().toISOString(),
+      }
     }
+    return job
   } catch (error) {
     console.warn('[service_status] 查询运行状态失败', record.id, error?.response?.data?.msg || error?.message)
   } finally {
@@ -2201,7 +2229,7 @@ async function handleStopService(record) {
 
 function openServiceStatusModal(record) {
   const cached = serviceStatusMap[record.id]
-  if (!cached) return
+  if (!cached?.checkedAt) return
   serviceStatusModalRecord.value = record
   serviceStatusModalResult.value = {
     status: cached.status,
@@ -2214,8 +2242,14 @@ function openServiceStatusModal(record) {
 
 // 点「查看状态图」时先实时拉一次 systemctl status，避免弹窗展示陈旧缓存。
 async function openManagedServiceStatus(record) {
-  await handleCheckServiceStatus(record)
-  openServiceStatusModal(record)
+  const job = await handleCheckServiceStatus(record)
+  if (job) {
+    serviceStatusModalRecord.value = record
+    serviceStatusModalResult.value = job
+    serviceStatusModalVisible.value = true
+  } else {
+    openServiceStatusModal(record)
+  }
 }
 
 watch(() => autoRefreshEnabled.value, restartRefreshTimer)

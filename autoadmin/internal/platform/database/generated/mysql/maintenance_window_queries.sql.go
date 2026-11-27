@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"time"
 )
@@ -210,6 +211,38 @@ func (q *Queries) ListActiveMaintenanceWindows(ctx context.Context, arg ListActi
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMaintenanceHostsByIP = `-- name: ListMaintenanceHostsByIP :many
+SELECT id, COALESCE(instance_name,'') AS name FROM assets_host WHERE ip=? LIMIT 2
+`
+
+type ListMaintenanceHostsByIPRow struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+func (q *Queries) ListMaintenanceHostsByIP(ctx context.Context, ip sql.NullString) ([]ListMaintenanceHostsByIPRow, error) {
+	rows, err := q.db.QueryContext(ctx, listMaintenanceHostsByIP, ip)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMaintenanceHostsByIPRow{}
+	for rows.Next() {
+		var i ListMaintenanceHostsByIPRow
+		if err := rows.Scan(&i.ID, &i.Name); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

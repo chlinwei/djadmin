@@ -92,6 +92,7 @@ Django 侧已废弃（源码已移出版本库）；监控中心相关功能只�
 - 单目标重试/重新下发：`POST /monitor/targets/:id/retry/`（`RetryTarget`），按 `managed_enabled` 决定 install / uninstall，不校验 `install_status`（覆盖失败重试与历史遗留）。
 - 批量纳管并安装：`POST /monitor/targets/`（`InstallNow=true`）按主机创建目标，仅对实际新建的目标调用 `dispatchExporterJob`。
 - 两者最终都走 `dispatchExporterJob` → `prepareExporterDispatch` 选包 → 写 `automation_execution_job` + `monitor_target_install_history` → 置 target `pending`。
+- 列表在安装或卸载 `pending` 时显示「安装中」或「卸载中」，不以任务期间的 systemctl 结果覆盖；清除旧运行态并忽略在途旧查询。任务结束后重新查询运行态，查询结果尚不可用时显示「状态待确认」或安装／卸载失败，避免误报不存在或虚报运行中。
 
 ### 选包与平台匹配
 

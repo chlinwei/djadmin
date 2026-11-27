@@ -126,6 +126,157 @@ func TestMaintenanceRuntimeLookup(t *testing.T) {
 	}
 }
 
+func TestMaintenanceInstanceIP(t *testing.T) {
+	for _, tc := range []struct {
+		instance, want string
+	}{
+		{"10.25.66.177:9100", "10.25.66.177"},
+		{"10.25.66.177", "10.25.66.177"},
+		{"[2001:db8::1]:9100", "2001:db8::1"},
+		{"2001:db8::1", "2001:db8::1"},
+		{"server.example:9100", ""},
+		{"http://10.25.66.177:9100", ""},
+		{"", ""},
+	} {
+		if got := maintenanceInstanceIP(tc.instance); got != tc.want {
+			t.Errorf("instance %q: got %q, want %q", tc.instance, got, tc.want)
+		}
+	}
+}
+
+func TestMaintenanceResolveInstanceHost(t *testing.T) {
+	for _, tc := range []struct {
+		name, instance, label, queryIP string
+		ids                            []int64
+		wantID                         int64
+		wantErr                        string
+	}{
+		{name: "IPv4", instance: "10.25.66.177:9100", queryIP: "10.25.66.177", ids: []int64{222}, wantID: 222},
+		{name: "IPv6", instance: "[2001:db8::1]:9100", queryIP: "2001:db8::1", ids: []int64{7}, wantID: 7},
+		{name: "unknown IP", instance: "192.0.2.1:9100", queryIP: "192.0.2.1"},
+		{name: "ambiguous IP", instance: "192.0.2.1:9100", queryIP: "192.0.2.1", ids: []int64{1, 2}, wantErr: "对应多个主机"},
+		{name: "hostname", instance: "server:9100"},
+		{name: "invalid ID does not fall back", instance: "10.25.66.177:9100", label: "invalid", wantErr: "无效的告警 host_id"},
+		{name: "host ID takes precedence", instance: "10.25.66.177:9100", label: "7", wantID: 7},
+		{name: "unknown host ID does not fall back", instance: "10.25.66.177:9100", label: "99"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pool.Close()
+			if tc.queryIP != "" {
+				rows := sqlmock.NewRows([]string{"id", "name"})
+				for _, id := range tc.ids {
+					rows.AddRow(id, "host")
+				}
+				mock.ExpectQuery("ListMaintenanceHostsByIP").WithArgs(tc.queryIP).WillReturnRows(rows)
+			}
+			if tc.label == "7" {
+				mock.ExpectQuery("GetMaintenanceHost").WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(7, "host"))
+			}
+			if tc.label == "99" {
+				mock.ExpectQuery("GetMaintenanceHost").WithArgs(int64(99)).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}))
+			}
+			if tc.wantID != 0 {
+				mock.ExpectQuery("ListHostAlertScopeNodes").WithArgs(tc.wantID).WillReturnRows(sqlmock.NewRows([]string{"service_id", "business_system_id", "environment_id", "project_id"}))
+			}
+			h := &Handler{db: pool}
+			facts := newMaintenanceFacts(alertNotificationTarget{instance: tc.instance, labels: map[string]any{"host_id": tc.label}})
+			err = h.loadMaintenanceAssets(t.Context(), facts)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want %q", err, tc.wantErr)
+				}
+			} else if err != nil || facts.hostID != tc.wantID {
+				t.Fatalf("host ID = %d, error = %v", facts.hostID, err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestMaintenanceTreeMatchesInstanceHost(t *testing.T) {
+	pool, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	mock.ExpectQuery("ListMaintenanceHostsByIP").WithArgs("10.25.66.177").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(222, "177"))
+	mock.ExpectQuery("ListHostAlertScopeNodes").WithArgs(int64(222)).
+		WillReturnRows(sqlmock.NewRows([]string{"service_id", "business_system_id", "environment_id", "project_id"}).AddRow(1, 2, 3, 4))
+	matchers, err := maintenanceMatchers([]byte(`[{"type":"tree","node_type":"project","id":4}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := newMaintenanceFacts(alertNotificationTarget{instance: "10.25.66.177:9100"})
+	matched, err := (&Handler{db: pool}).maintenanceScopeMatch(t.Context(), matchers, facts)
+	if err != nil || !matched {
+		t.Fatalf("matched=%t err=%v", matched, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMaintenancePreviewResolvesInstanceHost(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"success","data":{"alerts":[{"labels":{"alertname":"HighCpuUsage","instance":"10.25.66.177:9100"},"state":"firing"}]}}`))
+	}))
+	defer server.Close()
+	pool, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	mock.ExpectQuery("GetMaintenanceHost").WithArgs(int64(222)).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(222, "177"))
+	mock.ExpectQuery("SELECT value FROM sys_config").WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow(server.URL))
+	mock.ExpectQuery("ListMaintenanceHostsByIP").WithArgs("10.25.66.177").WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(222, "177"))
+	mock.ExpectQuery("ListHostAlertScopeNodes").WithArgs(int64(222)).WillReturnRows(sqlmock.NewRows([]string{"service_id", "business_system_id", "environment_id", "project_id"}))
+	router := gin.New()
+	router.GET("/", (&Handler{db: pool, client: server.Client()}).PreviewMaintenanceWindow)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/?matchers="+url.QueryEscape(`[{"type":"host","id":222}]`), nil))
+	var result struct {
+		Code int `json:"code"`
+		Data struct {
+			Count   int `json:"count"`
+			Results []struct {
+				HostID int64 `json:"host_id"`
+			} `json:"results"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil || result.Code != 200 || result.Data.Count != 1 || len(result.Data.Results) != 1 || result.Data.Results[0].HostID != 222 {
+		t.Fatalf("preview = %s, error = %v", recorder.Body.String(), err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVerifiedMaintenanceHostUsesHistoryInstance(t *testing.T) {
+	pool, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	mock.ExpectQuery("ListMaintenanceHostsByIP").WithArgs("10.25.66.177").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(222, "177"))
+	mock.ExpectQuery("ListHostAlertScopeNodes").WithArgs(int64(222)).
+		WillReturnRows(sqlmock.NewRows([]string{"service_id", "business_system_id", "environment_id", "project_id"}))
+	got := (&Handler{db: pool}).verifiedMaintenanceHost(t.Context(), 314, "10.25.66.177:9100", map[string]any{})
+	if got == nil || *got != 222 {
+		t.Fatalf("verified host = %v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMaintenanceHalfOpen(t *testing.T) {
 	now := time.Now().UTC()
 	w := db.MonitorMaintenanceWindow{Status: "open", StartsAt: now, EndsAt: now.Add(time.Hour)}

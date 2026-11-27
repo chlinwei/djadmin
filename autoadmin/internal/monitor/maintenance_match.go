@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -87,34 +88,66 @@ func newMaintenanceFacts(t alertNotificationTarget) *maintenanceAlertFacts {
 	return &maintenanceAlertFacts{labels: mergeAlertLabels(t.labels, t.alertname, t.severity, t.instance)}
 }
 
-// 严格解析主机 ID；不存在的资产不是当前资产，数据库失败则是错误，不能冒充“未命中”。
+func maintenanceInstanceIP(instance string) string {
+	instance = strings.TrimSpace(instance)
+	if net.ParseIP(instance) != nil {
+		return instance
+	}
+	host, _, err := net.SplitHostPort(instance)
+	if err != nil || net.ParseIP(host) == nil {
+		return ""
+	}
+	return host
+}
+
+// 优先使用明确的 host_id；只有缺失时才按 instance 的 IP 查找，避免错误标签被悄悄覆盖。
 func (h *Handler) loadMaintenanceAssets(ctx context.Context, f *maintenanceAlertFacts) error {
 	if f.assetsLoaded {
 		return nil
 	}
 	raw := strings.TrimSpace(f.labels["host_id"])
-	if raw == "" {
-		f.assetsLoaded = true
-		return nil
-	}
-	id, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || id <= 0 {
-		return fmt.Errorf("无效的告警 host_id: %q", raw)
-	}
 	q := db.New(h.db)
-	host, err := q.GetMaintenanceHost(ctx, id)
-	if errors.Is(err, sql.ErrNoRows) {
-		f.assetsLoaded = true
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("读取告警主机: %w", err)
+	var id int64
+	var name string
+	if raw != "" {
+		var err error
+		id, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || id <= 0 {
+			return fmt.Errorf("无效的告警 host_id: %q", raw)
+		}
+		host, err := q.GetMaintenanceHost(ctx, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			f.assetsLoaded = true
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("读取告警主机: %w", err)
+		}
+		name = host.Name
+	} else {
+		ip := maintenanceInstanceIP(f.labels["instance"])
+		if ip == "" {
+			f.assetsLoaded = true
+			return nil
+		}
+		hosts, err := q.ListMaintenanceHostsByIP(ctx, sql.NullString{String: ip, Valid: true})
+		if err != nil {
+			return fmt.Errorf("按 IP 读取告警主机: %w", err)
+		}
+		if len(hosts) > 1 {
+			return fmt.Errorf("告警 instance 的 IP %q 对应多个主机", ip)
+		}
+		if len(hosts) == 0 {
+			f.assetsLoaded = true
+			return nil
+		}
+		id, name = hosts[0].ID, hosts[0].Name
 	}
 	rows, err := q.ListHostAlertScopeNodes(ctx, id)
 	if err != nil {
 		return fmt.Errorf("读取告警主机服务树: %w", err)
 	}
-	f.hostID, f.hostName, f.nodes = id, host.Name, map[string]bool{}
+	f.hostID, f.hostName, f.nodes = id, name, map[string]bool{}
 	for _, r := range rows {
 		f.nodes[fmt.Sprintf("service:%d", r.ServiceID)] = true
 		f.nodes[fmt.Sprintf("business:%d", r.BusinessSystemID)] = true

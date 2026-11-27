@@ -9,16 +9,6 @@ export function formatMatchedHostTitle(host) {
   return displayName || ip || '-'
 }
 
-export function mapInventoryOptions(items) {
-  const normalizedItems = Array.isArray(items) ? items : []
-  return normalizedItems
-    .filter((item) => Number(item?.id || 0) > 0)
-    .map((item) => ({
-      label: String(item?.name || ''),
-      value: Number(item.id),
-    }))
-}
-
 export function splitLimitTokens(limitText) {
   return String(limitText || '')
     .replace(/,/g, ' ')

@@ -10,6 +10,7 @@ import (
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/identity"
 	generated "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/apperror"
 
 	"github.com/gin-gonic/gin"
 )
@@ -187,7 +188,7 @@ func (handler *Handler) pendingApplyTargetIDs(context context.Context) ([]int64,
 // createLogBatchJob 建作业与明细并入队。任一目标状态不满足就整体失败（避免"部分入队"的中间态）。
 func (handler *Handler) createLogBatchJob(context context.Context, action string, targetIDs []int64, username string) (gin.H, error) {
 	if handler.batchRunner == nil {
-		return nil, fmt.Errorf("批量作业执行器未装配（缺少队列发布者），无法下发")
+		return nil, apperror.New(apperror.CodeInternal, "批量作业执行器未装配（缺少队列发布者），无法下发")
 	}
 	queries := generated.New(handler.db)
 	targets, err := queries.ListLogBatchTargets(context, targetIDs)
@@ -195,7 +196,19 @@ func (handler *Handler) createLogBatchJob(context context.Context, action string
 		return nil, err
 	}
 	if len(targets) == 0 {
-		return nil, fmt.Errorf("没有匹配的日志采集目标")
+		return nil, apperror.New(apperror.CodeNotFound, "没有匹配的日志采集目标")
+	}
+	// 建目标与入队间可能发生删除；不能把不在作业明细中的主机也报告为已受理。
+	if action == LogBatchActionInstall {
+		found := make(map[int64]bool, len(targets))
+		for _, target := range targets {
+			found[target.ID] = true
+		}
+		for _, id := range targetIDs {
+			if !found[id] {
+				return nil, apperror.New(apperror.CodeNotFound, fmt.Sprintf("日志采集目标 #%d 不存在，安装作业未下发", id))
+			}
+		}
 	}
 	now := time.Now().UTC()
 	jobID, err := queries.CreateLogBatchJob(context, generated.CreateLogBatchJobParams{
@@ -206,6 +219,13 @@ func (handler *Handler) createLogBatchJob(context context.Context, action string
 	if err != nil {
 		return nil, err
 	}
+	failDispatch := func(reason string, cause error) (gin.H, error) {
+		_, _ = queries.FinishLogBatchJob(context, generated.FinishLogBatchJobParams{
+			Status: LogBatchStatusFailed, Message: reason,
+			FinishedAt: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: jobID,
+		})
+		return gin.H{"id": jobID}, apperror.WithCause(apperror.New(apperror.CodeInternal, reason), cause)
+	}
 	for _, target := range targets {
 		// 主机名落成快照：主机改名或被删后，进度页仍要如实展示当时的目标。
 		if err = queries.CreateLogBatchJobItem(context, generated.CreateLogBatchJobItemParams{
@@ -213,23 +233,18 @@ func (handler *Handler) createLogBatchJob(context context.Context, action string
 			TargetID: target.ID, HostID: target.HostID,
 			HostName: firstNonEmpty(target.InstanceName, target.Ip), HostIp: target.Ip,
 		}); err != nil {
-			return nil, err
+			return failDispatch("批量作业明细创建失败", err)
 		}
 	}
 	// 入队放在最后：作业行与明细都在了，消息才会被投出。
 	if err = ScheduleLogBatch(context, handler.batchRunner.publisher, jobID); err != nil {
-		_, _ = queries.FinishLogBatchJob(context, generated.FinishLogBatchJobParams{
-			Status:     LogBatchStatusFailed,
-			Message:    fmt.Sprintf("入队失败: %v", err),
-			FinishedAt: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: jobID,
-		})
-		return nil, fmt.Errorf("批量作业入队失败: %w", err)
+		return failDispatch("批量作业入队失败", err)
 	}
-	row, err := queries.GetLogBatchJob(context, jobID)
-	if err != nil {
-		return nil, err
-	}
-	return logBatchJobDTO(row), nil
+	// 发布成功即已受理；返回创建时的快照，实际执行进度由 GET 查询。
+	return logBatchJobDTO(generated.GetLogBatchJobRow{
+		ID: jobID, Action: action, Status: LogBatchStatusPending, TotalCount: int32(len(targets)),
+		Concurrency: int32(handler.batchRunner.concurrency(action)), RequestedUsername: username, CreateTime: now, UpdateTime: now,
+	}), nil
 }
 
 // requestedUsername 取当前操作者名（作业留档用；未认证上下文返回空串）。

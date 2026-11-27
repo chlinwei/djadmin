@@ -181,9 +181,8 @@ func TestDependencyProtectsServiceBeforeTombstone(t *testing.T) {
 	mock.ExpectQuery("SELECT id FROM assets_application_service WHERE").WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(7))
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM assets_service_dependency").WithArgs(int64(7), int64(7)).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectRollback()
-	exists, err := NewRepository(pool).beginServiceDeletion(context.Background(), 7)
-	if exists || !errors.Is(err, ErrServiceHasDependencies) {
-		t.Fatalf("exists %v err %v", exists, err)
+	if err := NewRepository(pool).beginServiceDeletion(context.Background(), 7); !errors.Is(err, ErrServiceHasDependencies) {
+		t.Fatalf("begin deletion: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

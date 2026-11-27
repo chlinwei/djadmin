@@ -39,13 +39,18 @@ func RequirePermission(permission string) gin.HandlerFunc {
 			context.Abort()
 			return
 		}
-		if claims.Username == "admin" || contains(claims.Perms, permission) {
+		if HasPermission(claims, permission) {
 			context.Next()
 			return
 		}
 		response.Error(context, apperror.ErrPermissionDenied)
 		context.Abort()
 	}
+}
+
+// HasPermission shares the route permission rule with read APIs that expose individually gated sections.
+func HasPermission(claims *identity.Claims, permission string) bool {
+	return claims != nil && (claims.Username == "admin" || contains(claims.Perms, permission))
 }
 
 func contains(values []string, expected string) bool {

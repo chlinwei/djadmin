@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"autoadmin/internal/platform/database"
 	db "autoadmin/internal/platform/database/generated"
 )
 
@@ -64,15 +65,15 @@ func TestSmokeLogCollectQueriesAgainstRealDatabase(t *testing.T) {
 	}
 
 	// ---- 日志采集目标 ----
-	targetID, created, err := createLogCollectionTargetIfAbsent(ctx, queries, db.CreateLogCollectionTargetIfAbsentParams{
+	targetID, created, err := database.InsertIfAbsentResult(queries.CreateLogCollectionTargetIfAbsent(ctx, db.CreateLogCollectionTargetIfAbsentParams{
 		CreateTime: now, UpdateTime: now, HostID: hostID,
-	})
+	}))
 	if err != nil || !created || targetID <= 0 {
 		t.Fatalf("首次纳管日志目标：id=%d created=%v err=%v", targetID, created, err)
 	}
-	if _, created, err = createLogCollectionTargetIfAbsent(ctx, queries, db.CreateLogCollectionTargetIfAbsentParams{
+	if _, created, err = database.InsertIfAbsentResult(queries.CreateLogCollectionTargetIfAbsent(ctx, db.CreateLogCollectionTargetIfAbsentParams{
 		CreateTime: now, UpdateTime: now, HostID: hostID,
-	}); err != nil || created {
+	})); err != nil || created {
 		t.Fatalf("重复纳管应跳过：created=%v err=%v", created, err)
 	}
 	targetRow, err := queries.GetLogTargetForAction(ctx, targetID)

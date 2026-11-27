@@ -9,6 +9,8 @@ const (
 	CodePermissionDenied   = 403
 	CodeNotFound           = 404
 	CodeInternal           = 600
+	CodeBatchPartial       = 10001
+	CodeBatchFailed        = 10002
 )
 
 var (

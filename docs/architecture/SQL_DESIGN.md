@@ -601,7 +601,7 @@ MySQL 侧是全部导出类型的别名 + `New` 转发；PG 侧是「嵌入 `*po
 
 | 分歧形态 | 适配做法 |
 |---|---|
-| 只传一个 pattern 的 count 查询（PG 把结构体展开成单个入参） | 补回 `XxxParams` 结构体 + 薄转发 |
+| 只传一个 pattern 的 count 查询（PG 把结构体展开成单个入参） | 补回 `XxxParams` 结构体 + 薄转发；业务系统计数同时接收项目过滤，两种方言的结构体已一致，直接使用生成别名 |
 | INSERT 的 `:execresult`（PG 侧派生为 `:one` + RETURNING，返回 `int32`/`int64`） | `insertResult{id}`：实现 `sql.Result`（`LastInsertId` 返回真实主键、`RowsAffected` 为 1），让调用点继续用 `result.LastInsertId()` |
 | 告警历史的 `LabelKey`/`LabelValue`（MySQL `interface{}` vs PG `string`/`sql.NullString`） | 结构体按 MySQL 侧定义，转发时用 `labelKeyArg`/`nullStringArg` 显式换算 |
 | 部署模板的 `Column3` ↔ PG 的 `Column1` | 字段改名映射 |
@@ -717,7 +717,7 @@ docker/compose 配置、逻辑服务与部署实例）、**`monitor` 138 → 0**
 
 `monitor` 这一轮用到的构造（对上游规律有增补，已并入 §4.6 的规则表与 P5 陷阱 26–30）：
 - **两类"插入即跳过"**（通知事件按 `deduplication_key`、日志目标按 `host_id`）→ `INSERT IGNORE` + 派生改写成
-  `ON CONFLICT DO NOTHING`，两侧判定收敛到按方言分文件的 `insertIgnoreOutcome`；
+  `ON CONFLICT DO NOTHING`，监控目标、日志目标和告警事件统一通过 `database.InsertIfAbsentResult` 判断是否新建并取得 ID；
 - **单地址投递的 get-or-create**（唯一键含可空列）→ MySQL 的 `id=LAST_INSERT_ID(id)`，PG 侧由 perQueryOverride
   换成 `DO UPDATE SET id=<表>.id RETURNING id`（**不能写 `EXCLUDED.id`**）；
 - **通用配置资源的"运行时拼表名 + 列名"** → 表名按资源分派到显式语句，"只写提交了的列"改由

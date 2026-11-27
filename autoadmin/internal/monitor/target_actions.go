@@ -1,10 +1,12 @@
 package monitor
 
 import (
+	"autoadmin/internal/platform/database"
 	db "autoadmin/internal/platform/database/generated"
 
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -12,6 +14,9 @@ import (
 
 	"autoadmin/internal/agent/pb"
 	"autoadmin/internal/api/response"
+	"autoadmin/internal/api/targetbatch"
+	"autoadmin/internal/shared/apperror"
+	"autoadmin/internal/shared/installhistory"
 
 	"github.com/gin-gonic/gin"
 )
@@ -25,13 +30,22 @@ func (handler *Handler) UpdateTarget(context *gin.Context) {
 		response.BusinessError(context, 400, "invalid request body", nil)
 		return
 	}
-	// 字段白名单的三态在应用层合并：先读回现值，把提交了的字段覆盖上去，再整行写。
-	// （原实现按"提交了才写"拼 `SET `+strings.Join(sets,",")，运行时拼列名 sqlc 表达不了；
-	//  也不能用 `COALESCE(narg, col)`——那表示"传 NULL 保持原值"，无法表达"显式写入空值"。）
+	// 合并 PATCH 字段时持有行锁，避免并发请求用旧快照覆盖彼此未提交的字段。
+	tx, err := handler.db.BeginTx(context, nil)
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	defer tx.Rollback()
+	queries := db.New(tx)
 	patch := db.UpdateMonitorTargetPatchParams{}
-	current, loadErr := db.New(handler.db).GetMonitorTarget(context, id)
-	if loadErr != nil {
+	current, err := queries.GetMonitorTargetPatchForUpdate(context, id)
+	if errors.Is(err, sql.ErrNoRows) {
 		response.BusinessError(context, 404, "monitor target not found", nil)
+		return
+	}
+	if err != nil {
+		response.Error(context, err)
 		return
 	}
 	patch.ExporterType = current.ExporterType
@@ -39,11 +53,13 @@ func (handler *Handler) UpdateTarget(context *gin.Context) {
 	patch.ManagedEnabled = current.ManagedEnabled
 	patch.Labels = current.Labels
 	patch.Remark = current.Remark
+	hasWritableField := false
 	for _, field := range []string{"exporter_type", "scrape_port", "managed_enabled", "labels", "remark"} {
 		value, exists := input[field]
 		if !exists {
 			continue
 		}
+		hasWritableField = true
 		if field == "scrape_port" {
 			port := intValue(value)
 			if port < 1 || port > 65535 {
@@ -77,13 +93,17 @@ func (handler *Handler) UpdateTarget(context *gin.Context) {
 			patch.Remark = sql.NullString{String: stringValue(value), Valid: value != nil}
 		}
 	}
-	if len(input) == 0 {
+	if !hasWritableField {
 		response.BusinessError(context, 400, "no writable fields", nil)
 		return
 	}
 	patch.UpdateTime, patch.ID = time.Now().UTC(), id
-	if err := db.New(handler.db).UpdateMonitorTargetPatch(context, patch); err != nil {
-		response.BusinessError(context, 400, err.Error(), nil)
+	if err := queries.UpdateMonitorTargetPatch(context, patch); err != nil {
+		response.Error(context, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		response.Error(context, err)
 		return
 	}
 	handler.GetTarget(context)
@@ -107,8 +127,12 @@ func (handler *Handler) BatchCreateTargets(context *gin.Context) {
 	}
 	queries := db.New(handler.db)
 	defaultPort, err := queries.GetExporterPackageDefaultPort(context, input.ExporterType)
-	if err != nil {
+	if errors.Is(err, sql.ErrNoRows) {
 		response.BusinessError(context, 400, "no enabled exporter package found", nil)
+		return
+	}
+	if err != nil {
+		response.Error(context, err)
 		return
 	}
 	if input.ScrapePort == 0 {
@@ -118,84 +142,33 @@ func (handler *Handler) BatchCreateTargets(context *gin.Context) {
 		response.BusinessError(context, 400, "scrape_port must be between 1 and 65535", nil)
 		return
 	}
-	results := make([]gin.H, 0, len(input.HostIDs))
-	success := 0
+	results := make([]response.BatchResult, 0, len(input.HostIDs))
 	for _, hostID := range input.HostIDs {
 		identity, identityErr := queries.GetHostTargetIdentity(context, hostID)
 		name, ip := identity.InstanceName, identity.Ip
-		if identityErr != nil || identity.IsDeletedInCloud {
-			results = append(results, gin.H{"host_id": hostID, "host": name, "ok": false, "message": "host not found"})
-			continue
-		}
-		label := name
-		if label == "" {
-			label = ip
-		}
-		now := time.Now().UTC()
-		targetID, created, err := createMonitorTargetIfAbsent(context, queries, db.CreateMonitorTargetIfAbsentParams{
-			CreateTime: now, UpdateTime: now, HostID: hostID, ExporterType: input.ExporterType,
-			ScrapePort: uint32(input.ScrapePort),
+		item, targetID := targetbatch.Create(hostID, name, ip, identity.IsDeletedInCloud, identityErr, func() (int64, bool, error) {
+			now := time.Now().UTC()
+			return database.InsertIfAbsentResult(queries.CreateMonitorTargetIfAbsent(context, db.CreateMonitorTargetIfAbsentParams{
+				CreateTime: now, UpdateTime: now, HostID: hostID, ExporterType: input.ExporterType, ScrapePort: uint32(input.ScrapePort),
+			}))
 		})
-		if err != nil {
-			results = append(results, gin.H{"host_id": hostID, "host": label, "ok": false, "message": err.Error()})
-			continue
-		}
-		if !created {
-			results = append(results, gin.H{"host_id": hostID, "host": label, "ok": false, "message": "target already managed"})
-			continue
-		}
-		// 与 Django 一致：install_now=true 时创建后立即下发安装（agent 离线/缺包等守卫
-		// 在 dispatchExporterJob 内部判定，原因写入 target.install_message）。
-		if input.InstallNow {
+		if item.OK && input.InstallNow {
 			row := targetInstallRow{ID: targetID, HostID: hostID, ManagedEnabled: true, ExporterType: input.ExporterType, HostName: name, HostIP: ip}
-			if err := handler.dispatchExporterJob(context, row); err != nil {
-				results = append(results, gin.H{"host_id": hostID, "host": label, "ok": false, "message": err.Error()})
-				continue
+			jobID, err := handler.dispatchExporterJob(context, row)
+			var guard guardFailure
+			if errors.As(err, &guard) {
+				err = apperror.New(apperror.CodeInvalidArgument, guard.message)
 			}
+			targetbatch.Install(&item, targetID, jobID, err)
 		}
-		success++
-		message := ""
-		if input.InstallNow {
-			message = "install job dispatched"
-		}
-		results = append(results, gin.H{"host_id": hostID, "host": label, "ok": true, "message": message})
+		results = append(results, item)
 	}
-	response.Success(context, gin.H{"total": len(results), "success": success, "failed": len(results) - success, "results": results})
+	targetbatch.Report(context, results, nil)
 }
 
 func (handler *Handler) CancelTarget(context *gin.Context) {
 	id := parseID(context.Param("id"))
-	latest, err := db.New(handler.db).GetLatestTargetInstallHistory(context, sql.NullInt64{Int64: id, Valid: true})
-	if err != nil || (latest.Status != "pending" && latest.Status != "running") {
-		response.BusinessError(context, 400, "current task has ended and does not need cancellation", nil)
-		return
-	}
-	now := time.Now().UTC()
-	duration := sql.NullFloat64{}
-	if latest.StartTime.Valid {
-		duration = sql.NullFloat64{Float64: now.Sub(latest.StartTime.Time).Seconds(), Valid: true}
-	}
-	tx, err := handler.db.BeginTx(context, nil)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	defer tx.Rollback()
-	txQueries := db.New(tx)
-	if err = txQueries.CancelInstallHistory(context, db.CancelInstallHistoryParams{
-		EndTime: sql.NullTime{Time: now, Valid: true}, DurationSeconds: duration,
-		UpdateTime: now, ID: latest.ID,
-	}); err != nil {
-		response.Error(context, err)
-		return
-	}
-	if err = txQueries.MarkTargetInstallCancelled(context, db.MarkTargetInstallCancelledParams{
-		UpdateTime: now, ID: id,
-	}); err != nil {
-		response.Error(context, err)
-		return
-	}
-	if err = tx.Commit(); err != nil {
+	if err := installhistory.Cancel(context.Request.Context(), handler.db, installhistory.Exporter, id); err != nil {
 		response.Error(context, err)
 		return
 	}
@@ -216,7 +189,7 @@ func (handler *Handler) controlTargetService(context *gin.Context, action string
 	id := parseID(context.Param("id"))
 	result, err := handler.dispatchTargetServiceControl(context, id, action)
 	if err != nil {
-		response.BusinessError(context, 400, err.Error(), nil)
+		response.Error(context, err)
 		return
 	}
 	response.Success(context, result)
@@ -226,15 +199,18 @@ func (handler *Handler) controlTargetService(context *gin.Context, action string
 // 避免批量版本和单台版本的 systemctl 命令拼接逻辑各写一份、后续改一处漏一处。
 func (handler *Handler) dispatchTargetServiceControl(context *gin.Context, id int64, action string) (gin.H, error) {
 	contextRow, err := db.New(handler.db).GetTargetServiceContext(context, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, apperror.New(apperror.CodeNotFound, "monitor target not found")
+	}
 	if err != nil {
-		return nil, fmt.Errorf("monitor target not found")
+		return nil, apperror.WithCause(apperror.ErrInternal, err)
 	}
 	instanceName, exporterType := contextRow.InstanceName, contextRow.ExporterType
 	if handler.gateway == nil || !handler.gateway.IsOnline(instanceName) {
-		return nil, fmt.Errorf("host agent is offline")
+		return nil, apperror.New(apperror.CodeInvalidArgument, "host agent is offline")
 	}
 	if !serviceNamePattern.MatchString(exporterType) {
-		return nil, fmt.Errorf("invalid exporter service name")
+		return nil, apperror.New(apperror.CodeInvalidArgument, "invalid exporter service name")
 	}
 	// agent 内置了 exporter 生命周期动作（直接 systemctl，agent 以 root 运行无需 sudo），
 	// 之前误下发 agent 不认识的 "run_shell" 动作，agent 报 unsupported action 却被当成功上报。
@@ -246,7 +222,7 @@ func (handler *Handler) dispatchTargetServiceControl(context *gin.Context, id in
 	params, _ := json.Marshal(gin.H{"service_name": exporterType + ".service"})
 	result, err := handler.gateway.Execute(context, instanceName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("monitor-service-%d", time.Now().UnixNano()), Type: "custom", Action: builtinAction, ParamsJson: string(params), TimeoutSeconds: 30})
 	if err != nil {
-		return nil, err
+		return nil, targetbatch.ServiceDispatchError(err)
 	}
 	return serviceControlResult(result, action, exporterType)
 }
@@ -256,20 +232,7 @@ func (handler *Handler) dispatchTargetServiceControl(context *gin.Context, id in
 // 注意 Status 为空也是失败：executor 层直接报错（典型是 agent 版本过旧、不认识动作名）时
 // 返回的是零值 JobResult，Status=""、ExitCode=0，只判 "failed" 会被漏过。
 func serviceControlResult(result *pb.AutomationExecuteResponse, action, exporterType string) (gin.H, error) {
-	if action != "status" && (result.Status != "success" || result.ExitCode != 0) {
-		reason := firstNonEmpty(strings.TrimSpace(result.ErrorMessage), strings.TrimSpace(result.Stderr), strings.TrimSpace(result.Stdout))
-		return nil, fmt.Errorf("systemctl %s %s.service failed: %s", action, exporterType, reason)
-	}
-	return gin.H{"job_id": result.JobId, "status": result.Status, "exit_code": result.ExitCode, "stdout": result.Stdout, "stderr": result.Stderr, "error_message": result.ErrorMessage}, nil
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
+	return targetbatch.ServiceResult(result, action, exporterType)
 }
 
 // targetHostLabel 取一个 monitor_target 对应的主机展示名，批量接口的结果列表要按主机报告成功/失败。
@@ -303,32 +266,30 @@ func (handler *Handler) BatchDeleteTargets(context *gin.Context) {
 	if !ok {
 		return
 	}
-	results := make([]gin.H, 0, len(ids))
-	success := 0
+	results := make([]response.BatchResult, 0, len(ids))
 	for _, id := range ids {
 		label := targetHostLabel(context, handler.db, id)
-		state, stateErr := db.New(handler.db).GetMonitorTargetState(context, id)
-		enabled, status := state.ManagedEnabled, state.InstallStatus
-		if stateErr != nil {
-			results = append(results, gin.H{"id": id, "host": label, "ok": false, "message": "monitor target not found"})
-			continue
+		queries := db.New(handler.db)
+		affected, err := queries.DeleteMonitorTarget(context, id)
+		if err == nil && affected == 0 {
+			// 删除条件在写入时判断；补查只用于解释拒绝原因，不据此重试删除。
+			state, stateErr := queries.GetMonitorTargetState(context, id)
+			switch {
+			case stateErr != nil:
+				err = stateErr
+			case state.ManagedEnabled:
+				err = apperror.New(apperror.CodeInvalidArgument, "disable the monitor target before deleting it")
+			case state.InstallStatus == "pending":
+				err = apperror.New(apperror.CodeInvalidArgument, "wait for the uninstall task to finish before deleting")
+			default:
+				err = apperror.New(apperror.CodeInvalidArgument, "monitor target state changed; refresh and retry")
+			}
 		}
-		if enabled {
-			results = append(results, gin.H{"id": id, "host": label, "ok": false, "message": "disable the monitor target before deleting it"})
-			continue
-		}
-		if status == "pending" {
-			results = append(results, gin.H{"id": id, "host": label, "ok": false, "message": "wait for the uninstall task to finish before deleting"})
-			continue
-		}
-		if err := db.New(handler.db).DeleteMonitorTarget(context, id); err != nil {
-			results = append(results, gin.H{"id": id, "host": label, "ok": false, "message": err.Error()})
-			continue
-		}
-		success++
-		results = append(results, gin.H{"id": id, "host": label, "ok": true, "message": ""})
+		result := response.BatchItem(id, err)
+		result.Host = label
+		results = append(results, result)
 	}
-	response.Success(context, gin.H{"total": len(results), "success": success, "failed": len(results) - success, "results": results})
+	targetbatch.Report(context, results, nil)
 }
 
 func (handler *Handler) BatchStartTargetService(context *gin.Context) {
@@ -343,17 +304,16 @@ func (handler *Handler) batchControlTargetService(context *gin.Context, action s
 	if !ok {
 		return
 	}
-	results := make([]gin.H, 0, len(ids))
-	success := 0
+	results := make([]response.BatchResult, 0, len(ids))
 	for _, id := range ids {
 		label := targetHostLabel(context, handler.db, id)
 		detail, err := handler.dispatchTargetServiceControl(context, id, action)
-		if err != nil {
-			results = append(results, gin.H{"id": id, "host": label, "ok": false, "message": err.Error()})
-			continue
+		item := response.BatchItem(id, err)
+		item.Host = label
+		if detail != nil {
+			item.Detail = detail
 		}
-		success++
-		results = append(results, gin.H{"id": id, "host": label, "ok": true, "message": "", "detail": detail})
+		results = append(results, item)
 	}
-	response.Success(context, gin.H{"total": len(results), "success": success, "failed": len(results) - success, "results": results})
+	targetbatch.Report(context, results, nil)
 }

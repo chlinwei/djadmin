@@ -787,7 +787,7 @@ type CreateAlertNotificationEventIfAbsentParams struct {
 // ---- 告警通知分发链路（event / delivery / 失联对账 / 服务树归属）----
 // 入队去重：deduplication_key 是唯一键，"已有事件"即影响行数为 0。
 // MySQL 用 INSERT IGNORE（影响行数 0），PG 侧派生为 ON CONFLICT DO NOTHING
-// （被跳过时 RETURNING 不返回行）；两侧判定见 alert_event_dialect_*.go。
+// （被跳过时 RETURNING 不返回行）；两侧由 database.InsertIfAbsentResult 统一解释。
 func (q *Queries) CreateAlertNotificationEventIfAbsent(ctx context.Context, arg CreateAlertNotificationEventIfAbsentParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, createAlertNotificationEventIfAbsent,
 		arg.CreateTime,
@@ -1405,31 +1405,41 @@ func (q *Queries) DeleteLogRetentionTier(ctx context.Context, id int64) (sql.Res
 	return q.db.ExecContext(ctx, deleteLogRetentionTier, id)
 }
 
-const deleteMonitorTarget = `-- name: DeleteMonitorTarget :exec
+const deleteMonitorTarget = `-- name: DeleteMonitorTarget :execrows
 DELETE FROM monitor_target WHERE id = $1
+AND managed_enabled = FALSE AND install_status <> 'pending'
 `
 
-func (q *Queries) DeleteMonitorTarget(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteMonitorTarget, id)
-	return err
+func (q *Queries) DeleteMonitorTarget(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteMonitorTarget, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteNotificationPolicy = `-- name: DeleteNotificationPolicy :exec
+const deleteNotificationPolicy = `-- name: DeleteNotificationPolicy :execrows
 DELETE FROM monitor_notification_policy WHERE id=$1
 `
 
-func (q *Queries) DeleteNotificationPolicy(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteNotificationPolicy, id)
-	return err
+func (q *Queries) DeleteNotificationPolicy(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteNotificationPolicy, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteSoftwarePackage = `-- name: DeleteSoftwarePackage :exec
+const deleteSoftwarePackage = `-- name: DeleteSoftwarePackage :execrows
 DELETE FROM monitor_software_package WHERE id=$1
 `
 
-func (q *Queries) DeleteSoftwarePackage(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteSoftwarePackage, id)
-	return err
+func (q *Queries) DeleteSoftwarePackage(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteSoftwarePackage, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const detachInstallHistoryFromLogTarget = `-- name: DetachInstallHistoryFromLogTarget :exec
@@ -2177,9 +2187,28 @@ func (q *Queries) GetLatestLogTargetInstallHistory(ctx context.Context, logColle
 	return i, err
 }
 
+const getLatestLogTargetInstallHistoryForUpdate = `-- name: GetLatestLogTargetInstallHistoryForUpdate :one
+SELECT id, status, create_time FROM monitor_target_install_history
+WHERE log_collection_target_id = $1
+ORDER BY id DESC LIMIT 1 FOR UPDATE
+`
+
+type GetLatestLogTargetInstallHistoryForUpdateRow struct {
+	ID         int64     `json:"id"`
+	Status     string    `json:"status"`
+	CreateTime time.Time `json:"create_time"`
+}
+
+func (q *Queries) GetLatestLogTargetInstallHistoryForUpdate(ctx context.Context, logCollectionTargetID sql.NullInt64) (GetLatestLogTargetInstallHistoryForUpdateRow, error) {
+	row := q.db.QueryRowContext(ctx, getLatestLogTargetInstallHistoryForUpdate, logCollectionTargetID)
+	var i GetLatestLogTargetInstallHistoryForUpdateRow
+	err := row.Scan(&i.ID, &i.Status, &i.CreateTime)
+	return i, err
+}
+
 const getLatestTargetInstallHistory = `-- name: GetLatestTargetInstallHistory :one
 SELECT id, status, start_time FROM monitor_target_install_history
-WHERE target_id = $1 ORDER BY id DESC LIMIT 1
+WHERE target_id = $1 ORDER BY id DESC LIMIT 1 FOR UPDATE
 `
 
 type GetLatestTargetInstallHistoryRow struct {
@@ -2479,6 +2508,32 @@ func (q *Queries) GetMonitorTarget(ctx context.Context, id int64) (GetMonitorTar
 		&i.HostName,
 		&i.HostIp,
 		&i.HostAgentOnline,
+	)
+	return i, err
+}
+
+const getMonitorTargetPatchForUpdate = `-- name: GetMonitorTargetPatchForUpdate :one
+SELECT exporter_type, scrape_port, managed_enabled, labels, remark
+FROM monitor_target WHERE id = $1 FOR UPDATE
+`
+
+type GetMonitorTargetPatchForUpdateRow struct {
+	ExporterType   string          `json:"exporter_type"`
+	ScrapePort     uint32          `json:"scrape_port"`
+	ManagedEnabled bool            `json:"managed_enabled"`
+	Labels         json.RawMessage `json:"labels"`
+	Remark         sql.NullString  `json:"remark"`
+}
+
+func (q *Queries) GetMonitorTargetPatchForUpdate(ctx context.Context, id int64) (GetMonitorTargetPatchForUpdateRow, error) {
+	row := q.db.QueryRowContext(ctx, getMonitorTargetPatchForUpdate, id)
+	var i GetMonitorTargetPatchForUpdateRow
+	err := row.Scan(
+		&i.ExporterType,
+		&i.ScrapePort,
+		&i.ManagedEnabled,
+		&i.Labels,
+		&i.Remark,
 	)
 	return i, err
 }
@@ -3353,6 +3408,64 @@ func (q *Queries) ListApplicationServiceStreamDimsByIDs(ctx context.Context, ids
 			&i.EnvironmentCode,
 			&i.BusinessSystemCode,
 			&i.ServiceCode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCurrentAlertNotificationSummaries = `-- name: ListCurrentAlertNotificationSummaries :many
+SELECT ah.id, ah.fingerprint, ah.started_at,
+       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id) AS notification_count,
+       (SELECT COUNT(*) FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id = ah.id) AS notification_delivery_count,
+       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status = 'failed') AS notification_failed_count,
+       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('pending','sending')) AS notification_active_count
+FROM monitor_alert_history ah
+WHERE ah.source = 'prometheus' AND ah.state = 'firing'
+  AND ah.started_at >= $1
+  AND ah.started_at <= $2
+`
+
+type ListCurrentAlertNotificationSummariesParams struct {
+	EarliestActiveAt time.Time `json:"earliest_active_at"`
+	ObservedAt       time.Time `json:"observed_at"`
+}
+
+type ListCurrentAlertNotificationSummariesRow struct {
+	ID                        int64     `json:"id"`
+	Fingerprint               string    `json:"fingerprint"`
+	StartedAt                 time.Time `json:"started_at"`
+	NotificationCount         int64     `json:"notification_count"`
+	NotificationDeliveryCount int64     `json:"notification_delivery_count"`
+	NotificationFailedCount   int64     `json:"notification_failed_count"`
+	NotificationActiveCount   int64     `json:"notification_active_count"`
+}
+
+func (q *Queries) ListCurrentAlertNotificationSummaries(ctx context.Context, arg ListCurrentAlertNotificationSummariesParams) ([]ListCurrentAlertNotificationSummariesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listCurrentAlertNotificationSummaries, arg.EarliestActiveAt, arg.ObservedAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCurrentAlertNotificationSummariesRow{}
+	for rows.Next() {
+		var i ListCurrentAlertNotificationSummariesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Fingerprint,
+			&i.StartedAt,
+			&i.NotificationCount,
+			&i.NotificationDeliveryCount,
+			&i.NotificationFailedCount,
+			&i.NotificationActiveCount,
 		); err != nil {
 			return nil, err
 		}
@@ -6418,22 +6531,6 @@ func (q *Queries) MarkLogTargetConfigSynced(ctx context.Context, arg MarkLogTarg
 	return err
 }
 
-const markLogTargetInstallCancelled = `-- name: MarkLogTargetInstallCancelled :exec
-UPDATE monitor_log_collection_target
-SET install_status='failed', install_message='安装/卸载任务已取消', update_time=$1
-WHERE id = $2
-`
-
-type MarkLogTargetInstallCancelledParams struct {
-	UpdateTime time.Time `json:"update_time"`
-	ID         int64     `json:"id"`
-}
-
-func (q *Queries) MarkLogTargetInstallCancelled(ctx context.Context, arg MarkLogTargetInstallCancelledParams) error {
-	_, err := q.db.ExecContext(ctx, markLogTargetInstallCancelled, arg.UpdateTime, arg.ID)
-	return err
-}
-
 const markLogTargetInstallPending = `-- name: MarkLogTargetInstallPending :exec
 UPDATE monitor_log_collection_target
 SET install_status='pending', install_message='', last_dispatch_manual=TRUE, update_time=$1
@@ -6447,22 +6544,6 @@ type MarkLogTargetInstallPendingParams struct {
 
 func (q *Queries) MarkLogTargetInstallPending(ctx context.Context, arg MarkLogTargetInstallPendingParams) error {
 	_, err := q.db.ExecContext(ctx, markLogTargetInstallPending, arg.UpdateTime, arg.ID)
-	return err
-}
-
-const markTargetInstallCancelled = `-- name: MarkTargetInstallCancelled :exec
-UPDATE monitor_target
-SET install_status='failed', install_message='安装/卸载任务已取消', update_time=$1
-WHERE id=$2
-`
-
-type MarkTargetInstallCancelledParams struct {
-	UpdateTime time.Time `json:"update_time"`
-	ID         int64     `json:"id"`
-}
-
-func (q *Queries) MarkTargetInstallCancelled(ctx context.Context, arg MarkTargetInstallCancelledParams) error {
-	_, err := q.db.ExecContext(ctx, markTargetInstallCancelled, arg.UpdateTime, arg.ID)
 	return err
 }
 

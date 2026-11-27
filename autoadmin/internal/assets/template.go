@@ -10,6 +10,7 @@ import (
 
 	db "autoadmin/internal/platform/database/generated"
 	"autoadmin/internal/shared/apperror"
+	"autoadmin/internal/shared/batchwrite"
 	"autoadmin/internal/shared/logmacro"
 	"autoadmin/internal/shared/pagination"
 	"database/sql"
@@ -597,7 +598,7 @@ func (r *Repository) DeleteDeploymentTemplate(ctx context.Context, id int64) err
 	if err = deleteTemplateChildren(ctx, queries, id); err != nil {
 		return err
 	}
-	if err = queries.DeleteDeploymentTemplate(ctx, id); err != nil {
+	if err = batchwrite.RequireRow(queries.DeleteDeploymentTemplate(ctx, id)); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -239,12 +239,6 @@ async function runQuery() {
       : await queryPrometheusInstant({ query: expression })
 
     const data = parseApiData(response)
-    if (String(data.status || '').toLowerCase() === 'error') {
-      errorMessage.value = data.error || 'Prometheus 查询失败'
-      resultType.value = ''
-      rawResult.value = []
-      return
-    }
 
     resultType.value = String(data.result_type || '')
     rawResult.value = Array.isArray(data.result) ? data.result : []

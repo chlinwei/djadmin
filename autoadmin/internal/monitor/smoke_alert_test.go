@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"autoadmin/internal/platform/database"
 	db "autoadmin/internal/platform/database/generated"
 )
 
@@ -216,11 +217,11 @@ func TestSmokeAlertConfigQueriesAgainstRealDatabase(t *testing.T) {
 		CreateTime: now, UpdateTime: now, EventType: "firing",
 		DeduplicationKey: dedupeKey(alertID, "firing"), AlertID: alertID,
 	}
-	eventID, created, err := createAlertNotificationEventIfAbsent(ctx, queries, eventParams)
+	eventID, created, err := database.InsertIfAbsentResult(queries.CreateAlertNotificationEventIfAbsent(ctx, eventParams))
 	if err != nil || !created || eventID <= 0 {
 		t.Fatalf("首次入队事件：id=%d created=%v err=%v", eventID, created, err)
 	}
-	if _, created, err = createAlertNotificationEventIfAbsent(ctx, queries, eventParams); err != nil || created {
+	if _, created, err = database.InsertIfAbsentResult(queries.CreateAlertNotificationEventIfAbsent(ctx, eventParams)); err != nil || created {
 		t.Fatalf("重复入队应跳过：created=%v err=%v", created, err)
 	}
 	dispatch, err := queries.GetAlertNotificationEventDispatch(ctx, eventID)
@@ -387,10 +388,10 @@ func TestSmokeAlertConfigQueriesAgainstRealDatabase(t *testing.T) {
 	if err := deleteRowsAffected(queries.DeleteAlertMedia(ctx, throwawayMediaID)); err != sql.ErrNoRows {
 		t.Fatalf("重复删媒介应 ErrNoRows，实际 %v", err)
 	}
-	if err := queries.DeleteNotificationPolicy(ctx, childID); err != nil {
+	if _, err := queries.DeleteNotificationPolicy(ctx, childID); err != nil {
 		t.Fatalf("删策略子节点：%v", err)
 	}
-	if err := queries.DeleteNotificationPolicy(ctx, rootID); err != nil {
+	if _, err := queries.DeleteNotificationPolicy(ctx, rootID); err != nil {
 		t.Fatalf("删策略根节点：%v", err)
 	}
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"autoadmin/internal/platform/database"
 	db "autoadmin/internal/platform/database/generated"
 )
 
@@ -66,7 +67,7 @@ func mergeAlertLabels(labels map[string]any, alertname, severity, instance strin
 // enqueueAlertNotification 对齐 enqueue_notification：先做“有无可投递媒介”预判（策略树未命中
 // 或出口为空不建事件，避免注定失败的垃圾记录），再按 deduplication_key={alert_id}:{event_type}
 // 幂等建事件。返回 (事件 id, 是否新建了事件)——原实现建完事件再按 deduplication_key 查一次 id，
-// 现在直接由插入语句取回（MySQL 的 LastInsertId / PG 的 RETURNING，见 alert_event_dialect_*.go）。
+// 直接从插入结果取回 ID，不再按去重键查询。
 func (handler *Handler) enqueueAlertNotification(target alertNotificationTarget, eventType string) (int64, bool, error) {
 	medias, _, err := handler.matchedPolicyMedias(context.Background(), target, eventType)
 	if err != nil {
@@ -76,10 +77,10 @@ func (handler *Handler) enqueueAlertNotification(target alertNotificationTarget,
 		return 0, false, nil
 	}
 	now := time.Now().UTC()
-	return createAlertNotificationEventIfAbsent(context.Background(), db.New(handler.db), db.CreateAlertNotificationEventIfAbsentParams{
+	return database.InsertIfAbsentResult(db.New(handler.db).CreateAlertNotificationEventIfAbsent(context.Background(), db.CreateAlertNotificationEventIfAbsentParams{
 		CreateTime: now, UpdateTime: now, EventType: eventType,
 		DeduplicationKey: dedupeKey(target.id, eventType), AlertID: target.id,
-	})
+	}))
 }
 
 // dedupeKey 是通知事件的去重键（对齐 Django 的 {alert_id}:{event_type}）。

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -84,7 +85,7 @@ func (handler *Handler) Summary(context *gin.Context) {
 func (handler *Handler) PrometheusOverview(context *gin.Context) {
 	baseURL, payload, err := handler.prometheusGet(context, "/api/v1/targets", url.Values{"state": {"active"}})
 	if err != nil {
-		response.Success(context, gin.H{"status": "error", "prometheus_base_url": baseURL, "error": err.Error()})
+		prometheusReadError(context, payload, err)
 		return
 	}
 	activeTargets, _ := payload.dataMap()["activeTargets"].([]any)
@@ -101,7 +102,7 @@ func (handler *Handler) PrometheusOverview(context *gin.Context) {
 func (handler *Handler) PrometheusTargets(context *gin.Context) {
 	baseURL, payload, err := handler.prometheusGet(context, "/api/v1/targets", url.Values{"state": {"active"}})
 	if err != nil {
-		response.Success(context, gin.H{"status": "error", "prometheus_base_url": baseURL, "error": err.Error(), "results": []any{}})
+		prometheusReadError(context, payload, err)
 		return
 	}
 	activeTargets, _ := payload.dataMap()["activeTargets"].([]any)
@@ -130,15 +131,17 @@ func alertSummaryText(annotations map[string]any) string {
 func (handler *Handler) PrometheusAlerts(context *gin.Context) {
 	baseURL, payload, err := handler.prometheusGet(context, "/api/v1/alerts", nil)
 	if err != nil {
-		response.Success(context, gin.H{"status": "error", "prometheus_base_url": baseURL, "error": err.Error(), "results": []any{}})
+		prometheusReadError(context, payload, err)
 		return
 	}
 	alerts, _ := payload.dataMap()["alerts"].([]any)
+	observedAt := time.Now().UTC().Truncate(time.Microsecond)
 	// `/api/v1/alerts` 不含规则表达式（PromQL 只在 `/api/v1/rules`），这里按 alertname
 	// 关联规则索引，补上 rule_group / rule_details（query、labels、annotations）。
 	// 否则前端"当前告警"的规则组与展开行的 PromQL 恒为空（历史告警读的是落库快照，所以正常）。
 	ruleIndexes := handler.prometheusAlertRuleIndexes(context.Request.Context())
 	results := make([]gin.H, 0, len(alerts))
+	occurrences := make(map[int]currentAlertOccurrence)
 	firingCount, resolvedCount := 0, 0
 	for _, rawAlert := range alerts {
 		alert, _ := rawAlert.(map[string]any)
@@ -147,6 +150,9 @@ func (handler *Handler) PrometheusAlerts(context *gin.Context) {
 		state := strings.ToLower(stringValue(alert["state"]))
 		if state == "firing" {
 			firingCount++
+			if activeAt := parseAlertTime(stringValue(alert["activeAt"]), time.Time{}); !activeAt.IsZero() && mapString(labels, "alertname") != "" {
+				occurrences[len(results)] = currentAlertOccurrence{alertFingerprint(labels), activeAt.Truncate(time.Microsecond)}
+			}
 		} else if state == "resolved" {
 			resolvedCount++
 		}
@@ -158,13 +164,66 @@ func (handler *Handler) PrometheusAlerts(context *gin.Context) {
 		}
 		results = append(results, gin.H{"name": stringValue(labels["alertname"]), "severity": stringValue(labels["severity"]), "state": defaultString(state, "unknown"), "instance": stringValue(labels["instance"]), "labels": labels, "summary": alertSummaryText(annotations), "active_at": stringValue(alert["activeAt"]), "value": stringValue(alert["value"]), "rule_group": ruleGroup, "rule_details": ruleDetailsValue, "history_id": nil, "notification_count": 0, "notification_delivery_count": 0, "notification_status": "none"})
 	}
-	response.Success(context, gin.H{"status": "success", "prometheus_base_url": baseURL, "count": len(results), "firing_count": firingCount, "resolved_count": resolvedCount, "results": results, "warnings": payload.Warnings})
+	notificationErr := handler.attachCurrentAlertNotifications(context.Request.Context(), occurrences, observedAt, results)
+	if notificationErr != nil {
+		slog.WarnContext(context.Request.Context(), "load current alert notification summaries", "error", notificationErr)
+	}
+	response.Success(context, gin.H{"status": "success", "prometheus_base_url": baseURL, "count": len(results), "firing_count": firingCount, "resolved_count": resolvedCount, "results": results, "warnings": payload.Warnings, "notification_lookup_failed": notificationErr != nil})
+}
+
+type currentAlertOccurrence struct {
+	fingerprint string
+	activeAt    time.Time
+}
+
+func (handler *Handler) attachCurrentAlertNotifications(ctx context.Context, occurrences map[int]currentAlertOccurrence, observedAt time.Time, results []gin.H) error {
+	var earliest time.Time
+	for _, alert := range occurrences {
+		if earliest.IsZero() || alert.activeAt.Before(earliest) {
+			earliest = alert.activeAt
+		}
+	}
+	if earliest.IsZero() || earliest.After(observedAt) {
+		return nil
+	}
+	rows, err := db.New(handler.db).ListCurrentAlertNotificationSummaries(ctx, db.ListCurrentAlertNotificationSummariesParams{
+		EarliestActiveAt: earliest, ObservedAt: observedAt,
+	})
+	if err != nil {
+		return err
+	}
+	byFingerprint := make(map[string][]db.ListCurrentAlertNotificationSummariesRow)
+	for _, row := range rows {
+		byFingerprint[row.Fingerprint] = append(byFingerprint[row.Fingerprint], row)
+	}
+	for i, alert := range occurrences {
+		var match db.ListCurrentAlertNotificationSummariesRow
+		for _, row := range byFingerprint[alert.fingerprint] {
+			// Webhook startsAt is the firing time, which can be after activeAt (the rule's `for` period).
+			if row.StartedAt.Before(alert.activeAt) {
+				continue
+			}
+			if match.ID != 0 {
+				match.ID = 0 // Multiple candidates: don't guess which notification chain to show.
+				break
+			}
+			match = row
+		}
+		if match.ID == 0 {
+			continue
+		}
+		results[i]["history_id"] = match.ID
+		results[i]["notification_count"] = match.NotificationCount
+		results[i]["notification_delivery_count"] = match.NotificationDeliveryCount
+		results[i]["notification_status"] = notificationStatusFrom(match.NotificationCount, match.NotificationFailedCount, match.NotificationActiveCount, match.NotificationDeliveryCount)
+	}
+	return nil
 }
 
 func (handler *Handler) PrometheusRules(context *gin.Context) {
 	baseURL, payload, err := handler.prometheusGet(context, "/api/v1/rules", nil)
 	if err != nil {
-		response.Success(context, gin.H{"status": "error", "prometheus_base_url": baseURL, "error": err.Error(), "group_count": 0, "rule_count": 0, "groups": []any{}})
+		prometheusReadError(context, payload, err)
 		return
 	}
 	rawGroups, _ := payload.dataMap()["groups"].([]any)
@@ -211,7 +270,7 @@ func (handler *Handler) prometheusQuery(context *gin.Context, path string, allow
 	}
 	_, payload, err := handler.prometheusGet(context, path, query)
 	if err != nil {
-		response.Success(context, gin.H{"status": "error", "error": err.Error(), "error_type": payload.Error, "result_type": "", "result": []any{}})
+		prometheusReadError(context, payload, err)
 		return
 	}
 	data := payload.dataMap()
@@ -319,27 +378,25 @@ func defaultString(value any, fallback string) string {
 }
 
 func (handler *Handler) PrometheusTSDBStatus(context *gin.Context) {
-	handler.prometheusStatus(context, "/api/v1/status/tsdb", "query prometheus tsdb status failed", false)
+	handler.prometheusStatus(context, "/api/v1/status/tsdb", false)
 }
 
 func (handler *Handler) PrometheusConfig(context *gin.Context) {
-	handler.prometheusStatus(context, "/api/v1/status/config", "query prometheus config failed", true)
+	handler.prometheusStatus(context, "/api/v1/status/config", true)
 }
 
 func (handler *Handler) PrometheusFlags(context *gin.Context) {
-	handler.prometheusStatus(context, "/api/v1/status/flags", "query prometheus flags failed", false)
+	handler.prometheusStatus(context, "/api/v1/status/flags", false)
 }
 
-func (handler *Handler) prometheusStatus(context *gin.Context, path, fallbackError string, includeYAML bool) {
+func (handler *Handler) prometheusStatus(context *gin.Context, path string, includeYAML bool) {
 	baseURL, payload, err := handler.prometheusGet(context, path, nil)
 	data := gin.H{"status": "success", "prometheus_base_url": baseURL, "result": gin.H{}, "warnings": []any{}}
 	if includeYAML {
 		data["config_yaml"] = ""
 	}
 	if err != nil {
-		data["status"] = "error"
-		data["error"] = fallbackError + ": " + err.Error()
-		response.Success(context, data)
+		prometheusReadError(context, payload, err)
 		return
 	}
 	result := payload.dataMap()
@@ -352,10 +409,22 @@ func (handler *Handler) prometheusStatus(context *gin.Context, path, fallbackErr
 }
 
 type prometheusPayload struct {
-	Status   string          `json:"status"`
-	Data     json.RawMessage `json:"data"`
-	Warnings []any           `json:"warnings"`
-	Error    string          `json:"error"`
+	Status    string          `json:"status"`
+	Data      json.RawMessage `json:"data"`
+	Warnings  []any           `json:"warnings"`
+	Error     string          `json:"error"`
+	ErrorType string          `json:"errorType"`
+}
+
+// Only the native proxy uses Prometheus wire errors. A management read that cannot
+// obtain the requested data must not look like a successful empty result.
+func prometheusReadError(ctx *gin.Context, payload prometheusPayload, err error) {
+	if payload.ErrorType == "bad_data" && payload.Error != "" {
+		response.BusinessError(ctx, 400, payload.Error, nil)
+		return
+	}
+	slog.WarnContext(ctx.Request.Context(), "Prometheus read failed", "route", ctx.FullPath(), "error", err)
+	response.BusinessError(ctx, 502, "无法读取 Prometheus 数据，请检查上游服务", nil)
 }
 
 // dataMap 将 data 解为对象；label values、series 等端点的 data 是数组，会得到 nil。

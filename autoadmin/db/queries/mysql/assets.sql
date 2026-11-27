@@ -28,7 +28,7 @@ UPDATE assets_project SET update_time = ?, remark = ?, name = ?, code = ?, owner
 -- name: CountBusinessSystemsByProject :one
 SELECT COUNT(*) FROM assets_business_system WHERE project_id = ?;
 
--- name: DeleteProject :exec
+-- name: DeleteProject :execrows
 DELETE FROM assets_project WHERE id = ?;
 
 -- name: CountBusinessSystems :one
@@ -57,7 +57,7 @@ INSERT INTO assets_business_system (create_time, update_time, remark, name, code
 -- name: UpdateBusinessSystem :exec
 UPDATE assets_business_system SET update_time = ?, remark = ?, name = ?, code = ?, owner = ?, enabled = ?, project_id = ? WHERE id = ?;
 
--- name: DeleteBusinessSystem :exec
+-- name: DeleteBusinessSystem :execrows
 DELETE FROM assets_business_system WHERE id = ?;
 
 -- name: CountBusinessEnvironments :one
@@ -81,7 +81,7 @@ UPDATE assets_business_environment SET update_time = ?, remark = ?, name = ?, co
 -- name: CountHostsByEnvironment :one
 SELECT COUNT(*) FROM assets_host WHERE environment_id = ?;
 
--- name: DeleteBusinessEnvironment :exec
+-- name: DeleteBusinessEnvironment :execrows
 DELETE FROM assets_business_environment WHERE id = ?;
 
 -- name: CountCredentials :one
@@ -105,7 +105,7 @@ UPDATE assets_credential SET update_time = ?, remark = ?, name = ?, password = ?
 -- name: CountHostCredentialsByCredential :one
 SELECT COUNT(*) FROM assets_hostcredential WHERE credential_id = ?;
 
--- name: DeleteCredential :exec
+-- name: DeleteCredential :execrows
 DELETE FROM assets_credential WHERE id = ?;
 
 -- name: CountHostGroups :one
@@ -139,7 +139,7 @@ UPDATE assets_hostgroup SET update_time = ?, remark = ?, name = ? WHERE id = ?;
 -- name: CountHostsByGroup :one
 SELECT COUNT(*) FROM assets_host WHERE group_id = ?;
 
--- name: DeleteHostGroup :exec
+-- name: DeleteHostGroup :execrows
 DELETE FROM assets_hostgroup WHERE id = ?;
 
 -- name: CountHosts :one
@@ -193,7 +193,7 @@ UPDATE assets_host SET
   environment_id = ?
 WHERE id = ?;
 
--- name: DeleteHost :exec
+-- name: DeleteHost :execrows
 DELETE FROM assets_host WHERE id = ?;
 
 -- name: CountApplications :one
@@ -231,7 +231,7 @@ VALUES(?,?,?,?,?,?,?,?,?);
 -- name: UpdateApplication :exec
 UPDATE assets_application SET update_time=?,remark=?,name=?,category=?,code=?,description=?,enabled=?,vendor=? WHERE id=?;
 
--- name: DeleteApplication :exec
+-- name: DeleteApplication :execrows
 DELETE FROM assets_application WHERE id=?;
 
 -- name: CountApplicationVersions :one
@@ -257,7 +257,7 @@ VALUES(?,?,?,?,?,?,?,?);
 -- name: UpdateApplicationVersion :exec
 UPDATE assets_application_version SET update_time=?,remark=?,version=?,release_date=?,end_of_support=?,enabled=?,application_id=? WHERE id=?;
 
--- name: DeleteApplicationVersion :exec
+-- name: DeleteApplicationVersion :execrows
 DELETE FROM assets_application_version WHERE id=?;
 
 -- name: CountClusterProfiles :one
@@ -283,7 +283,7 @@ VALUES(?,?,?,?,?,?,?,?,?);
 -- name: UpdateClusterProfile :exec
 UPDATE assets_cluster_profile SET update_time=?,remark=?,name=?,code=?,profile_type=?,enabled=?,application_id=?,cluster_type=? WHERE id=?;
 
--- name: DeleteClusterProfile :exec
+-- name: DeleteClusterProfile :execrows
 DELETE FROM assets_cluster_profile WHERE id=?;
 
 -- name: CountDeploymentTemplates :one
@@ -463,7 +463,7 @@ UPDATE agent_package SET is_active = 1 WHERE id = sqlc.arg(id);
 -- name: DeactivateOtherAgentPackages :exec
 UPDATE agent_package SET is_active = 0 WHERE id <> sqlc.arg(id) AND is_active = 1;
 
--- name: DeleteAgentPackage :exec
+-- name: DeleteAgentPackage :execrows
 DELETE FROM agent_package WHERE id = sqlc.arg(id);
 
 -- name: GetAgentInstallPlaybook :one
@@ -599,7 +599,7 @@ SET update_time=sqlc.arg(update_time),remark=sqlc.narg(remark),name=sqlc.arg(nam
     systemd_scope=sqlc.arg(systemd_scope),macro_definitions=sqlc.arg(macro_definitions)
 WHERE id=sqlc.arg(id);
 
--- name: DeleteDeploymentTemplate :exec
+-- name: DeleteDeploymentTemplate :execrows
 DELETE FROM assets_application_deployment_template WHERE id=sqlc.arg(id);
 
 -- name: DeleteTemplatePorts :exec
@@ -872,7 +872,7 @@ SET update_time=sqlc.arg(update_time),remark=sqlc.narg(remark),name=sqlc.arg(nam
     log_retention_tier_id=sqlc.narg(log_retention_tier_id)
 WHERE id=sqlc.arg(id);
 
--- name: DeleteApplicationService :exec
+-- name: DeleteApplicationService :execrows
 DELETE FROM assets_application_service WHERE id=sqlc.arg(id);
 
 -- name: LockApplicationServiceForDeletion :one
@@ -984,7 +984,7 @@ SET update_time=sqlc.arg(update_time),remark=sqlc.narg(remark),instance_name=sql
     runtime_variables=sqlc.arg(runtime_variables)
 WHERE id=sqlc.arg(id);
 
--- name: DeleteApplicationDeployment :exec
+-- name: DeleteApplicationDeployment :execrows
 DELETE FROM assets_application_deployment WHERE id=sqlc.arg(id);
 
 -- ---- 逻辑服务的日志设置读取（编辑弹窗"模板日志"表格 = 模板日志定义 + 服务级覆盖）----

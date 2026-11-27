@@ -340,10 +340,10 @@ func TestSmokeTemplateServiceQueriesAgainstRealDatabase(t *testing.T) {
 	if err = queries.DeleteServiceLogSettings(ctx, serviceID); err != nil {
 		t.Fatalf("删服务日志设置：%v", err)
 	}
-	if err = queries.DeleteApplicationService(ctx, serviceID); err != nil {
+	if _, err = queries.DeleteApplicationService(ctx, serviceID); err != nil {
 		t.Fatalf("删逻辑服务：%v", err)
 	}
-	if err = queries.DeleteApplicationDeployment(ctx, deploymentID); err != nil {
+	if _, err = queries.DeleteApplicationDeployment(ctx, deploymentID); err != nil {
 		t.Fatalf("删部署实例：%v", err)
 	}
 	for name, remove := range map[string]func() error{
@@ -359,7 +359,7 @@ func TestSmokeTemplateServiceQueriesAgainstRealDatabase(t *testing.T) {
 			t.Fatalf("删模板子表 %s：%v", name, err)
 		}
 	}
-	if err = queries.DeleteDeploymentTemplate(ctx, templateID); err != nil {
+	if _, err = queries.DeleteDeploymentTemplate(ctx, templateID); err != nil {
 		t.Fatalf("删部署模板：%v", err)
 	}
 	if err = tx.Rollback(); err != nil {

@@ -30,7 +30,7 @@ SELECT id, name, version, description, enabled, create_time, update_time FROM ba
 INSERT INTO baseline(create_time, update_time, name, version, description, enabled)
 VALUES (?, ?, ?, ?, ?, ?);
 
--- name: UpdateBaseline :exec
+-- name: UpdateBaseline :execrows
 UPDATE baseline SET update_time = ?, name = ?, version = ?, description = ?, enabled = ? WHERE id = ?;
 
 -- name: DeleteBaseline :execrows

@@ -247,13 +247,13 @@ func (handler *Handler) BatchSaveApplicationServiceLogSettings(context *gin.Cont
 		respond(context, nil, err)
 		return
 	}
-	count := 0
+	batchResults := make([]response.BatchResult, 0, len(results))
 	for _, item := range results {
-		if item.OK {
-			count += 1
-		}
+		batchResults = append(batchResults, response.BatchResult{
+			ID: item.LogDefinition, Code: item.Code, OK: item.OK, Message: item.Message,
+		})
 	}
-	respond(context, gin.H{"count": count, "results": results}, nil)
+	response.Batch(context, batchResults)
 }
 
 // LogStatusSummary 一批逻辑服务的日志状态汇总（日志中心的层级视图用）：

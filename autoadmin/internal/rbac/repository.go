@@ -7,6 +7,7 @@ import (
 
 	"autoadmin/internal/platform/database"
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/batchwrite"
 	"autoadmin/internal/shared/pagination"
 )
 
@@ -105,18 +106,15 @@ func (repository *Repository) UpdateRole(ctx context.Context, params db.UpdateRo
 
 func (repository *Repository) DeleteRoles(ctx context.Context, roleIDs []int32) error {
 	return database.InTransaction(ctx, repository.pool, func(queries *db.Queries) error {
-		for _, roleID := range uniqueIDs(roleIDs) {
+		return batchwrite.Each(roleIDs, func(roleID int32) error {
 			if err := queries.DeleteRoleUsers(ctx, roleID); err != nil {
 				return err
 			}
 			if err := queries.DeleteRoleMenus(ctx, roleID); err != nil {
 				return err
 			}
-			if err := queries.DeleteRoleByID(ctx, roleID); err != nil {
-				return err
-			}
-		}
-		return nil
+			return batchwrite.RequireRow(queries.DeleteRoleByID(ctx, roleID))
+		})
 	})
 }
 
@@ -125,36 +123,11 @@ func (repository *Repository) ReplaceRoleMenus(ctx context.Context, roleID int32
 		if err := queries.DeleteRoleMenus(ctx, roleID); err != nil {
 			return fmt.Errorf("delete role menus: %w", err)
 		}
-		for _, menuID := range uniqueIDs(menuIDs) {
+		for _, menuID := range batchwrite.UniqueIDs(menuIDs) {
 			if err := queries.AddRoleMenu(ctx, db.AddRoleMenuParams{RoleID: roleID, MenuID: menuID}); err != nil {
 				return fmt.Errorf("add role menu %d: %w", menuID, err)
 			}
 		}
 		return nil
 	})
-}
-
-func (repository *Repository) DeleteRole(ctx context.Context, roleID int32) error {
-	return database.InTransaction(ctx, repository.pool, func(queries *db.Queries) error {
-		if err := queries.DeleteRoleUsers(ctx, roleID); err != nil {
-			return err
-		}
-		if err := queries.DeleteRoleMenus(ctx, roleID); err != nil {
-			return err
-		}
-		return queries.DeleteRoleByID(ctx, roleID)
-	})
-}
-
-func uniqueIDs(ids []int32) []int32 {
-	seen := make(map[int32]struct{}, len(ids))
-	result := make([]int32, 0, len(ids))
-	for _, id := range ids {
-		if _, exists := seen[id]; exists {
-			continue
-		}
-		seen[id] = struct{}{}
-		result = append(result, id)
-	}
-	return result
 }

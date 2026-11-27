@@ -243,20 +243,18 @@ func (handler *Handler) BatchDeleteUserGroups(context *gin.Context) {
 		response.Error(context, apperror.ErrInvalidRequest)
 		return
 	}
-	deleted := 0
+	results := make([]response.BatchResult, 0, len(input.IDs))
 	queries := db.New(handler.pool())
 	for _, id := range input.IDs {
 		if id < 1 {
+			results = append(results, response.BatchItem(id, apperror.ErrIDInvalid))
 			continue
 		}
 		affected, err := queries.DeleteUserGroup(context.Request.Context(), id)
-		if err != nil {
-			response.Error(context, err)
-			return
+		if err == nil && affected == 0 {
+			err = sql.ErrNoRows
 		}
-		if affected > 0 {
-			deleted++
-		}
+		results = append(results, response.BatchItem(id, err))
 	}
-	response.Success(context, gin.H{"deleted": deleted})
+	response.Batch(context, results)
 }

@@ -12,6 +12,8 @@ import (
 
 	"autoadmin/internal/api/response"
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/apperror"
+	"autoadmin/internal/shared/batchwrite"
 
 	"github.com/gin-gonic/gin"
 )
@@ -672,30 +674,25 @@ func (handler *Handler) BatchDeleteNotificationPolicies(context *gin.Context) {
 		response.BusinessError(context, 400, "ids 必填", nil)
 		return
 	}
-	deleted := 0
+	results := make([]response.BatchResult, 0, len(input.IDs))
 	for _, id := range input.IDs {
 		if id <= 0 {
+			results = append(results, response.BatchItem(id, apperror.ErrIDInvalid))
 			continue
 		}
 		queries := db.New(handler.db)
 		parentID, err := queries.GetNotificationPolicyParent(context.Request.Context(), id)
 		if err != nil {
-			if err == sql.ErrNoRows {
-				continue
-			}
-			response.Error(context, err)
-			return
+			results = append(results, response.BatchItem(id, err))
+			continue
 		}
 		if parentID == 0 {
-			response.BusinessError(context, 400, "根节点（默认策略）不可删除", nil)
-			return
+			results = append(results, response.BatchItem(id, apperror.New(apperror.CodeInvalidArgument, "根节点（默认策略）不可删除")))
+			continue
 		}
 		// FK ON DELETE CASCADE：子树随之删除。
-		if err = queries.DeleteNotificationPolicy(context.Request.Context(), id); err != nil {
-			response.Error(context, err)
-			return
-		}
-		deleted++
+		err = batchwrite.RequireRow(queries.DeleteNotificationPolicy(context.Request.Context(), id))
+		results = append(results, response.BatchItem(id, err))
 	}
-	response.Success(context, gin.H{"deleted": deleted})
+	response.Batch(context, results)
 }

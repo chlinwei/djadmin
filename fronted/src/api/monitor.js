@@ -2,6 +2,9 @@ import requestUtil from '@/util/request'
 
 const prefix = 'monitor/'
 
+// 目标页统一展开逐台结果，不再由全局拦截器重复提示批量业务错误。
+const postTargetBatch = (path, body) => requestUtil.post(prefix + path, body, null, { suppressBusinessErrorMessage: true })
+
 export function getMonitorSummary() {
   return requestUtil.get(prefix + 'summary/')
 }
@@ -329,19 +332,19 @@ export function getActiveLogBatchJob(action) {
 }
 
 export function batchStartLogCollectionTargets(ids) {
-  return requestUtil.post(prefix + 'log-targets/batch-start-service/', { ids })
+  return postTargetBatch('log-targets/batch-start-service/', { ids })
 }
 
 export function batchStopLogCollectionTargets(ids) {
-  return requestUtil.post(prefix + 'log-targets/batch-stop-service/', { ids })
+  return postTargetBatch('log-targets/batch-stop-service/', { ids })
 }
 
 export function batchDeleteLogCollectionTargets(ids) {
-  return requestUtil.post(prefix + 'log-targets/batch-delete/', { ids })
+  return postTargetBatch('log-targets/batch-delete/', { ids })
 }
 
 export function batchCreateLogCollectionTargets(hostIds, installNow = false) {
-  return requestUtil.post(prefix + 'log-targets/batch-create/', { host_ids: hostIds, install_now: installNow })
+  return postTargetBatch('log-targets/batch-create/', { host_ids: hostIds, install_now: installNow })
 }
 
 export function getMonitorHostGroupTree() {
@@ -357,19 +360,19 @@ export function getMonitorExporterOptions() {
 }
 
 export function batchCreateMonitorTargets(payload) {
-  return requestUtil.post(prefix + 'targets/batch-create/', payload)
+  return postTargetBatch('targets/batch-create/', payload)
 }
 
 export function batchDeleteMonitorTargets(ids) {
-  return requestUtil.post(prefix + 'targets/batch-delete/', { ids })
+  return postTargetBatch('targets/batch-delete/', { ids })
 }
 
 export function batchStartMonitorTargets(ids) {
-  return requestUtil.post(prefix + 'targets/batch-start-service/', { ids })
+  return postTargetBatch('targets/batch-start-service/', { ids })
 }
 
 export function batchStopMonitorTargets(ids) {
-  return requestUtil.post(prefix + 'targets/batch-stop-service/', { ids })
+  return postTargetBatch('targets/batch-stop-service/', { ids })
 }
 
 // 清理逻辑服务的数据流数据：mode=all|hours|days，amount 为小时/天数（all 可省略）。

@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"autoadmin/internal/api/response"
+	"autoadmin/internal/shared/installhistory"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -74,7 +76,7 @@ func (handler *Handler) RetryTarget(ginContext *gin.Context) {
 		response.Error(ginContext, err)
 		return
 	}
-	if err = handler.dispatchExporterJob(ginContext, row); err != nil {
+	if _, err = handler.dispatchExporterJob(ginContext, row); err != nil {
 		var guard guardFailure
 		if !errors.As(err, &guard) {
 			response.Error(ginContext, err)
@@ -106,34 +108,34 @@ func (handler *Handler) setTargetInstallState(ginContext *gin.Context, id int64,
 	return guardFailure{status: status, message: message}
 }
 
-func (handler *Handler) dispatchExporterJob(ginContext *gin.Context, row targetInstallRow) error {
+func (handler *Handler) dispatchExporterJob(ginContext *gin.Context, row targetInstallRow) (int64, error) {
 	action := "install"
 	if !row.ManagedEnabled {
 		action = "uninstall"
 	}
 	exporter := strings.TrimSpace(row.ExporterType)
 	if strings.TrimSpace(row.HostName) == "" {
-		return handler.setTargetInstallState(ginContext, row.ID, "failed", fmt.Sprintf("主机未绑定 agent 实例，无法下发 %s %s任务", exporter, action))
+		return 0, handler.setTargetInstallState(ginContext, row.ID, "failed", fmt.Sprintf("主机未绑定 agent 实例，无法下发 %s %s任务", exporter, action))
 	}
 	if handler.gateway == nil || !handler.gateway.IsOnline(row.HostName) {
-		return handler.setTargetInstallState(ginContext, row.ID, "failed", "主机 agent 离线，无法下发任务，请先确认 agent 运行状态")
+		return 0, handler.setTargetInstallState(ginContext, row.ID, "failed", "主机 agent 离线，无法下发任务，请先确认 agent 运行状态")
 	}
 	pending, _, err := monitorTargetPending(ginContext, handler.db, row.ID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if pending {
 		// 与 Django 一致：保持 pending 并提示已有任务，由用户先取消再重试。
-		return handler.setTargetInstallState(ginContext, row.ID, "pending", fmt.Sprintf("%s任务已存在（pending）", action))
+		return 0, handler.setTargetInstallState(ginContext, row.ID, "pending", fmt.Sprintf("%s任务已存在（pending）", action))
 	}
 
 	packageRow, playbookID, extra, err := handler.prepareExporterDispatch(ginContext, row, action)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	content, err := playbookContent(ginContext, handler.db, playbookID)
 	if err != nil {
-		return handler.setTargetInstallState(ginContext, row.ID, "failed", fmt.Sprintf("%s 绑定的 %s Playbook 已不存在，请重新在监控软件仓库中选择", exporter, action))
+		return 0, handler.setTargetInstallState(ginContext, row.ID, "failed", fmt.Sprintf("%s 绑定的 %s Playbook 已不存在，请重新在监控软件仓库中选择", exporter, action))
 	}
 
 	summary := "已下发安装任务"
@@ -159,7 +161,7 @@ func (handler *Handler) dispatchExporterJob(ginContext *gin.Context, row targetI
 		RequestedUsername:       "system",
 	})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	historyID, err := queries.CreateTargetInstallHistory(ginContext, db.CreateTargetInstallHistoryParams{
 		CreateTime: now, UpdateTime: now, Action: action,
@@ -175,12 +177,12 @@ func (handler *Handler) dispatchExporterJob(ginContext *gin.Context, row targetI
 		AutomationJobIDSnapshot:   sql.NullInt64{Int64: jobID, Valid: true},
 	})
 	if err != nil {
-		return err
+		return jobID, err
 	}
 	if err = queries.MarkTargetInstallPending(ginContext, db.MarkTargetInstallPendingParams{
 		InstallMessage: summary, UpdateTime: now, ID: row.ID,
 	}); err != nil {
-		return err
+		return jobID, err
 	}
 	// playbook 可能执行数分钟，异步跑，前端通过列表刷新和安装历史查看进度。
 	go func() {
@@ -211,18 +213,21 @@ func (handler *Handler) dispatchExporterJob(ginContext *gin.Context, row targetI
 			message = ""
 		}
 		finish := time.Now().UTC()
-		finishQueries := db.New(handler.db)
-		_, _ = finishQueries.FinishTargetInstallState(context.Background(), db.FinishTargetInstallStateParams{
-			InstallStatus: finalStatus, InstallMessage: message, UpdateTime: finish, ID: row.ID,
-		})
 		// 时长在应用层算：历史的 create_time 就是派发时刻（now），原实现用 MySQL 的 TIMESTAMPDIFF。
-		_, _ = finishQueries.FinishTargetInstallHistory(context.Background(), db.FinishTargetInstallHistoryParams{
+		_, err := installhistory.Finish(context.Background(), handler.db, db.FinishTargetInstallHistoryParams{
 			Status: finalStatus, SummaryMessage: message, EndTime: sql.NullTime{Time: finish, Valid: true},
 			DurationSeconds: sql.NullFloat64{Float64: finish.Sub(now).Seconds(), Valid: true},
 			UpdateTime:      finish, ID: historyID,
+		}, func(q *db.Queries) (int64, error) {
+			return q.FinishTargetInstallState(context.Background(), db.FinishTargetInstallStateParams{
+				InstallStatus: finalStatus, InstallMessage: message, UpdateTime: finish, ID: row.ID,
+			})
 		})
+		if err != nil {
+			log.Printf("finish exporter installation history %d: %v", historyID, err)
+		}
 	}()
-	return nil
+	return jobID, nil
 }
 
 type exporterPackageRow struct {

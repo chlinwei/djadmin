@@ -14,7 +14,7 @@
 - Backend: Go 1.27（`autoadmin/`，Gin + sqlc；构建强制 `CGO_ENABLED=0`），进程含 API 与定时调度
 - Agent: Go 1.26（`dj_agent/`，主动拨号 backend 建立 gRPC 长连接，承载作业执行与文件通道）
 - Database: MySQL（默认构建）；同一套查询同时支持 PostgreSQL（`-tags postgres`，见 SQL_DESIGN）
-- Queue: RabbitMQ 两条路由（任务队列由 worker 角色消费；日志采集批量动作必须由 api 角色消费，因为 agent 会话只在该进程）
+- Queue: 日志采集批量动作由持有 agent 会话的 api 消费 RabbitMQ。定时清理不经消息队列，worker 负责自动化失联作业对账。
 - Frontend: Vue 3 + Vite，UI 组件统一用 Ant Design Vue
 
 ## Repository Layout
@@ -121,8 +121,8 @@
 
 ### Scheduler
 
-- 进程内调度：`./bin/autoadmin scheduler`（不再有独立的 worker/beat 进程，计划任务由它投递到 RabbitMQ 的 worker 路由）。
-- 计划任务排障：先确认 `scheduler` 角色在跑，再确认 worker 角色在消费 `autoadmin.job.execute`。
+- 定时清理由 `./bin/autoadmin scheduler` 调度并直接执行。清理未触发时检查 scheduler 进程、计划和执行记录；无需查找 worker 队列消费者。
+- 自动化失联作业未对账时检查 `./bin/autoadmin worker`；日志采集批量动作未执行时检查 api 角色及其 RabbitMQ 消费者。
 
 ### 日志采集批量动作
 

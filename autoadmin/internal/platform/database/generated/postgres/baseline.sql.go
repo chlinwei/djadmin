@@ -1343,7 +1343,7 @@ func (q *Queries) StoreBaselineDispatch(ctx context.Context, arg StoreBaselineDi
 	return err
 }
 
-const updateBaseline = `-- name: UpdateBaseline :exec
+const updateBaseline = `-- name: UpdateBaseline :execrows
 UPDATE baseline SET update_time = $1, name = $2, version = $3, description = $4, enabled = $5 WHERE id = $6
 `
 
@@ -1356,8 +1356,8 @@ type UpdateBaselineParams struct {
 	ID          int64     `json:"id"`
 }
 
-func (q *Queries) UpdateBaseline(ctx context.Context, arg UpdateBaselineParams) error {
-	_, err := q.db.ExecContext(ctx, updateBaseline,
+func (q *Queries) UpdateBaseline(ctx context.Context, arg UpdateBaselineParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateBaseline,
 		arg.UpdateTime,
 		arg.Name,
 		arg.Version,
@@ -1365,7 +1365,10 @@ func (q *Queries) UpdateBaseline(ctx context.Context, arg UpdateBaselineParams) 
 		arg.Enabled,
 		arg.ID,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const updateBaselineCategorySort = `-- name: UpdateBaselineCategorySort :execrows

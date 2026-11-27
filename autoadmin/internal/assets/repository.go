@@ -7,6 +7,7 @@ import (
 
 	platformdb "autoadmin/internal/platform/database"
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/batchwrite"
 	"autoadmin/internal/shared/pagination"
 )
 
@@ -55,7 +56,7 @@ func (r *Repository) DeleteProject(ctx context.Context, id int64) error {
 	if count > 0 {
 		return ErrDeleteProtected
 	}
-	return r.queries.DeleteProject(ctx, id)
+	return batchwrite.RequireRow(r.queries.DeleteProject(ctx, id))
 }
 
 // ListBusinessSystems 业务系统列表。projectID 非空时只返回该项目下的业务系统（服务树的「项目」节点）。
@@ -95,7 +96,7 @@ func (r *Repository) UpdateBusinessSystem(ctx context.Context, p db.UpdateBusine
 	return tx.Commit()
 }
 func (r *Repository) DeleteBusinessSystem(ctx context.Context, id int64) error {
-	return r.queries.DeleteBusinessSystem(ctx, id)
+	return batchwrite.RequireRow(r.queries.DeleteBusinessSystem(ctx, id))
 }
 
 func (r *Repository) ListEnvironments(ctx context.Context, search string, page pagination.Page) ([]db.AssetsBusinessEnvironment, int64, error) {
@@ -160,7 +161,7 @@ func (r *Repository) DeleteEnvironment(ctx context.Context, id int64) error {
 	if count > 0 {
 		return ErrDeleteProtected
 	}
-	return r.queries.DeleteBusinessEnvironment(ctx, id)
+	return batchwrite.RequireRow(r.queries.DeleteBusinessEnvironment(ctx, id))
 }
 
 func (r *Repository) ListCredentials(ctx context.Context, search string, page pagination.Page) ([]db.AssetsCredential, int64, error) {
@@ -193,7 +194,7 @@ func (r *Repository) DeleteCredential(ctx context.Context, id int64) error {
 	if count > 0 {
 		return ErrDeleteProtected
 	}
-	return r.queries.DeleteCredential(ctx, id)
+	return batchwrite.RequireRow(r.queries.DeleteCredential(ctx, id))
 }
 
 func (r *Repository) ListHostGroups(ctx context.Context, search string, page pagination.Page) ([]db.ListHostGroupsRow, int64, error) {
@@ -230,7 +231,7 @@ func (r *Repository) DeleteHostGroup(ctx context.Context, id int64) error {
 	if hosts > 0 {
 		return ErrDeleteProtected
 	}
-	return r.queries.DeleteHostGroup(ctx, id)
+	return batchwrite.RequireRow(r.queries.DeleteHostGroup(ctx, id))
 }
 
 func (r *Repository) ListHosts(ctx context.Context, search string, groupID, environmentID int64, page pagination.Page, ordering string) ([]db.ListHostsRow, int64, error) {
@@ -278,7 +279,7 @@ func (r *Repository) DeleteHost(ctx context.Context, id int64) error {
 		if _, err := queries.GetHost(ctx, id); err != nil {
 			return err
 		}
-		if err := queries.DeleteHost(ctx, id); err != nil {
+		if err := batchwrite.RequireRow(queries.DeleteHost(ctx, id)); err != nil {
 			return fmt.Errorf("delete host: %w", err)
 		}
 		return nil
@@ -287,7 +288,7 @@ func (r *Repository) DeleteHost(ctx context.Context, id int64) error {
 
 func (r *Repository) DeleteCredentials(ctx context.Context, ids []int64) error {
 	return platformdb.InTransaction(ctx, r.pool, func(queries *db.Queries) error {
-		for _, id := range ids {
+		return batchwrite.Each(ids, func(id int64) error {
 			count, err := queries.CountHostCredentialsByCredential(ctx, id)
 			if err != nil {
 				return err
@@ -295,24 +296,15 @@ func (r *Repository) DeleteCredentials(ctx context.Context, ids []int64) error {
 			if count > 0 {
 				return ErrDeleteProtected
 			}
-			if err := queries.DeleteCredential(ctx, id); err != nil {
-				return err
-			}
-		}
-		return nil
+			return translate(batchwrite.RequireRow(queries.DeleteCredential(ctx, id)))
+		})
 	})
 }
 
 func (r *Repository) DeleteHosts(ctx context.Context, ids []int64) error {
 	return platformdb.InTransaction(ctx, r.pool, func(queries *db.Queries) error {
-		for _, id := range ids {
-			if _, err := queries.GetHost(ctx, id); err != nil {
-				return err
-			}
-			if err := queries.DeleteHost(ctx, id); err != nil {
-				return err
-			}
-		}
-		return nil
+		return batchwrite.Each(ids, func(id int64) error {
+			return translate(batchwrite.RequireRow(queries.DeleteHost(ctx, id)))
+		})
 	})
 }

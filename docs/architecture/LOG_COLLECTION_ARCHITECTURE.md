@@ -1479,7 +1479,8 @@ output.elasticsearch:
   旧单条旁路的问题是没有任何下发动作却直接置 running。
 - **安装/卸载与下发的时间口径（Go 版，2026-09-16 随 SQL 迁移定型）**：作业/历史的时长由应用层算
   （历史的 `create_time` 就是派发时刻；原实现用 `TIMESTAMPDIFF(MICROSECOND,create_time,?)/1000000`），
-  取消时同样按 `create_time` 算时长；作业收尾读回 `automation_execution_job.result_summary` 的 `message`
+  从目标或历史入口取消均按 `create_time` 算时长，同事务将历史置 `cancelled`、目标置 `unknown`；
+  迟到的安装结果不再触发自动配置下发（[取消及收尾规则](modules/MONITORING.md#dashboard)）。作业收尾读回 `automation_execution_job.result_summary` 的 `message`
   在应用层解析（原实现是 `JSON_UNQUOTE(JSON_EXTRACT(...,'$.message'))`）；收尾语句里
   "成功则把 runtime_status 置 running" 用整数标志传（同一条语句里重复写同一个 `sqlc.arg` 会让
   MySQL 与 PG 生成的参数个数不一致）；运行态探测结果照旧按 systemctl 退出码语义映射
@@ -2146,6 +2147,9 @@ upsert 写成 NULL），而且此后改任何一列都会顺手清掉它。守�
 “调用方提交的是完整集合”这个前提下既正确又更简单。所以两者的边界靠**接口语义**划开：
 整表替换只接受完整集合，按行接口在表达上根本做不到“删除其他行”。
 
+批量日志覆盖保存按提交项返回 `{id, code, ok, message}`；存在失败时顶层业务码非 200，
+前端从错误响应读取逐项原因并回读已提交配置，不能把部分提交当作整批回滚。
+
 **整表替换按行增量写入**：已提交的行走 `UpsertServiceLogOverride`，只有本次未提交的行才删。
 覆盖值写入不清除历史认证列，也不修改独立的实例认证表；实例有效性由后台按当前指纹对账。
 回归测试
@@ -2342,7 +2346,7 @@ Filebeat 还没发出的数据（应用空闲、被采集过滤排除、主机�
 | `elasticsearch_config.go` / `elasticsearch_pipeline.go`                              | 集群配置 CRUD、pipeline 模拟与`missing_fields` / `schema_violations` 判定                         |
 | `sample_event.go`                                                                      | 样例事件的 Filebeat 真实载荷（`filebeatEventFields`）：试算、格式认证、链路试跑三处共用，见 §5.2   |
 | `config_resources.go` / `config_resource_writers.go` / `config_resources_typed.go` | 保留档位 / 处理规则 / 采集过滤规则的通用配置资源 CRUD                                                 |
-| `collect_target_dialect_{mysql,postgres}.go`                                           | `createLogCollectionTargetIfAbsent` 的按方言实现（`INSERT IGNORE` vs `ON CONFLICT DO NOTHING`） |
+| `internal/platform/database/insert_if_absent_{mysql,postgres}.go` | 统一解释日志目标、监控目标与告警事件的插入结果（新建 ID 或跳过） |
 | `smoke_log_test.go`                                                                    | 真库冒烟（`MONITOR_SMOKE_DSN`，事务内回滚）                                                         |
 
 配套的共享与归属说明：

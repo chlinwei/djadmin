@@ -6,62 +6,56 @@ import (
 	"time"
 
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/batchwrite"
 )
 
 // The tombstone commits before external work. Failures retain both identity and membership,
 // so retries always address the same hosts and ES ownership scope, even after an API restart.
-func (r *Repository) beginServiceDeletion(ctx context.Context, id int64) (bool, error) {
+func (r *Repository) beginServiceDeletion(ctx context.Context, id int64) error {
 	tx, err := r.pool.BeginTx(ctx, nil)
 	if err != nil {
-		return false, err
+		return err
 	}
 	defer tx.Rollback()
 	q := db.New(tx)
 	if _, err = q.LockApplicationServiceForDeletion(ctx, id); err != nil {
-		if err == sql.ErrNoRows {
-			if _, tombstoneErr := q.GetServiceDeletionTombstone(ctx, id); tombstoneErr == nil {
-				return false, nil
-			} else if tombstoneErr != sql.ErrNoRows {
-				return false, tombstoneErr
-			}
-		}
-		return false, err
+		return err
 	}
 	// Check before tombstoning or external cleanup, sharing the endpoint lock with dependency writes.
 	count, err := q.CountServiceDependenciesForService(ctx, db.CountServiceDependenciesForServiceParams{SourceServiceID: id, TargetServiceID: id})
 	if err != nil {
-		return false, err
+		return err
 	}
 	if count > 0 {
-		return false, ErrServiceHasDependencies
+		return ErrServiceHasDependencies
 	}
 	businessID, err := q.GetServiceDeletionBusinessSystem(ctx, id)
 	if err != nil {
-		return false, err
+		return err
 	}
 	if _, err = q.LockServiceIdentityDomain(ctx, businessID); err != nil {
-		return false, err
+		return err
 	}
 	if _, err = q.GetServiceDeletionTombstone(ctx, id); err == sql.ErrNoRows {
 		dims, err := q.GetApplicationServiceStreamDims(ctx, id)
 		if err != nil {
-			return false, err
+			return err
 		}
 		if err = q.CreateServiceDeletionTombstone(ctx, db.CreateServiceDeletionTombstoneParams{
 			ServiceID: id, ProjectCode: dims.ProjectCode, BusinessSystemCode: dims.BusinessSystemCode,
 			EnvironmentCode: dims.EnvironmentCode, ServiceCode: dims.ServiceCode,
 		}); err != nil {
-			return false, err
+			return err
 		}
 	} else if err != nil {
-		return false, err
+		return err
 	}
 	if _, err = q.UpdateApplicationServiceLogCollection(ctx, db.UpdateApplicationServiceLogCollectionParams{
 		ID: id, UpdateTime: time.Now().UTC(), LogCollectionEnabled: false,
 	}); err != nil {
-		return false, err
+		return err
 	}
-	return true, tx.Commit()
+	return tx.Commit()
 }
 
 func (r *Repository) finishServiceDeletion(ctx context.Context, id int64, revoke func() error) error {
@@ -71,10 +65,7 @@ func (r *Repository) finishServiceDeletion(ctx context.Context, id int64, revoke
 	}
 	defer tx.Rollback()
 	q := db.New(tx)
-	if _, err = q.LockApplicationServiceForDeletion(ctx, id); err == sql.ErrNoRows {
-		// A concurrent retry may already have completed the same idempotent operation.
-		return nil
-	} else if err != nil {
+	if _, err = q.LockApplicationServiceForDeletion(ctx, id); err != nil {
 		return err
 	}
 	// Hold the service lock through external cleanup and commit. A delayed concurrent
@@ -100,7 +91,7 @@ func (r *Repository) finishServiceDeletion(ctx context.Context, id int64, revoke
 			return err
 		}
 	}
-	if err = q.DeleteApplicationService(ctx, id); err != nil {
+	if err = batchwrite.RequireRow(q.DeleteApplicationService(ctx, id)); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -16,6 +16,7 @@
 - `PrometheusProxy` 将 `payload.Data`（RawMessage）原样透传，格式无关，任意 `/api/v1/*` 端点均可代理。
 - 需要 `data` 为对象的内部 handler（targets/alerts/rules/query/status）通过 `payload.dataMap()` 解为 `map[string]any` 使用；数组形 data 会得到空 map，这些 handler 本身不消费数组形端点。
 - 非 2xx 或 `status != success` 时，`prometheusGet` 返回错误（优先取上游 `error` 字段）；代理以 HTTP 200 + `{"status":"error", ...}` 返回，保持与 Prometheus 客户端库的容错兼容。
+- 上述例外只限原生代理；管理端的概览、目标、告警、规则、状态及 PromQL 查询读取失败时返回非 200 **业务码**（非法查询为 400，上游不可用为 502），不会伪装成成功的空列表。
 
 ## 双实现对齐
 
@@ -57,7 +58,7 @@ Django 侧已废弃（源码已移出版本库）；监控中心相关功能只�
 ### 入口
 
 - 单目标重试/重新下发：`POST /monitor/targets/:id/retry/`（`RetryTarget`），按 `managed_enabled` 决定 install / uninstall，不校验 `install_status`（覆盖失败重试与历史遗留）。
-- 批量纳管并安装：`POST /monitor/targets/`（`InstallNow=true`）先 `createMonitorTargetIfAbsent`，再逐个 `dispatchExporterJob`。
+- 批量纳管并安装：`POST /monitor/targets/`（`InstallNow=true`）按主机创建目标，仅对实际新建的目标调用 `dispatchExporterJob`。
 - 两者最终都走 `dispatchExporterJob` → `prepareExporterDispatch` 选包 → 写 `automation_execution_job` + `monitor_target_install_history` → 置 target `pending`。
 
 ### 选包与平台匹配

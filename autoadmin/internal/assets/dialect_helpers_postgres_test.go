@@ -70,3 +70,12 @@ func expectTemplatePortCreate(mock sqlmock.Sqlmock, id int64) {
 	mock.ExpectQuery("INSERT INTO assets_application_deployment_template").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(id))
 }
+
+func expectCredentialImport(mock sqlmock.Sqlmock, err error) {
+	insert := mock.ExpectQuery("INSERT INTO assets_credential")
+	if err != nil {
+		insert.WillReturnError(err)
+	} else {
+		insert.WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(11))
+	}
+}

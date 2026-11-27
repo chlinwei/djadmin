@@ -1,338 +1,60 @@
-# API 响应格式规则
+# API 响应约定
 
-## 统一响应格式
+适用于普通 JSON 业务 API。文件下载、WebSocket、Prometheus 代理、机器发现和 webhook 等协议端点按各自协议响应，不添加业务信封。
 
-所有 API 响应必须遵循以下统一格式，无论成功还是失败。
+## 增删改查
 
-### 成功响应 (HTTP 200)
+统一返回 `{ "code": 整数, "msg": 字符串, "data": 接口结果或 null }`。
+HTTP 状态与业务码分开：沿用接口现有 HTTP 约定，**不能用 HTTP 200 判断业务成功**。
+
+- `code: 200` 表示请求的业务目标已达成；`msg` 为 `success`。新增/修改可返回对象、ID 或 `null`。
+- 查询成功但列表为空是成功，详情目标不存在则报错。分页 `data` 包含 `results, count, pageNumber, pageSize, totalPages, next, previous`；请求优先用 `page`、`page_size`，保留已有分页参数契约。
+- 异步提交成功只表示作业已被接受，返回作业 ID；查询作业成功不代表作业执行成功，执行结果读取状态字段。
+- 失败返回对应业务码和可展示的 `msg`。已知业务错误保留其错误码；不将数据库、文件系统等底层异常原文返回客户端。`data` 可携带结构化错误详情。
+
+| 业务码 | 含义 |
+|---|---|
+| 300 / 301 | 登录凭证错误 / 会话无效 |
+| 400 / 403 / 404 | 请求或业务约束不满足 / 无权限 / 目标不存在 |
+| 502 | Prometheus 管理查询无法从上游获取结果 |
+| 600 | 未分类的内部错误；根因记录在服务端 |
+| 10001 / 10002 | 批量部分成功 / 全部失败且失败码不同 |
+
+模块已定义的专用错误码仍有效。调用方判断 `code`，不匹配 `msg` 文本。
+
+## 批量写入
+
+可独立执行的目标按请求顺序返回 `data.results`，每项包含 `id, code, ok, message`；
+`data.count` 是成功项数，不是请求项数。允许资源补充主机名、作业 ID 等数据。
+
+| 执行结果 | 顶层业务码 |
+|---|---|
+| 全部成功 | `200` |
+| 全部失败且逐项错误码相同（含单项失败） | 该业务错误码 |
+| 有成功也有失败 | `10001` |
+| 全部失败且错误码不同 | `10002` |
+
+例如单删时资产被引用：
 
 ```json
 {
-  "code": 200,
-  "msg": "success",
+  "code": 400,
+  "msg": "资产仍被其他记录引用，无法删除",
   "data": {
-    // 实际响应数据
+    "count": 0,
+    "results": [{"id": 1, "code": 400, "ok": false, "message": "资产仍被其他记录引用，无法删除"}]
   }
 }
 ```
 
-### 分页响应格式
+请求级校验、身份、权限等失败在执行前返回，不编造逐项结果。原子操作必须保留事务语义：回滚时不能报告已提交项。如果结果未知（例如请求超时），不得自动重试写入或宣称未生效。
 
-```json
-{
-  "code": 200,
-  "msg": "success",
-  "data": {
-    "results": [...items...],
-    "count": 10,
-    "pageNumber": 1,
-    "pageSize": 10,
-    "totalPages": 1,
-    "next": null,
-    "previous": null
-  }
-}
-```
+## 实现与验证
 
-## 状态码规定
+- Go handler 使用 [response](../autoadmin/internal/api/response/) 的 `Success`、`Paginated`、`Error`、`BusinessError`；逐项操作使用 `BatchItem`、`Batch` 或 `BatchWith`。不把失败项包进 `Success`。
+- [前端请求拦截器](../fronted/src/util/request.js) 在业务失败时拒绝请求并保留完整响应；批量页面展示逐项原因并刷新已提交状态。页面自行提示时抑制重复的全局提示。区分无权限与登录过期。
+- 通用提示与监控页面共用逐项失败原因格式。即使只有一台，`detail.created=true` 且 `detail.install_accepted=false` 也要提示“目标已创建，安装未受理”；有作业号时一并展示，不能提示用户重新创建。
+- 后端交换 UTC 时间；前端按用户时区格式化。请求时间范围转换为带时区的时间戳。
+- 在对应模块的 Go handler 测试验证 HTTP 状态、外层业务码与 `data`；可拆批量写入覆盖全成功、单项失败、部分成功及多种失败码，并验证真实提交/回滚语义。前端验证错误提示、逐项结果和刷新。后端检查：`cd autoadmin && make vet && make test`。
 
-| 状态码 | 说明 | 用途 |
-|-------|------|------|
-| 200 | 成功 | 所有成功的操作（列表、创建、更新、删除、登录等） |
-| 300 | 账号/密码错误 | 登录凭证无效 |
-| 301 | Token 验证失败 | 登录过期、Token 无效或过期 |
-| 其他 | 各种错误 | msg 字段描述具体错误 |
-
-## 实现要求
-
-### 后端 (Django/DRF)
-
-1. **统一返回函数** - 所有 API 响应必须调用 `utils.py` 中的 `Response_xxx` 函数：
-   - `Response_200(data=None, msg="success")` - 成功响应
-   - `Response_error(error: ErrorMixin, data=None)` - ErrorMixin 错误响应
-   - `Response_error_str(msg, code=400, data=None)` - 自定义错误响应
-   - `Response_djerror(djerror: DjadminException, data=None)` - DjadminException 错误响应
-2. **响应渲染器** - `djResponseRender.py` 的 `DjAdminResponse_render` 必须确保所有响应返回完整值
-3. **分页配置** - `utils.py` 的 `CustomPagination` 必须：
-   - 设置 `page_size_query_param = 'page_size'` 以匹配前端参数
-  - 兼容历史别名参数：`pageNumber`、`pageSize`
-   - 实现 `get_paginated_response()` 返回上述结构
-4. **异常处理** - `djException.py` 的 `djadmin_handler` 必须将所有异常转换为统一格式
-5. **ViewSet 配置** - 所有列表 ViewSet 必须声明 `pagination_class = CustomPagination`
-
-### 前端 (Vue 3)
-
-1. **请求参数** - 分页时优先发送 `page` 和 `page_size` 参数（历史别名 `pageNumber/pageSize` 仅作兼容）
-2. **响应处理** - 必须：
-   - 验证 `response.data.code === 200` 
-   - 特殊处理 code 301（重新登录）
-   - 提取实际数据：`response.data.data`
-3. **错误处理** - 显示 `response.data.msg` 给用户
-4. **防御编码** - 使用可选链操作符 `?.` 处理可能缺失的字段
-5. **时间显示（时区）** - 必须：
-  - 后端时间字段统一以 UTC 存储/返回
-  - 前端展示时必须按当前登录用户的 `timezone` 转换后显示
-  - 前端向后端传递时间筛选参数时，必须使用带时区的 UTC ISO 字符串（例如 `2026-07-01T06:00:00.000Z`）
-  - 禁止传无时区时间字符串作为查询参数（例如 `YYYY-MM-DD HH:mm:ss`），避免查询窗口偏移
-  - 禁止直接按浏览器本地时区渲染业务时间（如直接 `new Date(value).toLocaleString()`）
-  - 用户修改时区后，页面时间显示必须无需重新登录即可生效（事件广播或等价机制）
-
-## 常见错误
-
-### ❌ 错误做法
-
-```python
-# 直接返回Response对象（错误 - 应该调用Response_xxx）
-from rest_framework.response import Response
-return Response(data)
-
-# 返回原始JsonResponse（错误 - 应该调用Response_xxx）
-from django.http import JsonResponse
-return JsonResponse(data)
-
-# 异常处理时忘记格式化错误响应（错误）
-try:
-    # 业务逻辑
-except Exception as e:
-    return JsonResponse({'error': str(e)})  # 应该调用 Response_djerror
-```
-
-```json
-// 分页返回原始数组（错误）
-[{"id": 1, "name": "task"}]
-
-// 忘记包装成 data 字段（错误）
-{
-  "code": 200,
-  "results": [...],
-  "count": 1
-}
-
-// 成功操作返回非 200 状态码（错误）
-{
-  "code": 201,
-  "msg": "created",
-  "data": {...}
-}
-```
-
-### ✅ 正确做法
-
-```python
-# 使用Response_xxx函数进行返回（正确）
-from djadmin.utils import Response_200, Response_error, Response_djerror
-from djadmin.djException import DjadminException
-
-# 成功响应
-return Response_200(data={'id': 1, 'name': 'task'})
-
-# 错误响应 - ErrorMixin
-try:
-    # 业务逻辑
-except ValueError as e:
-    return Response_error(ErrorMixin_instance)
-
-# 错误响应 - DjadminException
-try:
-    # 业务逻辑
-except DjadminException as e:
-    return Response_djerror(e)
-
-# 自定义错误响应
-return Response_error_str('操作失败', code=400)
-```
-
-```json
-// 分页返回正确格式
-{
-  "code": 200,
-  "msg": "success",
-  "data": {
-    "results": [{"id": 1, "name": "task"}],
-    "count": 1,
-    "pageNumber": 1,
-    "pageSize": 10,
-    "totalPages": 1,
-    "next": null,
-    "previous": null
-  }
-}
-
-// 所有成功操作返回 200
-{
-  "code": 200,
-  "msg": "success",
-  "data": {"id": 1, "name": "created task"}
-}
-```
-
-## 关键参数匹配表
-
-| 前端参数 | 后端参数名 | 说明 |
-|---------|----------|------|
-| page | page_query_param | 分页数，从 1 开始 |
-| page_size | page_size_query_param | 每页条数，默认 10 |
-| pageNumber | page_query_param（兼容） | 历史别名，建议逐步替换 |
-| pageSize | page_size_query_param（兼容） | 历史别名，建议逐步替换 |
-
-> **注意**：标准参数为 `page/page_size`。后端必须兼容 `pageNumber/pageSize`，防止旧页面出现“切到第2页仍回第1页”。
-
-## Response_xxx 函数详解
-
-所有 API 响应必须通过以下函数进行返回。这些函数定义在 `utils.py` 中：
-
-### 1. Response_200(data=None, msg="success")
-**用途**：返回成功响应  
-**参数**：
-- `data` - 响应数据，可为任何类型（dict, list, str等）
-- `msg` - 成功消息（默认 "success"）
-
-**示例**：
-```python
-from djadmin.utils import Response_200
-
-# 返回单个对象
-return Response_200(data={'id': 1, 'name': 'task'})
-
-# 返回列表
-return Response_200(data=[{'id': 1}, {'id': 2}])
-
-# 返回无数据的成功响应
-return Response_200()
-```
-
-### 2. Response_error(error: ErrorMixin, data=None)
-**用途**：返回 ErrorMixin 类型的错误响应  
-**参数**：
-- `error` - ErrorMixin 实例，包含 code 和 msg
-- `data` - 额外数据（可选）
-
-**示例**：
-```python
-from djadmin.utils import Response_error
-from djadmin.errordict import SOME_ERROR_MIXIN
-
-try:
-    # 业务逻辑
-except ValueError as e:
-    return Response_error(SOME_ERROR_MIXIN)
-```
-
-### 3. Response_error_str(msg, code=400, data=None)
-**用途**：返回自定义错误响应  
-**参数**：
-- `msg` - 错误消息
-- `code` - 错误代码（默认 400）
-- `data` - 额外数据（可选）
-
-**示例**：
-```python
-from djadmin.utils import Response_error_str
-
-# 自定义错误
-return Response_error_str('用户不存在', code=404)
-
-# 验证失败
-return Response_error_str('用户名不能为空', code=400)
-```
-
-### 4. Response_djerror(djerror: DjadminException, data=None)
-**用途**：返回 DjadminException 错误响应  
-**参数**：
-- `djerror` - DjadminException 实例
-- `data` - 额外数据（可选）
-
-**示例**：
-```python
-from djadmin.utils import Response_djerror
-from djadmin.djException import DjadminException
-
-try:
-    # 业务逻辑
-except DjadminException as e:
-    return Response_djerror(e)
-```
-
-## 测试覆盖规则 🧪
-
-### 强制规则：每个 API 更新都必须添加对应的 Test Case
-
-**原则**：新增或修改后端 API 时，必须添加对应的单元测试，无异议。
-
-### 测试要求
-
-1. **测试文件位置**
-   - 测试用例必须放在对应模块的 `tests.py` 文件中
-   - 例如：user 模块的 API 测试放在 `user/tests.py`
-
-2. **测试覆盖范围**
-   - ✅ **成功场景** - 正常请求返回 200 和正确数据结构
-   - ✅ **失败场景** - 参数错误、权限不足、资源不存在等返回相应错误码
-   - ✅ **响应格式** - 验证返回格式符合 `{code, msg, data}` 结构
-   - ✅ **分页** - 列表接口验证分页返回格式正确
-   - ✅ **认证** - 验证 token 过期/无效时返回 301
-   - ✅ **权限** - 验证无权限用户访问时返回相应错误
-
-3. **测试命名规则**
-   ```python
-   # 成功场景：test_<接口功能>_success 或 test_<接口功能>
-   test_create_user
-   test_login_success
-   test_list_users_returns_paginated
-   
-   # 失败场景：test_<接口功能>_<失败原因>
-   test_login_wrong_password
-   test_create_user_duplicate_username
-   test_list_without_token
-   test_list_users_without_token_returns_301
-   ```
-
-4. **测试框架**
-   - 使用 Django TestCase 和 DRF APIClient
-   - 每个测试用例一个 `def test_xxx(self):` 方法
-   - 示例：
-   ```python
-   from rest_framework.test import APIClient
-   from django.test import TestCase
-
-   class UserAPITest(TestCase):
-       def setUp(self):
-           self.client = APIClient()
-       
-       def test_create_user(self):
-           response = self.client.post('/api/user/list', {...})
-           self.assertEqual(response.status_code, 200)
-           self.assertEqual(response.data['code'], 200)
-           self.assertIn('data', response.data)
-   ```
-
-5. **测试运行**
-   ```bash
-   # 运行所有测试
-   python manage.py test user role assets --settings=djadmin.test_settings --keepdb
-   
-   # 生成测试报告（按模块分类）
-   python generate_test_report_final.py
-   ```
-
-6. **持续集成**
-   - 代码 review 时，检查是否添加了对应的测试
-   - 没有测试的 API 修改 ❌ 不应该被合并
-   - 所有测试必须通过才能发版
-
-### 测试检查清单
-
-- [ ] 每个新增/修改的 API 都有对应的 test case
-- [ ] 测试同时覆盖成功和失败场景
-- [ ] 测试用例位置正确（在 `{module}/tests.py` 中）
-- [ ] 测试命名清晰易懂（test_xxx_success 或 test_xxx_failure）
-- [ ] 所有 API 返回都调用了 `Response_xxx` 函数
-- [ ] 成功返回使用 `Response_200()`
-- [ ] 异常返回使用相应的 `Response_error()`、`Response_error_str()` 或 `Response_djerror()`
-- [ ] 登录返回 code 200 和有效 token
-- [ ] 列表接口返回分页格式的 data 字段
-- [ ] 创建/更新/删除操作返回 code 200
-- [ ] 异常返回 code 300/301 和错误消息
-- [ ] 前端能正确解析 response.data.data
-- [ ] 前端分页参数与后端配置匹配
-- [ ] 运行 `python generate_test_report_final.py` 确保所有测试通过
+路由、权限及批量操作边界见[开发约定](../docs/architecture/CONVENTIONS.md)。

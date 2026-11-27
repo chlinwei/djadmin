@@ -20,7 +20,7 @@ func TestStreamTierCapacity(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		daily      float64
-		retention  uint32
+		retention  int64
 		unit       string
 		primary    float64
 		missing    bool
@@ -52,9 +52,9 @@ func TestStreamTierCapacity(t *testing.T) {
 			if tc.missing {
 				entry.PrimaryBytes = nil
 			}
-			applyStreamTierCapacity(&entry, map[string]db.MonitorLogRetentionTier{
-				"std": {Code: "std", DailySizeGb: tc.daily, RetentionValue: tc.retention, RetentionUnit: tc.unit, Enabled: false},
-			})
+			tier := db.MonitorLogRetentionTier{Code: "std", DailySizeGb: tc.daily, RetentionUnit: tc.unit}
+			setRetentionValue(&tier.RetentionValue, tc.retention)
+			applyStreamTierCapacity(&entry, map[string]db.MonitorLogRetentionTier{"std": tier})
 			if entry.TierCapacityStatus != tc.status {
 				t.Fatalf("status = %s, want %s", entry.TierCapacityStatus, tc.status)
 			}

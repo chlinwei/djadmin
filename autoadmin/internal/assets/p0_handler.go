@@ -1,21 +1,21 @@
 package assets
 
 import (
+	"autoadmin/internal/api/batchcrud"
 	"autoadmin/internal/api/response"
-	"autoadmin/internal/shared/apperror"
+	"autoadmin/internal/shared/batchwrite"
 
 	"github.com/gin-gonic/gin"
 )
 
 func (handler *Handler) DeleteCredentials(context *gin.Context) {
-	var input struct {
-		IDs []int64 `json:"ids"`
-	}
-	if context.ShouldBindJSON(&input) != nil || len(input.IDs) == 0 {
-		response.Error(context, apperror.ErrInvalidRequest)
+	ids, ok := batchDeleteIDs(context)
+	if !ok {
 		return
 	}
-	respond(context, nil, handler.service.DeleteCredentials(context.Request.Context(), input.IDs))
+	ids = batchwrite.UniqueIDs(ids)
+	err := handler.service.DeleteCredentials(context.Request.Context(), ids)
+	response.Batch(context, batchcrud.AtomicResults(ids, err))
 }
 
 func (handler *Handler) HostGroupTree(context *gin.Context) {
@@ -24,16 +24,15 @@ func (handler *Handler) HostGroupTree(context *gin.Context) {
 }
 
 func (handler *Handler) DeleteHosts(context *gin.Context) {
-	var input struct {
-		IDs []int64 `json:"ids"`
-	}
-	if context.ShouldBindJSON(&input) != nil || len(input.IDs) == 0 {
-		response.Error(context, apperror.ErrInvalidRequest)
+	ids, ok := batchDeleteIDs(context)
+	if !ok {
 		return
 	}
-	if err := handler.service.DeleteHosts(context.Request.Context(), input.IDs); err != nil {
-		respond(context, nil, err)
-		return
+	ids = batchwrite.UniqueIDs(ids)
+	err := handler.service.DeleteHosts(context.Request.Context(), ids)
+	deleted := 0
+	if err == nil {
+		deleted = len(ids)
 	}
-	response.Success(context, gin.H{"deleted_count": len(input.IDs)})
+	response.BatchWith(context, batchcrud.AtomicResults(ids, err), gin.H{"deleted_count": deleted})
 }

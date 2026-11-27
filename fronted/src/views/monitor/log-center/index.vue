@@ -1825,10 +1825,17 @@ async function runBatchOverrides(patch, action) {
   }
   batchAction.value = action
   try {
-    const response = await batchSaveApplicationServiceLogSettings(
-      serviceId.value,
-      rows.map((row) => overridePayload(row, patch)),
-    )
+    let response
+    try {
+      response = await batchSaveApplicationServiceLogSettings(
+        serviceId.value,
+        rows.map((row) => overridePayload(row, patch)),
+      )
+    } catch (error) {
+      // 部分行可能已经提交；只有包含逐项结果时才继续对账，其他错误仍向外层报告。
+      if (!Array.isArray(error?.response?.data?.data?.results)) throw error
+      response = error.response
+    }
     const data = response?.data?.data || {}
     // 逐条结果带回的是日志定义 id：对回日志名，用户才知道是哪一条没改成功。
     const nameOf = (id) => rows.find((row) => row.log_definition === id)?.name || `日志 #${id}`
@@ -1841,7 +1848,7 @@ async function runBatchOverrides(patch, action) {
     clearLogSelection()
     await loadLogConfig()
     await Promise.all([loadApplyState(), loadChain()])
-    return true
+    return failed.length === 0
   } catch (error) {
     message.error(error?.response?.data?.msg || error?.message || '批量保存失败')
     return false

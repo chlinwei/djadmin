@@ -296,7 +296,14 @@ function confirmDeleteService(record) {
     summary: '将撤销日志采集，并永久删除该服务所有档位的数据流（data stream）、底层索引及全部日志，删除服务配置、成员关联及专属部署实例记录；共享实例、主机、实际应用和原始日志文件保留。删除失败会保留服务记录，请重试删除。',
     items: [record.name || record.code || record.id],
     onConfirm: async () => {
-      const response = await batchDeleteApplicationServices([record.id])
+      let response
+      try {
+        response = await batchDeleteApplicationServices([record.id])
+      } catch (error) {
+        // 删除可能已撤销部分外部资源，即使业务失败也必须回读当前状态。
+        await refreshServiceTree()
+        throw error
+      }
       const result = response?.data?.data?.results?.find((item) => Number(item.id) === Number(record.id))
       if (!result?.ok) {
         const reason = result?.message || '删除未完成，请重试'

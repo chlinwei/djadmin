@@ -2,15 +2,155 @@ package logcollect
 
 import (
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"autoadmin/internal/agent/pb"
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 )
+
+func TestBatchLogServiceReportsAgentExecutionFailure(t *testing.T) {
+	pool, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	handler := &Handler{db: pool, gateway: startTestAgent(t, func(frame *pb.ServerFrame) *pb.AgentFrame {
+		req := frame.GetAutomationExecuteRequest()
+		if req == nil {
+			return nil
+		}
+		if strings.Contains(req.ParamsJson, `"stop"`) {
+			return testPathResponse(req, "failed", "", "unit refused to stop")
+		}
+		return testPathResponse(req, "success", "", "")
+	})}
+	for _, action := range []string{"start", "stop"} {
+		mock.ExpectQuery("GetLogTargetForAction").WithArgs(int64(7)).WillReturnRows(
+			sqlmock.NewRows([]string{"id", "host", "enabled", "status", "name", "ip", "os", "like", "version"}).AddRow(7, 4, true, "success", "host-01", "", "", "", ""))
+		wantCode := 400
+		if action == "start" {
+			wantCode = 200
+			mock.ExpectExec("SetLogTargetRuntimeStatus").WillReturnResult(sqlmock.NewResult(0, 1))
+		}
+		rec := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(rec)
+		ctx.Request = httptest.NewRequest("POST", "/", strings.NewReader(`{"ids":[7]}`))
+		if action == "start" {
+			handler.BatchStartLogTargets(ctx)
+		} else {
+			handler.BatchStopLogTargets(ctx)
+		}
+		var body struct {
+			Code int
+			Data struct {
+				Results []struct {
+					ID, Code      int
+					Host, Message string
+					Detail        struct {
+						JobID string `json:"job_id"`
+					}
+				}
+			}
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if rec.Code != 200 || body.Code != wantCode || len(body.Data.Results) != 1 {
+			t.Fatal(rec.Body.String())
+		}
+		item := body.Data.Results[0]
+		if item.ID != 7 || item.Code != wantCode || item.Host != "host-01" || item.Detail.JobID == "" ||
+			(action == "stop" && !strings.Contains(item.Message, "unit refused to stop")) {
+			t.Fatal(rec.Body.String())
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBatchCreateLogTargetsReportsInstallAcceptance(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		publishErr      error
+		wantCode, count int
+	}{
+		{"accepted and missing host", nil, 10001, 1},
+		{"publish failed after creating target and job", errors.New("broker details"), 10002, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pool.Close()
+			publisher := &fakeLogBatchPublisher{err: tc.publishErr}
+			handler := &Handler{db: pool, batchRunner: newLogBatchRunner(t, pool, publisher, time.Minute)}
+			mock.ExpectQuery("GetHostTargetIdentity").WithArgs(int64(4)).WillReturnRows(
+				sqlmock.NewRows([]string{"name", "ip", "deleted"}).AddRow("", "10.0.0.4", false))
+			expectCreatedBatchRow(mock, "CreateLogCollectionTargetIfAbsent", 12)
+			mock.ExpectQuery("GetHostTargetIdentity").WithArgs(int64(5)).WillReturnError(sql.ErrNoRows)
+			mock.ExpectQuery("ListLogBatchTargets").WillReturnRows(sqlmock.NewRows([]string{"id", "host_id", "name", "ip"}).AddRow(12, 4, "", "10.0.0.4"))
+			expectCreatedBatchRow(mock, "CreateLogBatchJob :", 1)
+			mock.ExpectExec("CreateLogBatchJobItem").WillReturnResult(sqlmock.NewResult(2, 1))
+			if tc.publishErr != nil {
+				mock.ExpectExec(batchFinishSQL).WillReturnResult(sqlmock.NewResult(0, 1))
+			}
+			rec := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(rec)
+			ctx.Request = httptest.NewRequest("POST", "/", strings.NewReader(`{"host_ids":[4,5],"install_now":true}`))
+			handler.BatchCreateLogTargets(ctx)
+			var body struct {
+				Code int
+				Data struct {
+					Count        int
+					InstallBatch *struct{ ID int64 } `json:"install_batch"`
+					InstallError string              `json:"install_error"`
+					Results      []struct {
+						ID, Code      int
+						HostID        int `json:"host_id"`
+						Host, Message string
+						OK            bool
+						Detail        struct {
+							TargetID int `json:"target_id"`
+							Created  bool
+							JobID    int  `json:"job_id"`
+							Accepted bool `json:"install_accepted"`
+						}
+					}
+				}
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if rec.Code != 200 || body.Code != tc.wantCode || body.Data.Count != tc.count || len(body.Data.Results) != 2 {
+				t.Fatal(rec.Body.String())
+			}
+			item, missing := body.Data.Results[0], body.Data.Results[1]
+			accepted := tc.publishErr == nil
+			if item.OK != accepted || item.HostID != 4 || item.Host != "10.0.0.4" || !item.Detail.Created ||
+				item.Detail.TargetID != 12 || item.Detail.JobID != 1 || item.Detail.Accepted != accepted || missing.ID != 5 || missing.Code != 404 ||
+				accepted != (body.Data.InstallBatch != nil && body.Data.InstallBatch.ID == 1) ||
+				(!accepted && (body.Data.InstallError != "批量作业入队失败" || item.Message != body.Data.InstallError)) {
+				t.Fatal(rec.Body.String())
+			}
+			if len(publisher.messages) != 1 || publisher.messages[0].ResourceID != 1 {
+				t.Fatal(publisher.messages)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
 
 // Filebeat 只按 CPU 架构匹配（官方 tar.gz 单二进制，自带依赖）。
 func TestNormalizeHostArch(t *testing.T) {

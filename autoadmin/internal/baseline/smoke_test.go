@@ -186,7 +186,7 @@ func TestSmokeBaselineQueriesAgainstRealDatabase(t *testing.T) {
 		return err
 	})
 	step("UpdateBaseline / GetBaselineForScan / CountBaselineItems", func() error {
-		if err := queries.UpdateBaseline(ctx, db.UpdateBaselineParams{UpdateTime: now, Name: "smoke-" + suffix,
+		if _, err := queries.UpdateBaseline(ctx, db.UpdateBaselineParams{UpdateTime: now, Name: "smoke-" + suffix,
 			Version: "v2", Description: "改过", Enabled: true, ID: baselineID}); err != nil {
 			return err
 		}

@@ -20,7 +20,7 @@ flowchart LR
 | 系统入口 | 模块手册 | 最需要关注 |
 |---|---|---|
 | 公共基础 | [登录认证与权限](architecture/modules/ACCESS.md) | 登录与鉴权流程、权限快照、失效边界 |
-| 首页 | [首页](architecture/modules/HOME.md) | 当前能力及导航，不假设存在统计大屏 |
+| 首页 | [首页](architecture/modules/HOME.md) | 运维概览、近期动态、快捷入口及统计口径 |
 | 资产管理 | [资产管理](architecture/modules/ASSETS.md) | 主机/Agent、项目、环境、凭据、应用、服务树与删除 |
 | 自动化运维 | [模板、Inventory、任务与运行记录](architecture/modules/AUTOMATION.md) | 提交与成功的区别、执行位置、取消边界 |
 | 自动化运维 → 巡检中心 | [巡检中心](architecture/modules/INSPECTION.md) | 采集 → OPA → 断言 → 报告，失败与错误的区别 |

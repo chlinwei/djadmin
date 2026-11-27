@@ -219,6 +219,9 @@ GET    /sys/security/scans/{id}/        扫描详情（概要 + 每主机符合�
 删除均走统一删除确认弹窗 `openDeleteConfirm`（`util/deleteConfirm.js`，居中 Modal、
 红色确认按钮）后即 DELETE，基线/类目/策略三处一致，不再用 `a-popconfirm`
 （无「保存策略」批量按钮；整体覆盖 PATCH items 接口保留但前端不再使用）。
+携带 `items` 的 PATCH 将基线及其策略集作为一个事务单元（`[]` 表示清空）。响应保留 `data.id`，
+并以该基线 ID 返回一个 `data.results` 项，提交成功 `count=1`；基线不存在返回 404，
+校验、替换或提交失败时 `count=0`，不将被重建的策略当作独立成功项。
 按钮风格与巡检中心对齐：新增按钮使用 primary + plus-circle 图标 + 文本；策略表格
 行内操作为 small 图标按钮（编辑=primary 实心 pen，删除=`delBtn` danger trash，均带
 tooltip）。策略工具栏按「类目操作 / 策略操作」分组并自动换行，标题与刷新动作独立；

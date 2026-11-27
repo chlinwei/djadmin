@@ -6,9 +6,11 @@ import (
 	"strconv"
 	"strings"
 
+	"autoadmin/internal/api/batchcrud"
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/identity"
 	"autoadmin/internal/shared/apperror"
+	"autoadmin/internal/shared/batchwrite"
 	"autoadmin/internal/shared/pagination"
 
 	"github.com/gin-gonic/gin"
@@ -75,11 +77,9 @@ func (handler *Handler) DeleteMany(context *gin.Context) {
 		response.Error(context, ErrRoleIDsEmpty)
 		return
 	}
-	if err := handler.service.repository.DeleteRoles(context.Request.Context(), request.RoleIDs); err != nil {
-		response.Error(context, apperror.WithCause(ErrRoleDeleteInternal, err))
-		return
-	}
-	response.Success(context, nil)
+	ids := batchwrite.UniqueIDs(request.RoleIDs)
+	err := handler.service.repository.DeleteRoles(context.Request.Context(), ids)
+	response.Batch(context, batchcrud.AtomicResults(ids, err))
 }
 func (handler *Handler) Current(context *gin.Context) {
 	claims, ok := identity.ClaimsFromContext(context)

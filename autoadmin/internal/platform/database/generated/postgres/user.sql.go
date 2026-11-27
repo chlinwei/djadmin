@@ -292,13 +292,16 @@ func (q *Queries) DeleteUserAvatarContent(ctx context.Context, userID int32) err
 	return err
 }
 
-const deleteUserByID = `-- name: DeleteUserByID :exec
+const deleteUserByID = `-- name: DeleteUserByID :execrows
 DELETE FROM sys_user WHERE id = $1
 `
 
-func (q *Queries) DeleteUserByID(ctx context.Context, id int32) error {
-	_, err := q.db.ExecContext(ctx, deleteUserByID, id)
-	return err
+func (q *Queries) DeleteUserByID(ctx context.Context, id int32) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteUserByID, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const deleteUserGroup = `-- name: DeleteUserGroup :execrows
@@ -322,13 +325,16 @@ func (q *Queries) DeleteUserGroupMembers(ctx context.Context, groupID int64) err
 	return err
 }
 
-const deleteUserRoles = `-- name: DeleteUserRoles :exec
+const deleteUserRoles = `-- name: DeleteUserRoles :execrows
 DELETE FROM sys_user_role WHERE user_id = $1
 `
 
-func (q *Queries) DeleteUserRoles(ctx context.Context, userID int32) error {
-	_, err := q.db.ExecContext(ctx, deleteUserRoles, userID)
-	return err
+func (q *Queries) DeleteUserRoles(ctx context.Context, userID int32) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteUserRoles, userID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const disableAPIToken = `-- name: DisableAPIToken :exec

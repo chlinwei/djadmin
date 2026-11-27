@@ -177,6 +177,26 @@ func TestSaveBaselineInsertShape(t *testing.T) {
 	}
 }
 
+func TestSaveBaselineMissingParentDoesNotClearItems(t *testing.T) {
+	pool, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE baseline SET update_time").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectRollback()
+	ctx, recorder := ginTestContext("PATCH", "/sys/security/baseline/7/", map[string]any{"name": "missing", "items": []any{}})
+	(&Handler{db: pool}).SaveBaseline(ctx)
+	body := decodeResponse(t, recorder)
+	if body["code"] != float64(404) || body["data"].(map[string]any)["count"] != float64(0) {
+		t.Fatal(recorder.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // 提交的策略挂到别的基线的类目上 → 400，且不进入事务。
 func TestSaveBaselineRejectsForeignCategory(t *testing.T) {
 	database, mock, err := sqlmock.New()

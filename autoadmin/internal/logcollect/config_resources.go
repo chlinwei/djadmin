@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -12,6 +11,7 @@ import (
 
 	"autoadmin/internal/api/response"
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/apperror"
 
 	"github.com/gin-gonic/gin"
 )
@@ -108,10 +108,10 @@ func (handler *Handler) deleteRetentionTierByID(context *gin.Context, id int64) 
 		return err
 	}
 	if sharedCount > 0 {
-		return errors.New("该档位仍被共享采集源或其历史数据引用，不能删除")
+		return apperror.New(apperror.CodeInvalidArgument, "该档位仍被共享采集源或其历史数据引用，不能删除")
 	}
 	if serviceCount+settingCount > 0 {
-		return errors.New("该档位仍被逻辑服务引用，不能删除")
+		return apperror.New(apperror.CodeInvalidArgument, "该档位仍被逻辑服务引用，不能删除")
 	}
 	return retentionSpec.delete(context, handler.db, id)
 }
@@ -121,21 +121,20 @@ func (handler *Handler) BatchDeleteRetentionTiers(context *gin.Context) {
 	if !ok {
 		return
 	}
-	results := make([]gin.H, 0, len(ids))
+	results := make([]response.BatchResult, 0, len(ids))
 	okCount := 0
 	for _, id := range ids {
-		if err := handler.deleteRetentionTierByID(context, id); err != nil {
-			results = append(results, gin.H{"id": id, "ok": false, "message": batchErrMessage(err)})
-			continue
+		result := response.BatchItem(id, handler.deleteRetentionTierByID(context, id))
+		if result.OK {
+			okCount++
 		}
-		okCount++
-		results = append(results, gin.H{"id": id, "ok": true, "message": ""})
+		results = append(results, result)
 	}
 	if okCount > 0 {
 		// 档位删除后已启用集群的 ILM 策略需要重新对账。
 		go handler.syncAllClusterLogStorage()
 	}
-	response.Success(context, gin.H{"count": okCount, "results": results})
+	response.Batch(context, results)
 }
 
 // respondRetentionTierThenSync 档位保存成功后异步刷新所有启用集群的模板与 ILM 策略。
@@ -169,10 +168,10 @@ func (handler *Handler) deleteProcessingRuleByID(context *gin.Context, id int64)
 		return err
 	}
 	if sharedCount > 0 {
-		return errors.New("规则仍被共享采集源引用，不能删除")
+		return apperror.New(apperror.CodeInvalidArgument, "规则仍被共享采集源引用，不能删除")
 	}
 	if referenceCount > 0 {
-		return errors.New("规则仍被日志定义引用，不能删除")
+		return apperror.New(apperror.CodeInvalidArgument, "规则仍被日志定义引用，不能删除")
 	}
 	// 删除时同时清理新命名（<前缀>-<应用 code|general>-<规则名>）与历史上的裸规则名。
 	pipelineName := rule.Name
@@ -578,14 +577,6 @@ func patternContainsField(raw any, field string) bool {
 	return false
 }
 
-// batchErrMessage 把 sql.ErrNoRows 统一转成 "resource not found"，其余透传原始错误文案。
-func batchErrMessage(err error) string {
-	if err == sql.ErrNoRows {
-		return "resource not found"
-	}
-	return err.Error()
-}
-
 // batchDeleteResources 通用批删入口：解析 {"ids":[...]}，逐 id 执行 deleteOne 并汇总
 // count/results；单条失败不中断其余 id（与 BatchDeleteLogTargets 范式一致）。
 func (handler *Handler) batchDeleteResources(context *gin.Context, spec resourceSpec, deleteOne func(*gin.Context, int64) error) {
@@ -593,17 +584,11 @@ func (handler *Handler) batchDeleteResources(context *gin.Context, spec resource
 	if !ok {
 		return
 	}
-	results := make([]gin.H, 0, len(ids))
-	okCount := 0
+	results := make([]response.BatchResult, 0, len(ids))
 	for _, id := range ids {
-		if err := deleteOne(context, id); err != nil {
-			results = append(results, gin.H{"id": id, "ok": false, "message": batchErrMessage(err)})
-			continue
-		}
-		okCount++
-		results = append(results, gin.H{"id": id, "ok": true, "message": ""})
+		results = append(results, response.BatchItem(id, deleteOne(context, id)))
 	}
-	response.Success(context, gin.H{"count": okCount, "results": results})
+	response.Batch(context, results)
 }
 
 // deleteRowsAffected 把"没删到行"统一成 sql.ErrNoRows，供 batchDeleteMonitorRows 的各调用方复用
@@ -626,18 +611,11 @@ func batchDeleteMonitorRows(context *gin.Context, handler *Handler, deleteOne fu
 	if !ok {
 		return
 	}
-	results := make([]gin.H, 0, len(ids))
-	okCount := 0
+	results := make([]response.BatchResult, 0, len(ids))
 	for _, id := range ids {
-		err := deleteOne(context, id)
-		if err != nil {
-			results = append(results, gin.H{"id": id, "ok": false, "message": batchErrMessage(err)})
-			continue
-		}
-		okCount++
-		results = append(results, gin.H{"id": id, "ok": true, "message": ""})
+		results = append(results, response.BatchItem(id, deleteOne(context, id)))
 	}
-	response.Success(context, gin.H{"count": okCount, "results": results})
+	response.Batch(context, results)
 }
 
 func floatValue(value any) float64 {

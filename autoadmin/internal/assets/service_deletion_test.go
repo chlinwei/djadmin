@@ -145,9 +145,8 @@ func TestServiceDeletionFailureKeepsServiceForRetry(t *testing.T) {
 		mock.ExpectExec("UPDATE assets_application_service").
 			WithArgs(sqlmock.AnyArg(), false, int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectCommit()
-		exists, err := NewRepository(pool).beginServiceDeletion(context.Background(), 7)
-		if err != nil || !exists {
-			t.Fatalf("begin deletion: %v %v", exists, err)
+		if err := NewRepository(pool).beginServiceDeletion(context.Background(), 7); err != nil {
+			t.Fatalf("begin deletion: %v", err)
 		}
 		if err = mock.ExpectationsWereMet(); err != nil {
 			t.Fatal(err)
@@ -195,7 +194,7 @@ func TestServiceDeletionFailureKeepsServiceForRetry(t *testing.T) {
 			called = true
 			return nil
 		})
-		if err != nil || called {
+		if !errors.Is(err, sql.ErrNoRows) || called {
 			t.Fatalf("completed deletion must not repeat external cleanup: called=%v err=%v", called, err)
 		}
 		if err := mock.ExpectationsWereMet(); err != nil {

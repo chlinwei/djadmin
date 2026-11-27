@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"autoadmin/internal/platform/database"
 	db "autoadmin/internal/platform/database/generated"
 )
 
@@ -65,11 +66,11 @@ func TestSmokeTargetDomainQueriesAgainstRealDatabase(t *testing.T) {
 	createParams := db.CreateMonitorTargetIfAbsentParams{
 		CreateTime: now, UpdateTime: now, HostID: hostID, ExporterType: "node_exporter", ScrapePort: 9100,
 	}
-	targetID, created, err := createMonitorTargetIfAbsent(ctx, queries, createParams)
+	targetID, created, err := database.InsertIfAbsentResult(queries.CreateMonitorTargetIfAbsent(ctx, createParams))
 	if err != nil || !created || targetID <= 0 {
 		t.Fatalf("首次建立目标：id=%d created=%v err=%v", targetID, created, err)
 	}
-	if _, created, err = createMonitorTargetIfAbsent(ctx, queries, createParams); err != nil || created {
+	if _, created, err = database.InsertIfAbsentResult(queries.CreateMonitorTargetIfAbsent(ctx, createParams)); err != nil || created {
 		t.Fatalf("重复建立应跳过：created=%v err=%v", created, err)
 	}
 

@@ -45,6 +45,7 @@ func TestReadOnlyRoutesUseGET(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{
+		"/sys/home/overview/",
 		"/sys/automation/playbooks/host-options/",
 		"/monitor/alert-histories/",
 		"/sys/security/issues/",

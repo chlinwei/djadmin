@@ -22,18 +22,24 @@ import (
 
 // ---- monitor_log_retention_tier ----
 
+// 档位已通过业务范围校验；sqlc 在 MySQL 和 PostgreSQL 分别生成 uint32 和 int32。
+func setRetentionValue[T uint32 | int32](dest *T, value int64) {
+	*dest = T(value)
+}
+
 func createLogRetentionTier(context context.Context, pool db.DBTX, input map[string]any) (int64, error) {
 	now := time.Now().UTC()
-	return db.New(pool).CreateLogRetentionTier(context, db.CreateLogRetentionTierParams{
+	params := db.CreateLogRetentionTierParams{
 		CreateTime: now, UpdateTime: now,
 		Code: stringValue(input["code"]), Name: stringValue(input["name"]),
 		DailySizeGb:         floatValue(input["daily_size_gb"]),
-		RetentionValue:      uint32(intValue(input["retention_value"])),
 		RetentionUnit:       retentionUnitOrDefault(input["retention_unit"]),
 		RolloverMinIndexAge: stringValue(input["rollover_min_index_age"]),
 		Enabled:             boolValue(input["enabled"]), IsDefault: boolValue(input["is_default"]),
 		Remark: stringValue(input["remark"]),
-	})
+	}
+	setRetentionValue(&params.RetentionValue, intValue(input["retention_value"]))
+	return db.New(pool).CreateLogRetentionTier(context, params)
 }
 
 func updateLogRetentionTier(context context.Context, pool db.DBTX, id int64, input map[string]any) error {
@@ -52,7 +58,7 @@ func updateLogRetentionTier(context context.Context, pool db.DBTX, id int64, inp
 		current.DailySizeGb = floatValue(value)
 	}
 	if value, ok := input["retention_value"]; ok {
-		current.RetentionValue = uint32(intValue(value))
+		setRetentionValue(&current.RetentionValue, intValue(value))
 	}
 	if value, ok := input["retention_unit"]; ok {
 		current.RetentionUnit = retentionUnitOrDefault(value)

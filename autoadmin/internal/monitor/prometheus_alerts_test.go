@@ -1,10 +1,13 @@
 package monitor
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
@@ -41,6 +44,11 @@ func TestPrometheusAlertsIncludeRuleDetails(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow(server.URL))
 	mock.ExpectQuery("SELECT value FROM sys_config").
 		WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow(server.URL))
+	activeAt := time.Date(2026, 9, 17, 0, 0, 0, 0, time.UTC)
+	fingerprint := alertFingerprint(map[string]any{"alertname": "HighDiskUsage", "severity": "warning", "instance": "h:9100"})
+	mock.ExpectQuery("ListCurrentAlertNotificationSummaries").
+		WithArgs(activeAt, sqlmock.AnyArg()).
+		WillReturnRows(currentAlertNotificationTestRows().AddRow(42, fingerprint, activeAt.Add(10*time.Minute), 2, 1, 1, 0))
 
 	handler := &Handler{db: database, client: server.Client()}
 	router := gin.New()
@@ -59,8 +67,11 @@ func TestPrometheusAlertsIncludeRuleDetails(t *testing.T) {
 	}
 	var payload struct {
 		Results []struct {
-			RuleGroup   string `json:"rule_group"`
-			RuleDetails *struct {
+			RuleGroup          string `json:"rule_group"`
+			HistoryID          int64  `json:"history_id"`
+			NotificationCount  int64  `json:"notification_count"`
+			NotificationStatus string `json:"notification_status"`
+			RuleDetails        *struct {
 				Query string `json:"query"`
 			} `json:"rule_details"`
 		} `json:"results"`
@@ -76,6 +87,62 @@ func TestPrometheusAlertsIncludeRuleDetails(t *testing.T) {
 	}
 	if payload.Results[0].RuleDetails == nil || payload.Results[0].RuleDetails.Query == "" {
 		t.Fatalf("rule_details.query 为空：%+v（当前告警必须补齐 PromQL）", payload.Results[0].RuleDetails)
+	}
+	if row := payload.Results[0]; row.HistoryID != 42 || row.NotificationCount != 2 || row.NotificationStatus != "failed" {
+		t.Fatalf("unexpected current alert notification summary: %+v", row)
+	}
+	post := httptest.NewRecorder()
+	router.ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/monitor/targets/prometheus/alerts/", nil))
+	if post.Code != http.StatusNotFound {
+		t.Fatalf("POST unexpectedly served alert query: status = %d", post.Code)
+	}
+	assertConfigQueryConsumed(t, mock)
+}
+
+func currentAlertNotificationTestRows() *sqlmock.Rows {
+	return sqlmock.NewRows([]string{
+		"id", "fingerprint", "started_at", "notification_count", "notification_delivery_count",
+		"notification_failed_count", "notification_active_count",
+	})
+}
+
+func TestCurrentAlertNotificationsDoNotLinkPreviousOrAmbiguousOccurrences(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	handler := &Handler{db: database}
+	activeAt := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	olderAt, observedAt := activeAt.Add(-time.Hour), activeAt.Add(time.Hour)
+	alerts := map[int]currentAlertOccurrence{
+		0: {"matching", activeAt},
+		1: {"stale", activeAt},
+		2: {"ambiguous", activeAt},
+		3: {"absent", olderAt},
+	}
+	results := []gin.H{{}, {}, {}, {}}
+	mock.ExpectQuery("ListCurrentAlertNotificationSummaries").WithArgs(olderAt, observedAt).
+		WillReturnRows(currentAlertNotificationTestRows().
+			AddRow(1, "matching", activeAt, 0, 0, 0, 0).
+			AddRow(2, "stale", olderAt, 1, 1, 0, 0).
+			AddRow(3, "ambiguous", activeAt, 1, 1, 0, 0).
+			AddRow(4, "ambiguous", activeAt.Add(time.Minute), 1, 1, 0, 0))
+	if err := handler.attachCurrentAlertNotifications(context.Background(), alerts, observedAt, results); err != nil {
+		t.Fatal(err)
+	}
+	if results[0]["history_id"] != int64(1) || results[0]["notification_status"] != "none" {
+		t.Fatalf("expected history link without notifications, got %v", results[0])
+	}
+	for i, row := range results[1:] {
+		if row["history_id"] != nil {
+			t.Errorf("row %d unexpectedly linked: %v", i+1, row)
+		}
+	}
+	lookupErr := errors.New("notification lookup unavailable")
+	mock.ExpectQuery("ListCurrentAlertNotificationSummaries").WithArgs(olderAt, observedAt).WillReturnError(lookupErr)
+	if err := handler.attachCurrentAlertNotifications(context.Background(), alerts, observedAt, results); !errors.Is(err, lookupErr) {
+		t.Fatalf("expected lookup error, got %v", err)
 	}
 	assertConfigQueryConsumed(t, mock)
 }

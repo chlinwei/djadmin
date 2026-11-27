@@ -1,16 +1,12 @@
 package inspection
 
 import (
-	"database/sql"
-	"errors"
-
 	"autoadmin/internal/api/response"
 
 	"github.com/gin-gonic/gin"
 )
 
-// batchDeleteInspection 解析 {"ids":[...]} 并逐 id 执行 deleteOne，逐条记录
-// ok/message；不存在的 id 记 ok:false，不中断其余 id（与 BatchDeleteLogTargets 范式一致）。
+// batchDeleteInspection 逐 id 独立删除，保留已提交的结果和每项错误码。
 func batchDeleteInspection(context *gin.Context, handler *Handler, deleteOne func(*gin.Context, int64) error) {
 	var input struct {
 		IDs []int64 `json:"ids"`
@@ -19,19 +15,9 @@ func batchDeleteInspection(context *gin.Context, handler *Handler, deleteOne fun
 		response.BusinessError(context, 400, "ids must be a non-empty array", nil)
 		return
 	}
-	results := make([]gin.H, 0, len(input.IDs))
-	okCount := 0
+	results := make([]response.BatchResult, 0, len(input.IDs))
 	for _, id := range input.IDs {
-		if err := deleteOne(context, id); err != nil {
-			message := err.Error()
-			if errors.Is(err, sql.ErrNoRows) {
-				message = "resource not found"
-			}
-			results = append(results, gin.H{"id": id, "ok": false, "message": message})
-			continue
-		}
-		okCount++
-		results = append(results, gin.H{"id": id, "ok": true, "message": ""})
+		results = append(results, response.BatchItem(id, deleteOne(context, id)))
 	}
-	response.Success(context, gin.H{"count": okCount, "results": results})
+	response.Batch(context, results)
 }

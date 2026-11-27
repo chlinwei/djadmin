@@ -8,6 +8,7 @@ import (
 
 	"autoadmin/internal/platform/database"
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/batchwrite"
 	"autoadmin/internal/shared/pagination"
 )
 
@@ -86,10 +87,10 @@ func (repository *Repository) List(ctx context.Context, search string, page pagi
 
 func (repository *Repository) ReplaceRoles(ctx context.Context, userID int32, roleIDs []int32) error {
 	return database.InTransaction(ctx, repository.pool, func(queries *db.Queries) error {
-		if err := queries.DeleteUserRoles(ctx, userID); err != nil {
+		if _, err := queries.DeleteUserRoles(ctx, userID); err != nil {
 			return fmt.Errorf("delete user roles: %w", err)
 		}
-		for _, roleID := range uniqueIDs(roleIDs) {
+		for _, roleID := range batchwrite.UniqueIDs(roleIDs) {
 			if err := queries.AddUserRole(ctx, db.AddUserRoleParams{UserID: userID, RoleID: roleID}); err != nil {
 				return fmt.Errorf("add user role %d: %w", roleID, err)
 			}
@@ -118,35 +119,26 @@ func (repository *Repository) UpdatePassword(ctx context.Context, params db.Upda
 	return repository.queries.UpdateUserPassword(ctx, params)
 }
 
-func (repository *Repository) DeleteMany(ctx context.Context, userIDs []int32) error {
-	return database.InTransaction(ctx, repository.pool, func(queries *db.Queries) error {
-		for _, userID := range uniqueIDs(userIDs) {
-			if err := queries.DeleteUserRoles(ctx, userID); err != nil {
+func (repository *Repository) DeleteMany(ctx context.Context, userIDs []int32) (int64, error) {
+	var roles int64
+	err := database.InTransaction(ctx, repository.pool, func(queries *db.Queries) error {
+		return batchwrite.Each(userIDs, func(userID int32) error {
+			n, err := queries.DeleteUserRoles(ctx, userID)
+			if err != nil {
 				return err
 			}
-			if err := queries.DeleteUserByID(ctx, userID); err != nil {
-				return err
-			}
-		}
-		return nil
+			roles += n
+			return batchwrite.RequireRow(queries.DeleteUserByID(ctx, userID))
+		})
 	})
+	if err != nil {
+		return 0, err
+	}
+	return roles, nil
 }
 
 func validString(value string) sql.NullString {
 	return sql.NullString{String: value, Valid: true}
-}
-
-func uniqueIDs(ids []int32) []int32 {
-	seen := make(map[int32]struct{}, len(ids))
-	result := make([]int32, 0, len(ids))
-	for _, id := range ids {
-		if _, exists := seen[id]; exists {
-			continue
-		}
-		seen[id] = struct{}{}
-		result = append(result, id)
-	}
-	return result
 }
 
 func (repository *Repository) Pool() *sql.DB {

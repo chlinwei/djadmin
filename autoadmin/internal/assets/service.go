@@ -457,16 +457,23 @@ func (s *Service) credentialParams(input CredentialInput, current *db.AssetsCred
 func validateCredential(input CredentialInput) bool {
 	return strings.TrimSpace(input.Username) != "" && (input.AuthType == 1 || input.AuthType == 2) && input.Port > 0 && input.Port <= 65535 && (input.PrivateKey == nil || len(*input.PrivateKey) <= 8192)
 }
-func (s *Service) CreateCredential(ctx context.Context, input CredentialInput) (Credential, error) {
+func (s *Service) newCredentialParams(input CredentialInput) (db.CreateCredentialParams, error) {
 	if !validateCredential(input) {
-		return Credential{}, ErrInvalid
+		return db.CreateCredentialParams{}, ErrInvalid
 	}
 	password, privateKey, err := s.credentialParams(input, nil)
 	if err != nil {
-		return Credential{}, err
+		return db.CreateCredentialParams{}, err
 	}
 	now := time.Now().UTC()
-	id, err := s.repository.CreateCredential(ctx, db.CreateCredentialParams{CreateTime: now, UpdateTime: now, Remark: nullString(input.Remark), Name: nullString(input.Name), Password: password, PrivateKey: privateKey, AuthType: input.AuthType, Username: strings.TrimSpace(input.Username), Port: input.Port})
+	return db.CreateCredentialParams{CreateTime: now, UpdateTime: now, Remark: nullString(input.Remark), Name: nullString(input.Name), Password: password, PrivateKey: privateKey, AuthType: input.AuthType, Username: strings.TrimSpace(input.Username), Port: input.Port}, nil
+}
+func (s *Service) CreateCredential(ctx context.Context, input CredentialInput) (Credential, error) {
+	params, err := s.newCredentialParams(input)
+	if err != nil {
+		return Credential{}, err
+	}
+	id, err := s.repository.CreateCredential(ctx, params)
 	if err != nil {
 		return Credential{}, translate(err)
 	}
@@ -515,7 +522,7 @@ func (s *Service) DeleteCredentials(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return ErrInvalid
 	}
-	return translate(s.repository.DeleteCredentials(ctx, ids))
+	return s.repository.DeleteCredentials(ctx, ids)
 }
 
 func hostGroup(row db.ListHostGroupsRow) HostGroup {
@@ -871,7 +878,7 @@ func (s *Service) DeleteHosts(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return ErrInvalid
 	}
-	return translate(s.repository.DeleteHosts(ctx, ids))
+	return s.repository.DeleteHosts(ctx, ids)
 }
 
 func nullStringPtr(value sql.NullString) *string {

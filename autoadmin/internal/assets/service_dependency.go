@@ -11,6 +11,7 @@ import (
 
 	db "autoadmin/internal/platform/database/generated"
 	"autoadmin/internal/shared/apperror"
+	"autoadmin/internal/shared/batchwrite"
 	"autoadmin/internal/shared/pagination"
 )
 
@@ -235,7 +236,7 @@ func (s *Service) DeleteServiceDependency(ctx context.Context, id int64) error {
 	if _, err = q.LockServiceDependency(ctx, id); err != nil {
 		return translate(err)
 	}
-	if err = q.DeleteServiceDependency(ctx, id); err != nil {
+	if err = batchwrite.RequireRow(q.DeleteServiceDependency(ctx, id)); err != nil {
 		return translate(err)
 	}
 	return translate(tx.Commit())
@@ -313,7 +314,7 @@ func (s *Service) DeleteServiceDependencyType(ctx context.Context, id int64) err
 	if count > 0 {
 		return apperror.New(apperror.CodeInvalidArgument, "交互类型仍被依赖关系引用，不能删除；可停用")
 	}
-	if err = q.DeleteServiceDependencyType(ctx, id); err != nil {
+	if err = batchwrite.RequireRow(q.DeleteServiceDependencyType(ctx, id)); err != nil {
 		return translate(err)
 	}
 	return translate(tx.Commit())

@@ -177,22 +177,28 @@ func (q *Queries) CreateServiceDependencyType(ctx context.Context, arg CreateSer
 	return id, err
 }
 
-const deleteServiceDependency = `-- name: DeleteServiceDependency :exec
+const deleteServiceDependency = `-- name: DeleteServiceDependency :execrows
 DELETE FROM assets_service_dependency WHERE id=$1
 `
 
-func (q *Queries) DeleteServiceDependency(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteServiceDependency, id)
-	return err
+func (q *Queries) DeleteServiceDependency(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteServiceDependency, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteServiceDependencyType = `-- name: DeleteServiceDependencyType :exec
+const deleteServiceDependencyType = `-- name: DeleteServiceDependencyType :execrows
 DELETE FROM assets_service_dependency_type WHERE id=$1
 `
 
-func (q *Queries) DeleteServiceDependencyType(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteServiceDependencyType, id)
-	return err
+func (q *Queries) DeleteServiceDependencyType(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteServiceDependencyType, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const getServiceDependency = `-- name: GetServiceDependency :one

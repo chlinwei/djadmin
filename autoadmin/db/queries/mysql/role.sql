@@ -30,7 +30,7 @@ VALUES (?, ?, ?, ?, ?);
 -- name: UpdateRole :exec
 UPDATE sys_role SET name = ?, code = ?, update_time = ?, remark = ? WHERE id = ?;
 
--- name: DeleteRoleByID :exec
+-- name: DeleteRoleByID :execrows
 DELETE FROM sys_role WHERE id = ?;
 
 -- name: DeleteRoleMenus :exec

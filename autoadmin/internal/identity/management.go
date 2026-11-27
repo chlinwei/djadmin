@@ -87,7 +87,7 @@ func (service *Service) ChangeStatus(ctx context.Context, userID int32, status i
 	return err
 }
 
-func (service *Service) DeleteUsers(ctx context.Context, userIDs []int32) error {
+func (service *Service) DeleteUsers(ctx context.Context, userIDs []int32) (int64, error) {
 	return service.repository.DeleteMany(ctx, userIDs)
 }
 

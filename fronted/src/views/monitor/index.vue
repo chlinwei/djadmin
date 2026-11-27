@@ -883,6 +883,7 @@ import {
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { useHostTargetTable } from '@/util/hostTargetTable'
 import HostTargetPanel from './components/HostTargetPanel.vue'
+import { reportTargetBatch } from './targetBatch'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { formatTimeWithTimezone } from '@/util/timezone'
@@ -1620,9 +1621,6 @@ async function loadMonitorSummary() {
 async function loadPromOverview() {
   const res = await getPrometheusOverview()
   const data = parseApiData(res)
-  if (String(data.status || '').toLowerCase() === 'error') {
-    throw new Error(data.error || 'Prometheus overview 查询失败')
-  }
   const targets = data.targets || {}
   return {
     baseUrl: String(data.prometheus_base_url || ''),
@@ -1635,9 +1633,6 @@ async function loadPromOverview() {
 async function loadPromTargets() {
   const res = await getPrometheusTargets()
   const data = parseApiData(res)
-  if (String(data.status || '').toLowerCase() === 'error') {
-    throw new Error(data.error || 'Prometheus targets 查询失败')
-  }
   return Array.isArray(data.results) ? data.results : []
 }
 
@@ -1645,12 +1640,6 @@ async function loadPromTsdbStatus() {
   try {
     const res = await getPrometheusTsdbStatus()
     const data = parseApiData(res)
-    if (String(data.status || '').toLowerCase() === 'error') {
-      return {
-        result: {},
-        error: data.error || 'Prometheus TSDB 状态查询失败',
-      }
-    }
     return {
       result: data.result && typeof data.result === 'object' ? data.result : {},
       error: '',
@@ -1667,12 +1656,6 @@ async function loadPromConfig() {
   try {
     const res = await getPrometheusConfig()
     const data = parseApiData(res)
-    if (String(data.status || '').toLowerCase() === 'error') {
-      return {
-        yaml: '',
-        error: data.error || 'Prometheus Config 查询失败',
-      }
-    }
     const yaml = String(data.config_yaml || data.result?.yaml || '')
     return {
       yaml,
@@ -1690,12 +1673,6 @@ async function loadPromFlags() {
   try {
     const res = await getPrometheusFlags()
     const data = parseApiData(res)
-    if (String(data.status || '').toLowerCase() === 'error') {
-      return {
-        rows: [],
-        error: data.error || 'Prometheus 启动参数查询失败',
-      }
-    }
 
     const result = data.result && typeof data.result === 'object' ? data.result : {}
     const rows = Object.entries(result).map(([key, value]) => ({
@@ -1839,19 +1816,6 @@ function handleExporterTypeChange(value) {
   }
 }
 
-// 批量纳管/启停/删除都是逐台执行，部分失败是常态；把失败主机和原因摊开，避免只报笼统错误。
-function reportFilebeatBatchResult(label, data) {
-  const results = Array.isArray(data?.results) ? data.results : []
-  const failed = results.filter((item) => !item.ok)
-  if (failed.length === 0) {
-    message.success(`${label}成功：${data?.success ?? results.length} 台`)
-    return
-  }
-  const detail = failed.slice(0, 3).map((item) => `${item.host}：${item.message}`).join('；')
-  const suffix = failed.length > 3 ? ` 等 ${failed.length} 台` : ''
-  message.warning(`${label}完成：成功 ${data?.success ?? results.length - failed.length} 台，失败 ${failed.length} 台。${detail}${suffix}`)
-}
-
 async function submitExporterCreate() {
   if (!canCreateTarget.value) return
   if (!exporterCreateForm.exporter_type) {
@@ -1865,13 +1829,12 @@ async function submitExporterCreate() {
   }
   exporterCreateSubmitting.value = true
   try {
-    const data = parseApiData(await batchCreateMonitorTargets({
+    await reportTargetBatch('纳管并下发安装', batchCreateMonitorTargets({
       host_ids: exporterCreateHostIds.value,
       exporter_type: exporterCreateForm.exporter_type,
       scrape_port: port,
       install_now: true,
     }))
-    reportFilebeatBatchResult('纳管并下发安装', data)
     exporterCreateModalVisible.value = false
     overviewSelectedHostIds.value = []
     await Promise.all([loadOverviewHosts(), loadOverviewGroupTree()])
@@ -1907,8 +1870,7 @@ async function handleExporterBatch(action) {
   }
   exporterBatchLoading.value = action
   try {
-    const data = parseApiData(await config.request(ids))
-    reportFilebeatBatchResult(config.label, data)
+    await reportTargetBatch(config.label, config.request(ids))
     overviewSelectedHostIds.value = []
     await Promise.all([loadOverviewHosts(), loadOverviewGroupTree()])
     // 批量启停后逐台刷新真实服务状态（systemctl status），否则"Exporter 状态"列

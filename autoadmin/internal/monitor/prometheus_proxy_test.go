@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -108,6 +109,42 @@ func TestPrometheusProxyRejectsPost(t *testing.T) {
 		"/monitor/targets/prometheus/proxy/api/v1/labels", "match[]=up")
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("POST query should not be registered: %d %s", recorder.Code, recorder.Body.String())
+	}
+
+}
+
+func TestPrometheusManagementReadFailureDoesNotReturnEmptySuccess(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		handler func(*Handler, *gin.Context)
+		body    string
+		want    int
+	}{
+		{"alerts unavailable", (*Handler).PrometheusAlerts, `{"status":"error","errorType":"unavailable","error":"storage failed"}`, 502},
+		{"invalid PromQL", (*Handler).PrometheusQuery, `{"status":"error","errorType":"bad_data","error":"invalid expression"}`, 400},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, _, mock := newPrometheusProxyHandler(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(503)
+				fmt.Fprint(w, tc.body)
+			})
+			router := gin.New()
+			router.GET("/read", func(ctx *gin.Context) { tc.handler(handler, ctx) })
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/read?query=up", nil))
+			var envelope struct {
+				Code int
+				Msg  string
+				Data json.RawMessage
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if recorder.Code != 200 || envelope.Code != tc.want || envelope.Msg == "" || string(envelope.Data) != "null" {
+				t.Fatalf("unexpected upstream failure response: %s", recorder.Body.String())
+			}
+			assertConfigQueryConsumed(t, mock)
+		})
 	}
 }
 

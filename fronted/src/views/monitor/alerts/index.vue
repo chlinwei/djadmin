@@ -111,7 +111,8 @@
                       {{ notificationSummaryLabel(record.record.notification_status) }}
                     </a-button>
                   </a-tooltip>
-                  <span v-else>-</span>
+                  <span v-else-if="notificationLookupFailed && record.record.state === 'firing'">通知状态查询失败</span>
+                  <span v-else>{{ record.record.history_id ? '暂无通知记录' : '未关联历史记录' }}</span>
                 </template>
                 <template v-else>{{ record.record[column.dataIndex] || '-' }}</template>
               </template>
@@ -642,27 +643,25 @@ function handleCurrentPaginationChange(page, pageSize) {
   currentPagination.pageSize = pageSize
 }
 
+const notificationLookupFailed = ref(false)
+
 async function loadAlerts() {
   loading.value = true
   loadError.value = ''
   try {
     const res = await getPrometheusAlerts()
     const data = parseApiData(res)
-    if (String(data.status || '').toLowerCase() === 'error') {
-      loadError.value = data.error || '查询 Prometheus 告警失败'
-      rawRows.value = []
-      firingCount.value = 0
-      resolvedCount.value = 0
-      return
-    }
     firingCount.value = Number(data.firing_count || 0)
     resolvedCount.value = Number(data.resolved_count || 0)
+    notificationLookupFailed.value = data.notification_lookup_failed === true
     const results = Array.isArray(data.results) ? data.results : []
     rawRows.value = results.map((item, index) => ({ rowKey: `${item.name}-${item.instance}-${index}`, ...item }))
   } catch (error) {
     loadError.value = error?.response?.data?.msg || error?.message || '加载告警失败'
-    message.warning(loadError.value)
     rawRows.value = []
+    firingCount.value = 0
+    resolvedCount.value = 0
+    notificationLookupFailed.value = false
   } finally {
     loading.value = false
     lastRefreshAt.value = new Date()

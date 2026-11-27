@@ -2394,13 +2394,13 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     const { message } = await import('ant-design-vue')
     const errorSpy = vi.spyOn(message, 'error').mockImplementation(() => {})
     getApplicationServiceLogConfig.mockResolvedValueOnce({ data: { data: configWithTwoLogs() } })
-    batchSaveApplicationServiceLogSettings.mockResolvedValueOnce({ data: { data: {
+    batchSaveApplicationServiceLogSettings.mockRejectedValueOnce({ response: { data: { code: 10001, data: {
       count: 1,
       results: [
-        { id: 81, ok: true, message: '' },
-        { id: 82, ok: false, message: '该日志不属于本服务的部署模板' },
+        { id: 81, code: 200, ok: true, message: '' },
+        { id: 82, code: 404, ok: false, message: '该日志不属于本服务的部署模板' },
       ],
-    } } })
+    } } } })
     const wrapper = await mountPage()
     wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
     await flushPromises()
@@ -2412,6 +2412,7 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     // 失败项用日志名报出来（后端只回日志定义 id，界面要把它翻成用户认识的日志名）。
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('error.log'))
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('该日志不属于本服务的部署模板'))
+    expect(getApplicationServiceLogConfig).toHaveBeenCalledTimes(2)
     errorSpy.mockRestore()
     wrapper.unmount()
   })

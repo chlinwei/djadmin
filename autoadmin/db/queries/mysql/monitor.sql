@@ -290,6 +290,17 @@ LIMIT ? OFFSET ?;
 -- name: GetAlertHistoryAlertnameInstance :one
 SELECT alertname, instance FROM monitor_alert_history WHERE id = sqlc.arg(id);
 
+-- name: ListCurrentAlertNotificationSummaries :many
+SELECT ah.id, ah.fingerprint, ah.started_at,
+       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id) AS notification_count,
+       (SELECT COUNT(*) FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id = ah.id) AS notification_delivery_count,
+       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status = 'failed') AS notification_failed_count,
+       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('pending','sending')) AS notification_active_count
+FROM monitor_alert_history ah
+WHERE ah.source = 'prometheus' AND ah.state = 'firing'
+  AND ah.started_at >= sqlc.arg(earliest_active_at)
+  AND ah.started_at <= sqlc.arg(observed_at);
+
 -- name: ListAlertNotificationEvents :many
 SELECT id, create_time, update_time, remark, event_type, deduplication_key, status, attempt_count,
        error_message, sent_at, alert_id
@@ -360,7 +371,7 @@ SET default_port=sqlc.arg(default_port),
     platform_major=sqlc.arg(platform_major), update_time=sqlc.arg(update_time)
 WHERE id=sqlc.arg(id);
 
--- name: DeleteSoftwarePackage :exec
+-- name: DeleteSoftwarePackage :execrows
 DELETE FROM monitor_software_package WHERE id=sqlc.arg(id);
 
 -- name: ClearSoftwarePackageInstallTemplate :exec
@@ -395,6 +406,10 @@ INSERT IGNORE INTO monitor_target(create_time,update_time,remark,host_id,exporte
 VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(host_id),sqlc.arg(exporter_type),
         sqlc.arg(scrape_port),TRUE,'unknown','',0,'unknown','{}',FALSE);
 
+-- name: GetMonitorTargetPatchForUpdate :one
+SELECT exporter_type, scrape_port, managed_enabled, labels, remark
+FROM monitor_target WHERE id = sqlc.arg(id) FOR UPDATE;
+
 -- name: UpdateMonitorTargetPatch :exec
 UPDATE monitor_target
 SET exporter_type=sqlc.arg(exporter_type), scrape_port=sqlc.arg(scrape_port),
@@ -405,22 +420,18 @@ WHERE id=sqlc.arg(id);
 -- name: GetMonitorTargetState :one
 SELECT managed_enabled, install_status FROM monitor_target WHERE id = sqlc.arg(id);
 
--- name: DeleteMonitorTarget :exec
-DELETE FROM monitor_target WHERE id = sqlc.arg(id);
+-- name: DeleteMonitorTarget :execrows
+DELETE FROM monitor_target WHERE id = sqlc.arg(id)
+AND managed_enabled = FALSE AND install_status <> 'pending';
 
 -- name: GetLatestTargetInstallHistory :one
 SELECT id, status, start_time FROM monitor_target_install_history
-WHERE target_id = sqlc.arg(target_id) ORDER BY id DESC LIMIT 1;
+WHERE target_id = sqlc.arg(target_id) ORDER BY id DESC LIMIT 1 FOR UPDATE;
 
 -- name: CancelInstallHistory :exec
 UPDATE monitor_target_install_history
 SET status='cancelled', summary_message='任务已取消', error_message_snapshot='任务已由用户取消',
     end_time=sqlc.arg(end_time), duration_seconds=sqlc.arg(duration_seconds), update_time=sqlc.arg(update_time)
-WHERE id=sqlc.arg(id);
-
--- name: MarkTargetInstallCancelled :exec
-UPDATE monitor_target
-SET install_status='failed', install_message='安装/卸载任务已取消', update_time=sqlc.arg(update_time)
 WHERE id=sqlc.arg(id);
 
 -- name: GetTargetServiceContext :one
@@ -637,7 +648,7 @@ WHERE id=sqlc.arg(id);
 
 -- 入队去重：deduplication_key 是唯一键，"已有事件"即影响行数为 0。
 -- MySQL 用 INSERT IGNORE（影响行数 0），PG 侧派生为 ON CONFLICT DO NOTHING
--- （被跳过时 RETURNING 不返回行）；两侧判定见 alert_event_dialect_*.go。
+-- （被跳过时 RETURNING 不返回行）；两侧由 database.InsertIfAbsentResult 统一解释。
 -- name: CreateAlertNotificationEventIfAbsent :execresult
 INSERT IGNORE INTO monitor_alert_notification_event
   (create_time,update_time,remark,event_type,deduplication_key,status,attempt_count,error_message,sent_at,alert_id)
@@ -825,7 +836,7 @@ SET update_time=sqlc.arg(update_time),remark=sqlc.arg(remark),parent_id=sqlc.nar
     notify_on_firing=sqlc.arg(notify_on_firing),notify_on_resolved=sqlc.arg(notify_on_resolved)
 WHERE id=sqlc.arg(id);
 
--- name: DeleteNotificationPolicy :exec
+-- name: DeleteNotificationPolicy :execrows
 DELETE FROM monitor_notification_policy WHERE id=sqlc.arg(id);
 
 -- ---- 告警摄取 webhook（monitor_alert_history）----
@@ -1110,10 +1121,10 @@ SET last_applied_time=sqlc.arg(last_applied_time),
     update_time=sqlc.arg(update_time)
 WHERE id = sqlc.arg(id);
 
--- name: MarkLogTargetInstallCancelled :exec
-UPDATE monitor_log_collection_target
-SET install_status='failed', install_message='安装/卸载任务已取消', update_time=sqlc.arg(update_time)
-WHERE id = sqlc.arg(id);
+-- name: GetLatestLogTargetInstallHistoryForUpdate :one
+SELECT id, status, create_time FROM monitor_target_install_history
+WHERE log_collection_target_id = sqlc.arg(log_collection_target_id)
+ORDER BY id DESC LIMIT 1 FOR UPDATE;
 
 -- 删除目标前解除安装历史的外键引用（历史本身保留，供追溯）。
 -- name: DetachInstallHistoryFromLogTarget :exec

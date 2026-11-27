@@ -11,7 +11,6 @@ The Go backend of djadmin (`autoadmin`). It serves the Vue frontend's existing A
 - jackc/pgx v5 (`-tags postgres` build)
 - robfig/cron v3.0.1
 - RabbitMQ 4.3.5 with amqp091-go v1.14.0
-- go-ansible v2.4.1
 - golang-migrate v4.19.1
 - `log/slog` for structured logging
 
@@ -93,7 +92,7 @@ internal/platform/database/      database pool, query derivation, dialect facade
   generated/postgres/            PostgreSQL sqlc output (-tags postgres)
 internal/messaging/rabbitmq/     durable topology, publisher and consumer
 internal/scheduler/              durable database scheduling and direct cleanup execution
-internal/automation/ansible/     go-ansible adapter
+internal/automation/ansiblecmd/  ansible-playbook command resolution
 sqlc.yaml                        sqlc config: both dialects (make generate emits both)
 db/schema/<dialect>/             schema baseline consumed by sqlc, one per dialect
 db/queries/mysql/                the single hand-maintained source of queries

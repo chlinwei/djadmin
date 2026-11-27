@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"autoadmin/internal/api/response"
+	"autoadmin/internal/shared/batchwrite"
 
 	"github.com/gin-gonic/gin"
 )
@@ -136,10 +137,7 @@ func (handler *Handler) deleteSoftwarePackageByID(context *gin.Context, id int64
 	if err = handler.deleteSoftwarePackageFile(item.File); err != nil {
 		return err
 	}
-	if err = db.New(handler.db).DeleteSoftwarePackage(context, item.ID); err != nil {
-		return err
-	}
-	return nil
+	return batchwrite.RequireRow(db.New(handler.db).DeleteSoftwarePackage(context, item.ID))
 }
 
 func (handler *Handler) BatchDeleteSoftwarePackages(context *gin.Context) {
@@ -147,19 +145,9 @@ func (handler *Handler) BatchDeleteSoftwarePackages(context *gin.Context) {
 	if !ok {
 		return
 	}
-	results := make([]gin.H, 0, len(ids))
-	okCount := 0
+	results := make([]response.BatchResult, 0, len(ids))
 	for _, id := range ids {
-		if err := handler.deleteSoftwarePackageByID(context, id); err != nil {
-			message := err.Error()
-			if err == sql.ErrNoRows {
-				message = "resource not found"
-			}
-			results = append(results, gin.H{"id": id, "ok": false, "message": message})
-			continue
-		}
-		okCount++
-		results = append(results, gin.H{"id": id, "ok": true, "message": ""})
+		results = append(results, response.BatchItem(id, handler.deleteSoftwarePackageByID(context, id)))
 	}
-	response.Success(context, gin.H{"count": okCount, "results": results})
+	response.Batch(context, results)
 }

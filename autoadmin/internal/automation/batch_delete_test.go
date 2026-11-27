@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"autoadmin/internal/shared/apperror"
+
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 	"github.com/go-sql-driver/mysql"
@@ -37,7 +39,7 @@ func TestInventoryDeleteReferenceMessage(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		engine.ServeHTTP(recorder, request)
 		body := recorder.Body.String()
-		if recorder.Code != 200 || !strings.Contains(body, `"ok":false`) ||
+		if recorder.Code != 200 || !strings.Contains(body, `"code":400`) || !strings.Contains(body, `"ok":false`) ||
 			!strings.Contains(body, `"count":0`) || !strings.Contains(body, "Inventory 仍被自动化任务引用") ||
 			strings.Contains(body, "database constraint details") {
 			t.Fatalf("unexpected deletion response: %s", body)
@@ -163,7 +165,7 @@ func TestBatchDeleteReportsPartialFailure(t *testing.T) {
 	ctx, _ := gin.CreateTestContext(recorder)
 	respondBatchDelete(ctx, []int64{34, 35}, func(id int64) error {
 		if id == 34 {
-			return errors.New("作业仍在运行")
+			return apperror.New(apperror.CodeInvalidArgument, "作业仍在运行")
 		}
 		return nil
 	})
@@ -181,7 +183,7 @@ func TestBatchDeleteReportsPartialFailure(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if recorder.Code != 200 || payload.Code != 200 || payload.Data.Count != 1 || len(payload.Data.Results) != 2 {
+	if recorder.Code != 200 || payload.Code != apperror.CodeBatchPartial || payload.Data.Count != 1 || len(payload.Data.Results) != 2 {
 		t.Fatalf("unexpected response: %s", recorder.Body.String())
 	}
 	if payload.Data.Results[0].OK || payload.Data.Results[0].Message == "" || !payload.Data.Results[1].OK {

@@ -313,7 +313,7 @@ import { batchDeleteUser } from '@/api/user/index.js';
 // 批量删除用户
 const confirm = () => {
     state.loading = true;
-    batchDeleteUser(state.selectedRowKeys).then((res) => {
+    return batchDeleteUser(state.selectedRowKeys).then((res) => {
         if (res.data.code == 200) {
             HandleInitUserList();
             message.success("删除成功");
@@ -334,15 +334,14 @@ const setRowLoading = (id, isLoading) => {
 };
 const delUserconfirm = (user_id) => {
     setRowLoading(user_id, true)
-    batchDeleteUser([user_id]).then((res) => {
+    return batchDeleteUser([user_id]).then((res) => {
         if (res.data.code == 200) {
             HandleInitUserList();
             message.success("删除成功");
         } else {
             message.error("删除失败: " + res.data.msg);
         }
-        setRowLoading(user_id, false)
-    })
+    }).finally(() => setRowLoading(user_id, false))
 }
 const rowLoadingStates2 = reactive({
 });

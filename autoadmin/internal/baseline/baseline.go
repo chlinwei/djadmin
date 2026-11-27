@@ -13,6 +13,8 @@ import (
 	"autoadmin/internal/agent"
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/job"
+	"autoadmin/internal/shared/apperror"
+	"autoadmin/internal/shared/batchwrite"
 	"autoadmin/internal/shared/opapolicy"
 
 	"github.com/gin-gonic/gin"
@@ -146,11 +148,23 @@ func (handler *Handler) SaveBaseline(context *gin.Context) {
 		response.BusinessError(context, 400, "请求参数无效", nil)
 		return
 	}
+	id := pathID(context)
+	// items replaces one baseline's entire policy set. The baseline, not its
+	// transient child rows, is the committed unit (even when clearing all items).
+	report := func(err error) {
+		if input.Items != nil && id > 0 {
+			response.BatchWith(context, []response.BatchResult{response.BatchItem(id, err)}, gin.H{"id": id})
+		} else if err != nil {
+			response.Error(context, err)
+		} else {
+			response.Success(context, gin.H{"id": id})
+		}
+	}
+	invalid := func(message string) { report(apperror.New(apperror.CodeInvalidArgument, message)) }
 	if input.Name == nil || strings.TrimSpace(*input.Name) == "" {
-		response.BusinessError(context, 400, "基线名称不能为空", nil)
+		invalid("基线名称不能为空")
 		return
 	}
-	id := pathID(context)
 	if id == 0 && input.Items != nil && len(*input.Items) > 0 {
 		response.BusinessError(context, 400, "请先保存基线，再添加策略", nil)
 		return
@@ -161,27 +175,27 @@ func (handler *Handler) SaveBaseline(context *gin.Context) {
 		for _, item := range *input.Items {
 			name := strings.TrimSpace(item.Name)
 			if name == "" {
-				response.BusinessError(context, 400, "基线策略名称不能为空", nil)
+				invalid("基线策略名称不能为空")
 				return
 			}
 			if item.CategoryID <= 0 {
-				response.BusinessError(context, 400, fmt.Sprintf("基线策略 %q 缺少类目", name), nil)
+				invalid(fmt.Sprintf("基线策略 %q 缺少类目", name))
 				return
 			}
 			categoryIDs[item.CategoryID] = true
 			if seen[name] {
-				response.BusinessError(context, 400, fmt.Sprintf("基线策略名称不能重复: %q", name), nil)
+				invalid(fmt.Sprintf("基线策略名称不能重复: %q", name))
 				return
 			}
 			seen[name] = true
 			// 唯一执行器 OPA：config 必须是对象且通过共享校验。
 			var opaConfig map[string]any
 			if err := json.Unmarshal(item.Config, &opaConfig); err != nil {
-				response.BusinessError(context, 400, fmt.Sprintf("基线策略 %q 的 config 必须是对象", name), nil)
+				invalid(fmt.Sprintf("基线策略 %q 的 config 必须是对象", name))
 				return
 			}
 			if message := opapolicy.Validate(opaConfig); message != "" {
-				response.BusinessError(context, 400, fmt.Sprintf("基线策略 %q: %s", name, message), nil)
+				invalid(fmt.Sprintf("基线策略 %q: %s", name, message))
 				return
 			}
 		}
@@ -194,7 +208,7 @@ func (handler *Handler) SaveBaseline(context *gin.Context) {
 		if id > 0 && len(categoryIDs) > 0 {
 			ownedCategories, err := db.New(handler.db).ListBaselineCategories(context, id)
 			if err != nil {
-				response.Error(context, err)
+				report(err)
 				return
 			}
 			owned := make(map[int64]bool, len(ownedCategories))
@@ -203,7 +217,7 @@ func (handler *Handler) SaveBaseline(context *gin.Context) {
 			}
 			for categoryID := range categoryIDs {
 				if !owned[categoryID] {
-					response.BusinessError(context, 400, "策略的类目不存在或不属于当前基线", nil)
+					invalid("策略的类目不存在或不属于当前基线")
 					return
 				}
 			}
@@ -219,7 +233,7 @@ func (handler *Handler) SaveBaseline(context *gin.Context) {
 	name := strings.TrimSpace(*input.Name)
 	tx, err := handler.db.BeginTx(context, nil)
 	if err != nil {
-		response.Error(context, err)
+		report(err)
 		return
 	}
 	defer tx.Rollback()
@@ -233,16 +247,19 @@ func (handler *Handler) SaveBaseline(context *gin.Context) {
 			return
 		}
 	} else {
-		err = queries.UpdateBaseline(context, db.UpdateBaselineParams{UpdateTime: now, Name: name, Version: version,
-			Description: description, Enabled: enabled, ID: id})
+		err = batchwrite.RequireRow(queries.UpdateBaseline(context, db.UpdateBaselineParams{UpdateTime: now, Name: name, Version: version,
+			Description: description, Enabled: enabled, ID: id}))
+		if isNoRows(err) {
+			err = apperror.ErrResourceNotFound
+		}
 	}
 	if err != nil {
-		response.Error(context, err)
+		report(err)
 		return
 	}
 	if input.Items != nil {
 		if err = queries.DeleteBaselineItems(context, id); err != nil {
-			response.Error(context, err)
+			report(err)
 			return
 		}
 		for index, item := range *input.Items {
@@ -255,16 +272,16 @@ func (handler *Handler) SaveBaseline(context *gin.Context) {
 				CreateTime: now, UpdateTime: now, BaselineID: id, CategoryID: item.CategoryID, Sort: uint32(index),
 				Name: strings.TrimSpace(item.Name), Description: item.Description, Config: item.Config, Severity: severity,
 			}); err != nil {
-				response.Error(context, err)
+				report(err)
 				return
 			}
 		}
 	}
 	if err = tx.Commit(); err != nil {
-		response.Error(context, err)
+		report(err)
 		return
 	}
-	response.Success(context, gin.H{"id": id})
+	report(nil)
 }
 
 func (handler *Handler) DeleteBaseline(context *gin.Context) {

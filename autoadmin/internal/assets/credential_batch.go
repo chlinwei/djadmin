@@ -6,14 +6,15 @@ import (
 	"strconv"
 	"strings"
 
+	"autoadmin/internal/api/batchcrud"
 	"autoadmin/internal/api/response"
+	"autoadmin/internal/platform/database"
+	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/apperror"
+	"autoadmin/internal/shared/batchwrite"
 
 	"github.com/gin-gonic/gin"
 )
-
-// 凭证 CSV 批量导入（POST /assets/credentials/batch-create/），对应 Django batchCreate action。
-// CSV 表头与凭证字段同名：name,username,password,private_key,port,auth_type,remark；
-// 整批要么全部成功、要么在第一处失败中止并提示行号（与 Django serializer many 校验语义一致）。
 
 const (
 	credentialBatchMaxRows  = 1000
@@ -36,6 +37,10 @@ func (h *Handler) BatchCreateCredentials(c *gin.Context) {
 	}
 	if !strings.HasSuffix(strings.ToLower(file.Filename), ".csv") {
 		response.BusinessError(c, 400, "仅支持 .csv 文件", nil)
+		return
+	}
+	if file.Size > credentialBatchMaxBytes {
+		response.BusinessError(c, 400, "CSV 不可超过 5 MiB", nil)
 		return
 	}
 	opened, err := file.Open()
@@ -75,7 +80,16 @@ func (h *Handler) BatchCreateCredentials(c *gin.Context) {
 		}
 		return strings.TrimSpace(row[index])
 	}
-	created := make([]Credential, 0, len(records)-1)
+	// Rows have no persistent identity until commit. Use record numbers (header = 1)
+	// on both paths; never expose credentials or rolled-back database IDs in results.
+	rows := make([]int64, len(records)-1)
+	for i := range rows {
+		rows[i] = int64(i + 2)
+	}
+	failRow := func(row int64, cause error) {
+		response.Batch(c, batchcrud.AtomicResults(rows, &batchwrite.ItemError{ID: row, Cause: cause}))
+	}
+	params := make([]db.CreateCredentialParams, len(rows))
 	for rowNumber, row := range records[1:] {
 		input := CredentialInput{
 			Name:       stringPointer(cell(row, "name")),
@@ -87,7 +101,7 @@ func (h *Handler) BatchCreateCredentials(c *gin.Context) {
 		if value := cell(row, "port"); value != "" {
 			port, parseErr := strconv.ParseUint(value, 10, 32)
 			if parseErr != nil {
-				response.BusinessError(c, 400, "第 "+strconv.Itoa(rowNumber+2)+" 行导入失败: port 必须是数字", nil)
+				failRow(rows[rowNumber], apperror.New(400, "port 必须是数字"))
 				return
 			}
 			input.Port = uint32(port)
@@ -95,17 +109,37 @@ func (h *Handler) BatchCreateCredentials(c *gin.Context) {
 		if value := cell(row, "auth_type"); value != "" {
 			authType, parseErr := strconv.ParseInt(value, 10, 32)
 			if parseErr != nil {
-				response.BusinessError(c, 400, "第 "+strconv.Itoa(rowNumber+2)+" 行导入失败: auth_type 必须是 1(密码) 或 2(SSH Key)", nil)
+				failRow(rows[rowNumber], apperror.New(400, "auth_type 必须是 1(密码) 或 2(SSH Key)"))
 				return
 			}
 			input.AuthType = int32(authType)
 		}
-		item, err := h.service.CreateCredential(c.Request.Context(), input)
+		params[rowNumber], err = h.service.newCredentialParams(input)
 		if err != nil {
-			response.BusinessError(c, 400, "第 "+strconv.Itoa(rowNumber+2)+" 行导入失败: "+err.Error(), nil)
+			failRow(rows[rowNumber], err)
 			return
 		}
-		created = append(created, item)
 	}
-	response.Success(c, gin.H{"count": len(created), "results": created})
+	ctx := c.Request.Context()
+	created := make([]int64, len(rows))
+	err = database.InTransaction(ctx, h.service.repository.pool, func(q *db.Queries) error {
+		return batchwrite.Each(rows, func(row int64) error {
+			result, err := q.CreateCredential(ctx, params[row-2])
+			if err != nil {
+				return translate(err)
+			}
+			if err := batchwrite.RequireRow(result.RowsAffected()); err != nil {
+				return err
+			}
+			created[row-2], err = result.LastInsertId()
+			return err
+		})
+	})
+	results := batchcrud.AtomicResults(rows, err)
+	if err == nil {
+		for i := range results {
+			results[i].Detail = gin.H{"credential_id": created[i]}
+		}
+	}
+	response.Batch(c, results)
 }

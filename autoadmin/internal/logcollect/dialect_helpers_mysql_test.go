@@ -19,6 +19,10 @@ func expectCreatedConflictService(mock sqlmock.Sqlmock, id int64) {
 		WillReturnResult(sqlmock.NewResult(id, 1))
 }
 
+func expectCreatedBatchRow(mock sqlmock.Sqlmock, query string, id int64) {
+	mock.ExpectExec(query).WillReturnResult(sqlmock.NewResult(id, 1))
+}
+
 // openSmokeDatabase 连真库（冒烟用例用；未设 DSN 时调用方自行 t.Skip）。
 func openSmokeDatabase(ctx context.Context, dsn string) (*sql.DB, error) {
 	return database.Open(ctx, database.Configuration{

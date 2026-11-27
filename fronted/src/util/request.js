@@ -3,6 +3,7 @@ import axios from 'axios';
 import {getToken} from '@/api/user'
 import router from '@/router';
 import { message } from 'ant-design-vue';
+import { batchFailureReason } from './batchFeedback'
 
 
 const defaultBaseUrl = `${window.location.protocol}//${window.location.hostname}:9000`
@@ -19,6 +20,16 @@ const httpService = axios.create({
 });
 
 let redirectingToLogin = false
+
+class BusinessError extends Error {
+    constructor(response, fallbackMessage) {
+        super(response.data.msg || fallbackMessage)
+        this.name = 'BusinessError'
+        // 批量操作可能已提交部分结果；调用方必须能读取完整响应并刷新界面。
+        this.response = response
+        this.code = response.data.code
+    }
+}
 
 function clearAuthState() {
     localStorage.removeItem('token')
@@ -42,25 +53,28 @@ function handleAuthExpired(msg) {
     })
 }
 
-// DRF 错误体形态不固定：字符串、数组、{detail: ...} 或 {字段: [文案]}，统一拍平成一行可读文案。
-function extractErrorDetail(data, depth = 0) {
-    if (data === null || data === undefined || depth > 3) return ''
-    if (typeof data === 'string') return data.trim()
-    if (Array.isArray(data)) {
-        return data.map((item) => extractErrorDetail(item, depth + 1)).filter(Boolean).join('；')
+function businessErrorMessage(payload) {
+    const results = payload?.data?.results
+    if (!Array.isArray(results) || (results.length === 1 && !results[0]?.detail)) return payload.msg
+    const failures = results.filter((item) => item?.ok === false)
+    if (!failures.length) return payload.msg
+    const details = failures.map(batchFailureReason)
+    return `${payload.msg}：${details.join('；')}`
+}
+
+// HTTP 非 2xx 也可能携带标准业务信封；同一错误只在一处解释，保留 data。
+// 协议响应（Prometheus、下载等）不能只因包含一个同名字段而被当作业务错误。
+function checkBusinessResponse(response) {
+    const payload = response?.data
+    if (!Number.isInteger(payload?.code) || typeof payload.msg !== 'string' ||
+        !Object.hasOwn(payload, 'data') || payload.code === 200) return response
+
+    if (payload.code === 301) {
+        handleAuthExpired(payload.msg)
+    } else if (!response.config?.suppressBusinessErrorMessage) {
+        message.error(businessErrorMessage(payload))
     }
-    if (typeof data === 'object') {
-        if (data.detail) return extractErrorDetail(data.detail, depth + 1)
-        return Object.entries(data)
-            .map(([field, value]) => {
-                const text = extractErrorDetail(value, depth + 1)
-                if (!text) return ''
-                return field === 'non_field_errors' ? text : `${field}: ${text}`
-            })
-            .filter(Boolean)
-            .join('；')
-    }
-    return ''
+    throw new BusinessError(response, '请求失败')
 }
 
 //添加请求和响应拦截器
@@ -75,52 +89,16 @@ httpService.interceptors.request.use(function (config) {
 });
 
 // 添加响应拦截器
-httpService.interceptors.response.use(function (response) {
-    // 对响应数据做点什么
-    const responseData = response?.data
-    const isBusinessEnvelope =
-        responseData &&
-        typeof responseData === 'object' &&
-        Object.prototype.hasOwnProperty.call(responseData, 'code') &&
-        Object.prototype.hasOwnProperty.call(responseData, 'msg') &&
-        Object.prototype.hasOwnProperty.call(responseData, 'data')
-
-    // 301 在后端定义为登录过期，统一在拦截器里处理，确保所有 HTTP 方法都能自动跳转登录页。
-    if (responseData && typeof responseData === 'object' && Number(responseData.code) === 301) {
-        handleAuthExpired(responseData.msg)
-        return Promise.reject(new Error(responseData.msg || '登录过期，请重新登陆'))
-    }
-
-    // 仅在标准业务响应结构下按业务 code 处理，避免把普通业务字段 code 误判为状态码。
-    if (isBusinessEnvelope && responseData.code === 300) {
-        message.error("账号或者密码输入错误")
-        return Promise.reject(new Error(responseData.msg))
-    } else if (isBusinessEnvelope && responseData.code != 200 && responseData.code !== undefined) {
-        if (!response.config?.suppressBusinessErrorMessage) {
-            message.error(responseData.msg)
-        }
-        console.log(response)
-        return Promise.reject(new Error(responseData.msg))
-    }
-    return response;
-
-}, function (error) {
-    // 对响应错误做点什么
-    // 对接某些网关/代理场景，HTTP 401/403 也按登录过期处理。
+httpService.interceptors.response.use(checkBusinessResponse, function (error) {
+    checkBusinessResponse(error.response)
+    // 没有业务错误信封时保留网关的认证处理；业务 403 不应清除有效会话。
     if (error?.response && [401, 403].includes(Number(error.response.status))) {
         handleAuthExpired('登录状态失效，请重新登陆')
     }
-    // DRF 校验失败时 msg 只有 "Bad Request"，真实原因在 data 的字段错误里；
-    // 这里统一改写 msg，使所有读取 response.data.msg 的页面都能提示具体原因。
-    const payload = error?.response?.data
-    if (payload && typeof payload === 'object') {
-        const detail = extractErrorDetail(payload.data)
-        if (detail) {
-            payload.msg = detail
-            error.message = detail
-        }
+    if (!error.response && error.request && error.code !== 'ERR_CANCELED' &&
+        ['post', 'put', 'patch', 'delete'].includes(error.config?.method)) {
+        error.message = '未收到服务器响应，操作结果未知；请刷新核对后再决定是否重试'
     }
-    // 其余错误不在拦截器中显示消息，让各个页面自己处理
     return Promise.reject(error);
 });
 
@@ -175,7 +153,6 @@ export function post(url, params = {}, timeout = null, options = {}) {
         httpService(config).then(response => {
             resolve(response);
         }).catch(error => {
-            console.log(error)
             reject(error);
         });
     });
@@ -195,7 +172,6 @@ export function del(url, params = {}) {
         }).then(response => {
             resolve(response);
         }).catch(error => {
-            console.log(error)
             reject(error);
         });
     });
@@ -274,7 +250,6 @@ export function patch(url, params = {}, options = {}) {
         }).then(response => {
             resolve(response);
         }).catch(error => {
-            console.log(error)
             reject(error);
         });
     });

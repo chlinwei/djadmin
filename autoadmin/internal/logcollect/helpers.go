@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"strings"
 
-	"autoadmin/internal/agent/pb"
 	"autoadmin/internal/api/response"
 
 	"github.com/gin-gonic/gin"
@@ -82,18 +81,6 @@ func ids(context *gin.Context) ([]int64, bool) {
 		return nil, false
 	}
 	return input.IDs, true
-}
-
-// serviceControlResult 判定 agent 的执行结果：Agent 在线且动作已下发时 Execute 的 err 为 nil，
-// 但 systemctl 本身可能失败（服务不存在、权限不足等），必须检查状态/退出码，否则会把失败当成功上报。
-// 注意 Status 为空也是失败：executor 层直接报错（典型是 agent 版本过旧、不认识动作名）时
-// 返回的是零值 JobResult，Status=""、ExitCode=0，只判 "failed" 会被漏过。
-func serviceControlResult(result *pb.AutomationExecuteResponse, action, exporterType string) (gin.H, error) {
-	if action != "status" && (result.Status != "success" || result.ExitCode != 0) {
-		reason := firstNonEmpty(strings.TrimSpace(result.ErrorMessage), strings.TrimSpace(result.Stderr), strings.TrimSpace(result.Stdout))
-		return nil, fmt.Errorf("systemctl %s %s.service failed: %s", action, exporterType, reason)
-	}
-	return gin.H{"job_id": result.JobId, "status": result.Status, "exit_code": result.ExitCode, "stdout": result.Stdout, "stderr": result.Stderr, "error_message": result.ErrorMessage}, nil
 }
 
 // pagination 解析列表接口的 page/page_size（上限 30，与 monitor 的 lists.go 同名同义各持一份）。

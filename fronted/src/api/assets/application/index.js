@@ -143,9 +143,9 @@ export function saveApplicationServiceLogSetting(id, payload) {
 //            collection_filter_rule, collection_exclude_filter_rule }, ...]
 // **每一项都是那一行覆盖值的全集**（与单条接口同语义：缺列 = 清成"不覆盖"），
 // 所以调用方要用页面里的 overridePayload(record, patch) 从服务端回读的行出发构造。
-// 响应：{ count, results: [{ id, ok, message }] }——不属于本服务的日志记 ok=false，不整体失败。
+// 失败时仍返回逐项结果；页面负责显示失败明细及刷新已提交的设置。
 export function batchSaveApplicationServiceLogSettings(id, items) {
-    return requestUtil.post(`${applicationServicePrefix}${id}/log-config/settings/batch/`, { items })
+    return requestUtil.post(`${applicationServicePrefix}${id}/log-config/settings/batch/`, { items }, null, { suppressBusinessErrorMessage: true })
 }
 
 // 日志格式认证：对一条（逻辑服务 × 日志定义）抽样校验一次格式。

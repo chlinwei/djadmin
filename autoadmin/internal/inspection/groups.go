@@ -3,13 +3,13 @@ package inspection
 import (
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"autoadmin/internal/api/response"
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/apperror"
 	"autoadmin/internal/shared/opapolicy"
 
 	"github.com/gin-gonic/gin"
@@ -201,7 +201,7 @@ func (handler *Handler) deleteGroupByID(context *gin.Context, id int64) error {
 		return err
 	}
 	if count > 0 {
-		return errors.New("巡检组已被任务使用，不能删除")
+		return apperror.New(apperror.CodeInvalidArgument, "巡检组已被任务使用，不能删除")
 	}
 	transaction, err := handler.db.BeginTx(context, nil)
 	if err != nil {

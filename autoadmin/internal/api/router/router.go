@@ -14,6 +14,7 @@ import (
 	"autoadmin/internal/audit"
 	"autoadmin/internal/automation"
 	"autoadmin/internal/baseline"
+	"autoadmin/internal/home"
 	"autoadmin/internal/identity"
 	"autoadmin/internal/inspection"
 	"autoadmin/internal/job"
@@ -87,6 +88,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	apiTokenHandler := identity.NewAPITokenHandler(db.New(database))
 	engine.POST("/sys/login", identityHandler.Login)
 	engine.GET("/sys/users/current/", middleware.Authenticate(tokens), identityHandler.Current)
+	engine.GET("/sys/home/overview/", middleware.Authenticate(tokens), home.NewHandler(db.New(database)).Overview)
 	engine.GET(
 		"/sys/users/",
 		middleware.Authenticate(tokens),

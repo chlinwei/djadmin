@@ -7,6 +7,7 @@ import (
 	"time"
 
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/batchwrite"
 	"autoadmin/internal/shared/pagination"
 )
 
@@ -102,7 +103,7 @@ func (r *Repository) UpdateApplication(ctx context.Context, p db.UpdateApplicati
 	return r.queries.UpdateApplication(ctx, p)
 }
 func (r *Repository) DeleteApplication(ctx context.Context, id int64) error {
-	return r.queries.DeleteApplication(ctx, id)
+	return batchwrite.RequireRow(r.queries.DeleteApplication(ctx, id))
 }
 func (r *Repository) ListVersions(ctx context.Context, applicationID int64, search string, page pagination.Page) ([]db.ListApplicationVersionsRow, int64, error) {
 	p := pattern(search)
@@ -127,7 +128,7 @@ func (r *Repository) UpdateVersion(ctx context.Context, p db.UpdateApplicationVe
 	return r.queries.UpdateApplicationVersion(ctx, p)
 }
 func (r *Repository) DeleteVersion(ctx context.Context, id int64) error {
-	return r.queries.DeleteApplicationVersion(ctx, id)
+	return batchwrite.RequireRow(r.queries.DeleteApplicationVersion(ctx, id))
 }
 func (r *Repository) ListProfiles(ctx context.Context, applicationID int64, search string, page pagination.Page) ([]db.ListClusterProfilesRow, int64, error) {
 	p := pattern(search)
@@ -156,7 +157,7 @@ func (r *Repository) UpdateProfile(ctx context.Context, p db.UpdateClusterProfil
 	return r.queries.UpdateClusterProfile(ctx, p)
 }
 func (r *Repository) DeleteProfile(ctx context.Context, id int64) error {
-	return r.queries.DeleteClusterProfile(ctx, id)
+	return batchwrite.RequireRow(r.queries.DeleteClusterProfile(ctx, id))
 }
 
 func (s *Service) ListApplications(ctx context.Context, search string, page pagination.Page) ([]Application, int64, error) {

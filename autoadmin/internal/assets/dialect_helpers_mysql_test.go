@@ -71,3 +71,12 @@ func expectTemplatePortCreate(mock sqlmock.Sqlmock, id int64) {
 	mock.ExpectExec("INSERT INTO assets_application_deployment_template").
 		WillReturnResult(sqlmock.NewResult(id, 1))
 }
+
+func expectCredentialImport(mock sqlmock.Sqlmock, err error) {
+	insert := mock.ExpectExec("INSERT INTO assets_credential")
+	if err != nil {
+		insert.WillReturnError(err)
+	} else {
+		insert.WillReturnResult(sqlmock.NewResult(11, 1))
+	}
+}

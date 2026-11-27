@@ -194,7 +194,7 @@ type Querier interface {
 	// ---- 告警通知分发链路（event / delivery / 失联对账 / 服务树归属）----
 	// 入队去重：deduplication_key 是唯一键，"已有事件"即影响行数为 0。
 	// MySQL 用 INSERT IGNORE（影响行数 0），PG 侧派生为 ON CONFLICT DO NOTHING
-	// （被跳过时 RETURNING 不返回行）；两侧判定见 alert_event_dialect_*.go。
+	// （被跳过时 RETURNING 不返回行）；两侧由 database.InsertIfAbsentResult 统一解释。
 	CreateAlertNotificationEventIfAbsent(ctx context.Context, arg CreateAlertNotificationEventIfAbsentParams) (sql.Result, error)
 	CreateApplication(ctx context.Context, arg CreateApplicationParams) (sql.Result, error)
 	CreateApplicationDeployment(ctx context.Context, arg CreateApplicationDeploymentParams) (int64, error)
@@ -297,17 +297,17 @@ type Querier interface {
 	CreateWebSSHSession(ctx context.Context, arg CreateWebSSHSessionParams) (sql.Result, error)
 	DeactivateOtherAgentPackages(ctx context.Context, id uint64) error
 	DeleteAPIToken(ctx context.Context, id int32) error
-	DeleteAgentPackage(ctx context.Context, id uint64) error
+	DeleteAgentPackage(ctx context.Context, id uint64) (int64, error)
 	DeleteAlertMedia(ctx context.Context, id int64) (sql.Result, error)
 	// 告警历史**有子记录**（通知事件 → 投递记录，外键都无级联），所以清理必须带上它们、且先子后父。
 	// 语义：投递记录是"这条告警的通知轨迹"，告警本身过期被清时它们失去归属；保留期跟着父记录走，
 	// 而不是让父记录因为"有子记录"永远清不掉（那样这条保留期配置就形同虚设）。
 	DeleteAlertNotificationDeliveriesForHistoriesBefore(ctx context.Context, before sql.NullTime) (sql.Result, error)
 	DeleteAlertNotificationEventsForHistoriesBefore(ctx context.Context, before sql.NullTime) (sql.Result, error)
-	DeleteApplication(ctx context.Context, id int64) error
-	DeleteApplicationDeployment(ctx context.Context, id int64) error
-	DeleteApplicationService(ctx context.Context, id int64) error
-	DeleteApplicationVersion(ctx context.Context, id int64) error
+	DeleteApplication(ctx context.Context, id int64) (int64, error)
+	DeleteApplicationDeployment(ctx context.Context, id int64) (int64, error)
+	DeleteApplicationService(ctx context.Context, id int64) (int64, error)
+	DeleteApplicationVersion(ctx context.Context, id int64) (int64, error)
 	DeleteAutomationControllerKeys(ctx context.Context) error
 	// 子表先删（外键无级联）：主机明细 → 作业字节块 → 作业行。只清 end_time 已过保留期的作业，
 	// 运行中（end_time 为空）的一律不碰。
@@ -328,21 +328,21 @@ type Querier interface {
 	DeleteBaselineScanResults(ctx context.Context, baselineID int64) error
 	DeleteBaselineScanTargets(ctx context.Context, baselineID int64) error
 	DeleteBaselineScans(ctx context.Context, baselineID int64) error
-	DeleteBusinessEnvironment(ctx context.Context, id int64) error
-	DeleteBusinessSystem(ctx context.Context, id int64) error
-	DeleteClusterProfile(ctx context.Context, id int64) error
-	DeleteCredential(ctx context.Context, id int64) error
-	DeleteDeploymentTemplate(ctx context.Context, id int64) error
+	DeleteBusinessEnvironment(ctx context.Context, id int64) (int64, error)
+	DeleteBusinessSystem(ctx context.Context, id int64) (int64, error)
+	DeleteClusterProfile(ctx context.Context, id int64) (int64, error)
+	DeleteCredential(ctx context.Context, id int64) (int64, error)
+	DeleteDeploymentTemplate(ctx context.Context, id int64) (int64, error)
 	DeleteElasticsearchCluster(ctx context.Context, id int64) (sql.Result, error)
 	DeleteFinishedInspectionExecutions(ctx context.Context, cutoff sql.NullTime) (int64, error)
 	// 保留期清理：原实现是 MySQL 的多表 DELETE（`DELETE r FROM ... JOIN ...`），PG 不认这个语法，
 	// 改成 `WHERE ... IN (子查询)` —— 两方言都接受（子查询查的是别的表，MySQL 的限制不触发）。
 	DeleteFinishedInspectionResults(ctx context.Context, cutoff sql.NullTime) (int64, error)
 	DeleteFinishedInspectionTargetExecutions(ctx context.Context, cutoff sql.NullTime) (int64, error)
-	DeleteHost(ctx context.Context, id int64) error
+	DeleteHost(ctx context.Context, id int64) (int64, error)
 	// 磁盘表没有按 device 的唯一键：整表重建以丢掉已卸载的分区。
 	DeleteHostDisks(ctx context.Context, hostID int64) error
-	DeleteHostGroup(ctx context.Context, id int64) error
+	DeleteHostGroup(ctx context.Context, id int64) (int64, error)
 	DeleteInactiveLogFormatTargets(ctx context.Context) error
 	DeleteInspectionChecksByGroup(ctx context.Context, groupID int64) error
 	DeleteInspectionGroup(ctx context.Context, id int64) (int64, error)
@@ -362,19 +362,19 @@ type Querier interface {
 	// 外层与里层都必须给这张表起别名（SQL 里出现两次同名关系时，PG 解析 create_time 会报 ambiguous，
 	// sqlc 的 PG 解析器同样卡在这一步）。
 	DeleteMonitorInstallHistoriesBefore(ctx context.Context, before time.Time) (sql.Result, error)
-	DeleteMonitorTarget(ctx context.Context, id int64) error
-	DeleteNotificationPolicy(ctx context.Context, id int64) error
+	DeleteMonitorTarget(ctx context.Context, id int64) (int64, error)
+	DeleteNotificationPolicy(ctx context.Context, id int64) (int64, error)
 	DeleteOperationAuditsBefore(ctx context.Context, createdAt time.Time) (sql.Result, error)
-	DeleteProject(ctx context.Context, id int64) error
+	DeleteProject(ctx context.Context, id int64) (int64, error)
 	// 只清**已恢复**的历史告警：仍在 firing 的记录是"当前状态"，删了会让告警页凭空少一条正在发的告警。
 	// 年龄取 COALESCE(resolved_at, started_at)：恢复时间才是"这条记录还能留多久"的起点，
 	// 而历史数据里有 state=resolved 但 resolved_at 为空的行（Django 时代的），回落到 started_at 才不会漏清。
 	DeleteResolvedAlertHistoriesBefore(ctx context.Context, before sql.NullTime) (sql.Result, error)
-	DeleteRoleByID(ctx context.Context, id int32) error
+	DeleteRoleByID(ctx context.Context, id int32) (int64, error)
 	DeleteRoleMenus(ctx context.Context, roleID int32) error
 	DeleteRoleUsers(ctx context.Context, roleID int32) error
-	DeleteServiceDependency(ctx context.Context, id int64) error
-	DeleteServiceDependencyType(ctx context.Context, id int64) error
+	DeleteServiceDependency(ctx context.Context, id int64) (int64, error)
+	DeleteServiceDependencyType(ctx context.Context, id int64) (int64, error)
 	DeleteServiceDeployments(ctx context.Context, serviceID int64) error
 	DeleteServiceLogSettings(ctx context.Context, serviceID int64) error
 	// 删日志定义前先清掉引用它们的服务级覆盖行：外键没有 ON DELETE CASCADE，不清就删不掉；
@@ -389,7 +389,7 @@ type Querier interface {
 	DeleteServiceLogSettingsByServiceAndDefinitions(ctx context.Context, arg DeleteServiceLogSettingsByServiceAndDefinitionsParams) error
 	DeleteSharedLogSourceLinks(ctx context.Context, sourceID int64) error
 	DeleteSharedLogSourceServiceLink(ctx context.Context, arg DeleteSharedLogSourceServiceLinkParams) error
-	DeleteSoftwarePackage(ctx context.Context, id int64) error
+	DeleteSoftwarePackage(ctx context.Context, id int64) (int64, error)
 	DeleteTemplateComposeConfig(ctx context.Context, deploymentTemplateID int64) error
 	DeleteTemplateConfigFiles(ctx context.Context, deploymentTemplateID int64) error
 	DeleteTemplateControlActions(ctx context.Context, deploymentTemplateID int64) error
@@ -402,10 +402,10 @@ type Querier interface {
 	DeleteUnsharedServiceDeployment(ctx context.Context, id int64) error
 	DeleteUserAlertMediaBindings(ctx context.Context, userID int32) error
 	DeleteUserAvatarContent(ctx context.Context, userID int32) error
-	DeleteUserByID(ctx context.Context, id int32) error
+	DeleteUserByID(ctx context.Context, id int32) (int64, error)
 	DeleteUserGroup(ctx context.Context, id int64) (int64, error)
 	DeleteUserGroupMembers(ctx context.Context, groupID int64) error
-	DeleteUserRoles(ctx context.Context, userID int32) error
+	DeleteUserRoles(ctx context.Context, userID int32) (int64, error)
 	// ---- 四类保留期清理（2026-09-19 从 Django 时代的历史任务迁到 Go）----
 	//
 	// 语义统一：**只删早于保留期的行，绝不动还在进行中的**（运行中的作业 / 没结束的会话都必须留着）；
@@ -561,6 +561,7 @@ type Querier interface {
 	// create_time 用于取消时算时长（该流程的历史行 start_time 为 NULL，只有 create_time
 	// 是派发时刻）。
 	GetLatestLogTargetInstallHistory(ctx context.Context, logCollectionTargetID sql.NullInt64) (GetLatestLogTargetInstallHistoryRow, error)
+	GetLatestLogTargetInstallHistoryForUpdate(ctx context.Context, logCollectionTargetID sql.NullInt64) (GetLatestLogTargetInstallHistoryForUpdateRow, error)
 	// 没有问题记录的通过结果也必须参与时序判断，防止较早失败迟到时把已通过的主机标为未解决。
 	GetLatestSecurityRuleObservation(ctx context.Context, arg GetLatestSecurityRuleObservationParams) (GetLatestSecurityRuleObservationRow, error)
 	GetLatestTargetInstallHistory(ctx context.Context, targetID sql.NullInt64) (GetLatestTargetInstallHistoryRow, error)
@@ -594,6 +595,7 @@ type Querier interface {
 	GetLogVerifyInstanceContext(ctx context.Context, arg GetLogVerifyInstanceContextParams) (GetLogVerifyInstanceContextRow, error)
 	GetMenuByID(ctx context.Context, id int32) (SysMenu, error)
 	GetMonitorTarget(ctx context.Context, id int64) (GetMonitorTargetRow, error)
+	GetMonitorTargetPatchForUpdate(ctx context.Context, id int64) (GetMonitorTargetPatchForUpdateRow, error)
 	GetMonitorTargetState(ctx context.Context, id int64) (GetMonitorTargetStateRow, error)
 	GetNotificationPolicyParent(ctx context.Context, id int64) (int64, error)
 	// ---- 告警摄取 webhook（monitor_alert_history）----
@@ -705,6 +707,7 @@ type Querier interface {
 	ListClusterProfiles(ctx context.Context, arg ListClusterProfilesParams) ([]ListClusterProfilesRow, error)
 	ListConfigs(ctx context.Context, arg ListConfigsParams) ([]SysConfig, error)
 	ListCredentials(ctx context.Context, arg ListCredentialsParams) ([]AssetsCredential, error)
+	ListCurrentAlertNotificationSummaries(ctx context.Context, arg ListCurrentAlertNotificationSummariesParams) ([]ListCurrentAlertNotificationSummariesRow, error)
 	ListDependencyTopologyInstances(ctx context.Context, arg ListDependencyTopologyInstancesParams) ([]ListDependencyTopologyInstancesRow, error)
 	ListDependencyTopologyNodes(ctx context.Context, arg ListDependencyTopologyNodesParams) ([]ListDependencyTopologyNodesRow, error)
 	ListDeploymentControlActions(ctx context.Context, templateID int64) ([]ListDeploymentControlActionsRow, error)
@@ -1037,9 +1040,7 @@ type Querier interface {
 	MarkLogTargetConfigApplied(ctx context.Context, arg MarkLogTargetConfigAppliedParams) error
 	// 指纹变化并下发成功后：记下发时间与指纹。
 	MarkLogTargetConfigSynced(ctx context.Context, arg MarkLogTargetConfigSyncedParams) error
-	MarkLogTargetInstallCancelled(ctx context.Context, arg MarkLogTargetInstallCancelledParams) error
 	MarkLogTargetInstallPending(ctx context.Context, arg MarkLogTargetInstallPendingParams) error
-	MarkTargetInstallCancelled(ctx context.Context, arg MarkTargetInstallCancelledParams) error
 	MarkTargetInstallPending(ctx context.Context, arg MarkTargetInstallPendingParams) error
 	MaxBaselineCategorySort(ctx context.Context, baselineID int64) (int64, error)
 	MaxBaselineItemSort(ctx context.Context, categoryID int64) (int64, error)
@@ -1108,7 +1109,7 @@ type Querier interface {
 	UpdateAutomationPlaybook(ctx context.Context, arg UpdateAutomationPlaybookParams) error
 	UpdateAutomationPlaybookContent(ctx context.Context, arg UpdateAutomationPlaybookContentParams) (int64, error)
 	UpdateAutomationTask(ctx context.Context, arg UpdateAutomationTaskParams) error
-	UpdateBaseline(ctx context.Context, arg UpdateBaselineParams) error
+	UpdateBaseline(ctx context.Context, arg UpdateBaselineParams) (int64, error)
 	UpdateBaselineCategorySort(ctx context.Context, arg UpdateBaselineCategorySortParams) (int64, error)
 	UpdateBaselineItem(ctx context.Context, arg UpdateBaselineItemParams) (int64, error)
 	UpdateBaselineItemSort(ctx context.Context, arg UpdateBaselineItemSortParams) (int64, error)

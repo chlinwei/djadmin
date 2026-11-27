@@ -293,7 +293,7 @@ import { batchDeleteCredential } from '@/api/assets/credential/index'
 const delconfirm = (id) => {
     var ids = [id]
     setRowLoading(id, true)
-    batchDeleteCredential(ids).then((res) => {
+    return batchDeleteCredential(ids).then((res) => {
         if (res.data.code == 200) {
             message.success("删除Credential成功")
             refreshCredentialList()
@@ -314,7 +314,8 @@ const confirm = () => {
     state.selectedRowKeys.forEach((e) => {
         setRowLoading(e, true)
     })
-    batchDeleteCredential(state.selectedRowKeys).then((res) => {
+    const ids = [...state.selectedRowKeys]
+    return batchDeleteCredential(ids).then((res) => {
         if (res.data.code == 200) {
             refreshCredentialList();
             message.success("删除Credential成功");
@@ -325,7 +326,7 @@ const confirm = () => {
 
     }).finally(() => {
         state.loading = false;
-        state.selectedRowKeys.forEach((e) => {
+        ids.forEach((e) => {
             setRowLoading(e, false)
         })
     })
@@ -342,14 +343,20 @@ const beforeUpload = (file) => {
   if (!isCSV) message.error('仅支持CSV格式')
   return isCSV
 }
-const HandleBatchAdd = (file) => {
+const HandleBatchAdd = async ({ file, onSuccess, onError }) => {
     uploading.value = true
-    batchUpload(file).then((res)=>{
-        // 刷新
+    try {
+        const { data } = await batchUpload(file)
+        onSuccess(data)
+        message.success(`已导入 ${data.data.count} 条凭证`)
         initList()
-    }).finally((res)=>{
+    } catch (error) {
+        // 失败由请求层展示逐行原因；原子导入不刷新为“部分成功”。
+        if (error?.isAxiosError) message.error(error.message || '上传失败')
+        onError(error)
+    } finally {
         uploading.value = false
-    })
+    }
 }
 const uploadChange = (info)=>{
     console.log(info.file.status)

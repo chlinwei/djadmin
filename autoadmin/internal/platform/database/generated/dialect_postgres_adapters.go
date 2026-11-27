@@ -41,14 +41,6 @@ func (q *Queries) CountApplications(ctx context.Context, arg CountApplicationsPa
 	return q.Queries.CountApplications(ctx, arg.Pattern)
 }
 
-type CountBusinessSystemsParams struct {
-	Pattern sql.NullString `json:"pattern"`
-}
-
-func (q *Queries) CountBusinessSystems(ctx context.Context, arg CountBusinessSystemsParams) (int64, error) {
-	return q.Queries.CountBusinessSystems(ctx, arg.Pattern)
-}
-
 type CountBusinessEnvironmentsParams struct {
 	Pattern sql.NullString `json:"pattern"`
 }

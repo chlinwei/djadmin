@@ -19,6 +19,10 @@ func expectCreatedConflictService(mock sqlmock.Sqlmock, id int64) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(id))
 }
 
+func expectCreatedBatchRow(mock sqlmock.Sqlmock, query string, id int64) {
+	mock.ExpectQuery(query).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(id))
+}
+
 // openSmokeDatabase 连真库（冒烟用例用；未设 DSN 时调用方自行 t.Skip）。
 // PG 侧连接串走 PostgresDSN，因此与 mysql 版本分文件（同 internal/monitor 的处理）。
 func openSmokeDatabase(ctx context.Context, dsn string) (*sql.DB, error) {

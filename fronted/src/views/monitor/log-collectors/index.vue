@@ -364,6 +364,7 @@ import { formatTimeWithTimezone } from '@/util/timezone'
 import { useHostTargetTable } from '@/util/hostTargetTable'
 import store from '@/store'
 import HostTargetPanel from '../components/HostTargetPanel.vue'
+import { reportTargetBatch } from '../targetBatch'
 
 // 「日志管理 → 日志采集」：Filebeat 纳管目标的独立页面。
 //
@@ -649,8 +650,7 @@ async function handleBatch(action) {
   if (!config || !ids.length) return
   batchLoading.value = action
   try {
-    const data = parseApiData(await config.request(ids))
-    reportBatchResult(config.label, data)
+    await reportTargetBatch(config.label, config.request(ids))
     table.clearSelection()
     await Promise.all([table.load(), table.loadGroupTree()])
   } catch (error) {
@@ -664,9 +664,7 @@ async function handleBatch(action) {
 function followCreatedInstallBatch(data) {
   if (data?.install_batch?.id) {
     openBatchJobProgress(data.install_batch.id, 'install')
-    return
   }
-  if (data?.install_error) message.warning(`纳管成功，但安装作业创建失败：${data.install_error}`)
 }
 
 // 异步批量作业：安装/安装重试（install）要跑分钟级操作，1000 台时不可能在一个请求里跑完。
@@ -700,8 +698,7 @@ async function handleBatchCreate() {
   if (!hostIds.length) return
   batchLoading.value = 'create'
   try {
-    const data = parseApiData(await batchCreateLogCollectionTargets(hostIds, true))
-    reportBatchResult('纳管', data)
+    const data = await reportTargetBatch('纳管并下发安装', batchCreateLogCollectionTargets(hostIds, true))
     // 安装走批量作业（后端入队），前台不再逐台等；进度在作业弹窗里看。
     followCreatedInstallBatch(data)
     table.clearSelection()
@@ -717,8 +714,7 @@ async function handleCreateOne(record) {
   if (!canCreate.value) return
   createLoading[record.host_id] = true
   try {
-    const data = parseApiData(await batchCreateLogCollectionTargets([record.host_id], true))
-    reportBatchResult('纳管', data)
+    const data = await reportTargetBatch('纳管并下发安装', batchCreateLogCollectionTargets([record.host_id], true))
     followCreatedInstallBatch(data)
     await Promise.all([table.load(), table.loadGroupTree()])
   } catch (error) {
@@ -885,30 +881,6 @@ async function openInstallHistoryJob(filter) {
 
 async function openJobLog(record) {
   await openInstallHistoryJob({ log_collection_target_id: String(record.id) })
-}
-
-function reportBatchResult(label, data) {
-  const results = Array.isArray(data.results) ? data.results : []
-  const failed = results.filter((item) => !item.ok)
-  const warnings = results.flatMap((item) => item?.detail?.warnings || [])
-  if (warnings.length) reportApplyWarnings(warnings)
-  if (failed.length === 0) {
-    message.success(`${label}成功：${data.success} 台`)
-    return
-  }
-  // 逐台执行，部分失败是常态；把失败主机和原因摊开，避免只报一个笼统错误。
-  const detail = failed.slice(0, 3).map((item) => `${item.host}：${item.message}`).join('；')
-  const suffix = failed.length > 3 ? ` 等 ${failed.length} 台` : ''
-  message.warning(`${label}完成：成功 ${data.success} 台，失败 ${data.failed} 台。${detail}${suffix}`)
-}
-
-// 下发/预览返回的 warnings（未展开宏、未关联处理规则等）以前被丢弃，导致"下发成功但日志不解析"
-// 无从发现；这里统一提示，最多展开 2 条。
-function reportApplyWarnings(warnings) {
-  const list = Array.isArray(warnings) ? warnings.filter(Boolean) : []
-  if (!list.length) return
-  const suffix = list.length > 2 ? ` 等 ${list.length} 条` : ''
-  message.warning(`下发成功，但存在告警：${list.slice(0, 2).join('；')}${suffix}`, 8)
 }
 
 // ---- 刷新生命周期 ----

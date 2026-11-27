@@ -26,7 +26,7 @@ name=sqlc.arg(name),enabled=sqlc.arg(enabled),description=sqlc.arg(description) 
 -- name: CountServiceDependenciesByType :one
 SELECT COUNT(*) FROM assets_service_dependency WHERE interaction_type_id=sqlc.arg(id);
 
--- name: DeleteServiceDependencyType :exec
+-- name: DeleteServiceDependencyType :execrows
 DELETE FROM assets_service_dependency_type WHERE id=sqlc.arg(id);
 
 -- name: GetServiceDependencyContext :one
@@ -98,7 +98,7 @@ AND (d.interaction_type_id=sqlc.narg(interaction_type_id) OR sqlc.narg(interacti
 AND (d.strength=sqlc.narg(strength) OR sqlc.narg(strength) IS NULL)
 AND (s.name LIKE sqlc.arg(pattern) OR t.name LIKE sqlc.arg(pattern) OR d.function_scope LIKE sqlc.arg(pattern) OR d.protocol LIKE sqlc.arg(pattern) OR sqlc.arg(pattern)='');
 
--- name: DeleteServiceDependency :exec
+-- name: DeleteServiceDependency :execrows
 DELETE FROM assets_service_dependency WHERE id=sqlc.arg(id);
 
 -- name: ListDependencyTopologyNodes :many

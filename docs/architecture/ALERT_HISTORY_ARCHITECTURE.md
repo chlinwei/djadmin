@@ -168,6 +168,8 @@ UPDATE + `IF()`（`IF(rule_group='',?,rule_group)`、`IF(IFNULL(JSON_LENGTH(rule
 #### P2 单告警链路（告警详情）
 
 - `fronted/src/views/monitor/alerts/index.vue` 的历史/当前告警"查看日志"入口打开"通知链路"弹窗，调用 `getAlertNotificationChain(record.record.id / history_id)`（即告警历史 id）。
+- `GET /monitor/targets/prometheus/alerts/` 批量为 firing 行关联通知摘要：复用 webhook 的完整标签指纹，只接受当次 `activeAt` 到实时快照时刻之间唯一的本地 firing 历史行。Webhook `startsAt` 是进入 firing 的时间，可晚于 `activeAt`，因此不要求两者相等。
+- 当前行已关联但无通知事件时显示「暂无通知记录」；找不到唯一记录时显示「未关联历史记录」。数据库查询失败时仍展示实时告警，操作列显示「通知状态查询失败」，不会把故障当作无通知记录。
 - 弹窗最终逻辑：
   - 顶部三列 descriptions 告警摘要（alertname / labels.instance / state tag）；`summary_issues` 非空时置顶黄色 `a-alert`。
   - 策略树卡片：标题行为命中路径 `matched_path`（如 `默认策略 / 生产`）+ `final_policy.event_allowed` tag + firing/resolved 开关 tag；正文 `levels` 逐层展示同层兄弟策略评估（`selected` 绿色 ✅、`matched` 未选中蓝色、未命中灰色 + tooltip `miss_reason`）。

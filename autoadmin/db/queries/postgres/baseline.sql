@@ -35,7 +35,7 @@ INSERT INTO baseline(create_time, update_time, name, version, description, enabl
 VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING id;
 
--- name: UpdateBaseline :exec
+-- name: UpdateBaseline :execrows
 UPDATE baseline SET update_time = $1, name = $2, version = $3, description = $4, enabled = $5 WHERE id = $6;
 
 -- name: DeleteBaseline :execrows

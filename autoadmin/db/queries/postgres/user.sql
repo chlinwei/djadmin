@@ -51,10 +51,10 @@ UPDATE sys_user SET password = $1, update_time = $2 WHERE id = $3;
 -- name: UpdateUserLoginDate :exec
 UPDATE sys_user SET login_date = $1 WHERE id = $2;
 
--- name: DeleteUserByID :exec
+-- name: DeleteUserByID :execrows
 DELETE FROM sys_user WHERE id = $1;
 
--- name: DeleteUserRoles :exec
+-- name: DeleteUserRoles :execrows
 DELETE FROM sys_user_role WHERE user_id = $1;
 
 -- name: AddUserRole :exec

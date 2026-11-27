@@ -131,14 +131,14 @@ func TestUserGroupQueriesAgainstRealDatabase(t *testing.T) {
 	handler.BatchDeleteUserGroups(context)
 	var deleted struct {
 		Data struct {
-			Deleted int `json:"deleted"`
+			Count int `json:"count"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &deleted); err != nil {
 		t.Fatalf("解析批量删除响应 %q：%v", recorder.Body.String(), err)
 	}
-	if deleted.Data.Deleted != 1 {
-		t.Fatalf("批量删除 deleted = %d，应为 1（body=%s）", deleted.Data.Deleted, recorder.Body.String())
+	if deleted.Data.Count != 1 {
+		t.Fatalf("批量删除 count = %d，应为 1（body=%s）", deleted.Data.Count, recorder.Body.String())
 	}
 
 	// 用户中心：媒介绑定读路径 + 校验失败路径（媒介行由 monitor 域创建，这里不造数据）。

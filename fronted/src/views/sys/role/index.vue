@@ -258,7 +258,7 @@ import { batchDeleteRole } from '@/api/role/index.js';
 // 批量删除权限
 const confirm = () => {
     state.loading = true;
-    batchDeleteRole(state.selectedRowKeys).then((res) => {
+    return batchDeleteRole(state.selectedRowKeys).then((res) => {
         if (res.data.code == 200) {
             initList();
             message.success("删除角色成功");
@@ -279,7 +279,7 @@ const setRowLoading = (id, isLoading) => {
 };
 const delconfirm = (id) => {
     setRowLoading(id, true)
-    batchDeleteRole([id]).then((res) => {
+    return batchDeleteRole([id]).then((res) => {
         if (res.data.code == 200) {
             initList();
             message.success("删除成功");

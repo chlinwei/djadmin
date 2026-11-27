@@ -35,7 +35,7 @@ RETURNING id;
 -- name: UpdateRole :exec
 UPDATE sys_role SET name = $1, code = $2, update_time = $3, remark = $4 WHERE id = $5;
 
--- name: DeleteRoleByID :exec
+-- name: DeleteRoleByID :execrows
 DELETE FROM sys_role WHERE id = $1;
 
 -- name: DeleteRoleMenus :exec

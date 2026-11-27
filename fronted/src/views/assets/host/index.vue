@@ -1498,7 +1498,7 @@ const cancel = () => {}
 
 const delconfirm = (id) => {
     rowLoadingStates['delete_' + id] = true
-    batchDeleteHost([id])
+    return batchDeleteHost([id])
         .then((res) => {
             if (res.data.code === 200) {
                 message.success('删除成功')
@@ -1507,9 +1507,6 @@ const delconfirm = (id) => {
                 message.error(res.data.msg || '删除失败')
             }
         })
-        .catch((error) => {
-            message.error(error?.response?.data?.msg || error?.message || '删除失败')
-        })
         .finally(() => {
             rowLoadingStates['delete_' + id] = false
         })
@@ -1517,7 +1514,7 @@ const delconfirm = (id) => {
 
 const confirmBatchDelete = () => {
     state.loading = true
-    batchDeleteHost(state.selectedRowKeys)
+    return batchDeleteHost(state.selectedRowKeys)
         .then((res) => {
             if (res.data.code === 200) {
                 message.success('批量删除成功')

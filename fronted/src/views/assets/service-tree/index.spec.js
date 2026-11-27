@@ -485,15 +485,17 @@ describe('service-tree/index.vue 逻辑服务 CRUD 入口', () => {
   it('服务清理失败时保留选中服务并将失败抛给公共确认流程', async () => {
     const wrapper = await mountPage({ application_service_id: '21', service_name: '订单 API' })
     await flushPromises()
-    applicationApi.batchDeleteApplicationServices.mockResolvedValueOnce({
-      data: { data: { count: 0, results: [{ id: 21, ok: false, message: 'agent offline，请重试' }] } },
-    })
+    const failure = new Error('agent offline，请重试')
+    applicationApi.batchDeleteApplicationServices.mockRejectedValueOnce(failure)
+    const refresh = ServiceTreeStub.methods.refresh
+    refresh.mockClear()
     wrapper.findComponent(ServiceTreeNodeContentStub).vm.$emit('delete-service', { id: 21, name: '订单 API' })
     await flushPromises()
     const options = openDeleteConfirm.mock.calls.at(-1)[0]
     expect(options.summary).toContain('共享实例')
     expect(options.summary).toContain('原始日志文件保留')
     await expect(options.onConfirm()).rejects.toThrow('agent offline')
+    expect(refresh).toHaveBeenCalled()
     expect(wrapper.findComponent(ServiceTreeNodeContentStub).props('scope').applicationServiceId).toBe(21)
     wrapper.unmount()
   })

@@ -397,6 +397,7 @@ const MaxBatchLogOverrides = 500
 type ServiceLogOverrideBatchResult struct {
 	// LogDefinition 就是前端表格的行键（这条日志定义），前端用它把失败项对回到日志名。
 	LogDefinition int64  `json:"id"`
+	Code          int    `json:"code"`
 	OK            bool   `json:"ok"`
 	Message       string `json:"message"`
 }
@@ -432,7 +433,7 @@ func (s *Service) BatchSaveServiceLogOverrides(ctx context.Context, serviceID in
 	for _, input := range inputs {
 		if !belongs[input.LogDefinition] {
 			results = append(results, ServiceLogOverrideBatchResult{
-				LogDefinition: input.LogDefinition, OK: false,
+				LogDefinition: input.LogDefinition, Code: 404, OK: false,
 				Message: "该日志不属于本服务的部署模板",
 			})
 			continue
@@ -441,13 +442,13 @@ func (s *Service) BatchSaveServiceLogOverrides(ctx context.Context, serviceID in
 		normalized, err := ValidateServiceExtraProcessors(input.ExtraProcessors)
 		if err != nil {
 			results = append(results, ServiceLogOverrideBatchResult{
-				LogDefinition: input.LogDefinition, OK: false,
+				LogDefinition: input.LogDefinition, Code: 400, OK: false,
 				Message: err.Error(),
 			})
 			continue
 		}
 		input.ExtraProcessors = normalized
-		results = append(results, ServiceLogOverrideBatchResult{LogDefinition: input.LogDefinition, OK: true})
+		results = append(results, ServiceLogOverrideBatchResult{LogDefinition: input.LogDefinition, Code: 200, OK: true})
 		applicable = append(applicable, input)
 	}
 	if len(applicable) == 0 {

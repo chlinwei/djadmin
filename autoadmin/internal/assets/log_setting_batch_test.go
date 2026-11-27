@@ -203,6 +203,42 @@ func TestBatchSaveApplicationServiceLogSettingsPassesEveryOverrideColumn(t *test
 	}
 }
 
+func TestBatchSaveApplicationServiceLogSettingsReportsRejectedItem(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	service := newTestService(t, NewRepository(database))
+	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
+		WithArgs(int64(15)).
+		WillReturnRows(overrideFixtureRows(sql.NullString{}, nil, sql.NullInt64{}))
+	recorder := httptest.NewRecorder()
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: "15"}}
+	ctx.Request = httptest.NewRequest("POST", "/test", bytes.NewBufferString(`{"items":[{"log_definition_id":999}]}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	NewHandler(service, nil, "").BatchSaveApplicationServiceLogSettings(ctx)
+	var body struct {
+		Code int `json:"code"`
+		Data struct {
+			Count   int                             `json:"count"`
+			Results []ServiceLogOverrideBatchResult `json:"results"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != 404 || body.Data.Count != 0 || len(body.Data.Results) != 1 ||
+		body.Data.Results[0].Code != 404 || body.Data.Results[0].OK {
+		t.Fatalf("unexpected response: %s", recorder.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // 空 items 是请求错误（400），不到服务层。
 func TestBatchSaveApplicationServiceLogSettingsRejectsEmptyItems(t *testing.T) {
 	database, mock, err := sqlmock.New()

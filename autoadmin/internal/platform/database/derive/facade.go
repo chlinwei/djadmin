@@ -27,9 +27,9 @@ var facadeAdapterTypes = map[string]bool{
 	"CountAlertHistoriesParams": true, "ListAlertHistoriesParams": true, // LabelKey/LabelValue 字段类型不同
 	"CountDeploymentTemplatesParams": true, "ListDeploymentTemplatesParams": true, // Column3 ↔ Column1
 	"ListProjectsRow": true, // 聚合列（string_agg）类型不同
-	// 以下 10 个在 PG 产物里没有结构体（单 pattern 入参被展开），由适配层补回
+	// PG 产物里没有结构体的单 pattern 查询，由适配层补回。
 	"CountApplicationsParams": true, "CountBaselinesParams": true,
-	"CountBusinessEnvironmentsParams": true, "CountBusinessSystemsParams": true,
+	"CountBusinessEnvironmentsParams": true,
 	"CountCredentialsParams": true, "CountHostGroupsParams": true,
 	"CountInspectionGroupsParams": true, "CountInspectionTasksParams": true,
 	"CountInventoriesParams": true, "CountProjectsParams": true,

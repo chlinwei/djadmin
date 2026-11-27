@@ -1422,103 +1422,136 @@ func (q *Queries) DeactivateOtherAgentPackages(ctx context.Context, id uint64) e
 	return err
 }
 
-const deleteAgentPackage = `-- name: DeleteAgentPackage :exec
+const deleteAgentPackage = `-- name: DeleteAgentPackage :execrows
 DELETE FROM agent_package WHERE id = $1
 `
 
-func (q *Queries) DeleteAgentPackage(ctx context.Context, id uint64) error {
-	_, err := q.db.ExecContext(ctx, deleteAgentPackage, id)
-	return err
+func (q *Queries) DeleteAgentPackage(ctx context.Context, id uint64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteAgentPackage, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteApplication = `-- name: DeleteApplication :exec
+const deleteApplication = `-- name: DeleteApplication :execrows
 DELETE FROM assets_application WHERE id=$1
 `
 
-func (q *Queries) DeleteApplication(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteApplication, id)
-	return err
+func (q *Queries) DeleteApplication(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteApplication, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteApplicationDeployment = `-- name: DeleteApplicationDeployment :exec
+const deleteApplicationDeployment = `-- name: DeleteApplicationDeployment :execrows
 DELETE FROM assets_application_deployment WHERE id=$1
 `
 
-func (q *Queries) DeleteApplicationDeployment(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteApplicationDeployment, id)
-	return err
+func (q *Queries) DeleteApplicationDeployment(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteApplicationDeployment, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteApplicationService = `-- name: DeleteApplicationService :exec
+const deleteApplicationService = `-- name: DeleteApplicationService :execrows
 DELETE FROM assets_application_service WHERE id=$1
 `
 
-func (q *Queries) DeleteApplicationService(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteApplicationService, id)
-	return err
+func (q *Queries) DeleteApplicationService(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteApplicationService, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteApplicationVersion = `-- name: DeleteApplicationVersion :exec
+const deleteApplicationVersion = `-- name: DeleteApplicationVersion :execrows
 DELETE FROM assets_application_version WHERE id=$1
 `
 
-func (q *Queries) DeleteApplicationVersion(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteApplicationVersion, id)
-	return err
+func (q *Queries) DeleteApplicationVersion(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteApplicationVersion, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteBusinessEnvironment = `-- name: DeleteBusinessEnvironment :exec
+const deleteBusinessEnvironment = `-- name: DeleteBusinessEnvironment :execrows
 DELETE FROM assets_business_environment WHERE id = $1
 `
 
-func (q *Queries) DeleteBusinessEnvironment(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteBusinessEnvironment, id)
-	return err
+func (q *Queries) DeleteBusinessEnvironment(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteBusinessEnvironment, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteBusinessSystem = `-- name: DeleteBusinessSystem :exec
+const deleteBusinessSystem = `-- name: DeleteBusinessSystem :execrows
 DELETE FROM assets_business_system WHERE id = $1
 `
 
-func (q *Queries) DeleteBusinessSystem(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteBusinessSystem, id)
-	return err
+func (q *Queries) DeleteBusinessSystem(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteBusinessSystem, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteClusterProfile = `-- name: DeleteClusterProfile :exec
+const deleteClusterProfile = `-- name: DeleteClusterProfile :execrows
 DELETE FROM assets_cluster_profile WHERE id=$1
 `
 
-func (q *Queries) DeleteClusterProfile(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteClusterProfile, id)
-	return err
+func (q *Queries) DeleteClusterProfile(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteClusterProfile, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteCredential = `-- name: DeleteCredential :exec
+const deleteCredential = `-- name: DeleteCredential :execrows
 DELETE FROM assets_credential WHERE id = $1
 `
 
-func (q *Queries) DeleteCredential(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteCredential, id)
-	return err
+func (q *Queries) DeleteCredential(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteCredential, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteDeploymentTemplate = `-- name: DeleteDeploymentTemplate :exec
+const deleteDeploymentTemplate = `-- name: DeleteDeploymentTemplate :execrows
 DELETE FROM assets_application_deployment_template WHERE id=$1
 `
 
-func (q *Queries) DeleteDeploymentTemplate(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteDeploymentTemplate, id)
-	return err
+func (q *Queries) DeleteDeploymentTemplate(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteDeploymentTemplate, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteHost = `-- name: DeleteHost :exec
+const deleteHost = `-- name: DeleteHost :execrows
 DELETE FROM assets_host WHERE id = $1
 `
 
-func (q *Queries) DeleteHost(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteHost, id)
-	return err
+func (q *Queries) DeleteHost(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteHost, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const deleteHostDisks = `-- name: DeleteHostDisks :exec
@@ -1531,22 +1564,28 @@ func (q *Queries) DeleteHostDisks(ctx context.Context, hostID int64) error {
 	return err
 }
 
-const deleteHostGroup = `-- name: DeleteHostGroup :exec
+const deleteHostGroup = `-- name: DeleteHostGroup :execrows
 DELETE FROM assets_hostgroup WHERE id = $1
 `
 
-func (q *Queries) DeleteHostGroup(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteHostGroup, id)
-	return err
+func (q *Queries) DeleteHostGroup(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteHostGroup, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteProject = `-- name: DeleteProject :exec
+const deleteProject = `-- name: DeleteProject :execrows
 DELETE FROM assets_project WHERE id = $1
 `
 
-func (q *Queries) DeleteProject(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteProject, id)
-	return err
+func (q *Queries) DeleteProject(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteProject, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const deleteServiceDeployments = `-- name: DeleteServiceDeployments :exec

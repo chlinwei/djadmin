@@ -11,6 +11,7 @@ import (
 
 	db "autoadmin/internal/platform/database/generated"
 	"autoadmin/internal/shared/apperror"
+	"autoadmin/internal/shared/batchwrite"
 )
 
 type ApplicationServiceInput struct {
@@ -272,7 +273,7 @@ func (r *Repository) SaveApplicationDeployment(ctx context.Context, id int64, in
 	return deploymentID, nil
 }
 func (r *Repository) DeleteApplicationDeployment(ctx context.Context, id int64) error {
-	return r.queries.DeleteApplicationDeployment(ctx, id)
+	return batchwrite.RequireRow(r.queries.DeleteApplicationDeployment(ctx, id))
 }
 
 func (s *Service) SaveApplicationService(ctx context.Context, id int64, input ApplicationServiceInput) (ApplicationService, error) {
@@ -300,15 +301,14 @@ func (s *Service) SaveApplicationService(ctx context.Context, id int64, input Ap
 }
 func (s *Service) DeleteApplicationService(ctx context.Context, id int64) error {
 	if s.serviceLogDeleter == nil {
-		return fmt.Errorf("日志撤销能力未配置，不能安全删除逻辑服务")
+		return apperror.New(apperror.CodeInternal, "日志撤销能力未配置，不能安全删除逻辑服务")
 	}
-	exists, err := s.repository.beginServiceDeletion(ctx, id)
-	if err != nil || !exists {
+	if err := s.repository.beginServiceDeletion(ctx, id); err != nil {
 		return translate(err)
 	}
 	return translate(s.repository.finishServiceDeletion(ctx, id, func() error {
 		if err := s.serviceLogDeleter.RevokeServiceLogs(ctx, id); err != nil {
-			return fmt.Errorf("逻辑服务删除未完成（已禁止新配置，保留记录供重试）: %w", err)
+			return apperror.WithCause(apperror.New(apperror.CodeInternal, "逻辑服务删除未完成（已禁止新配置，保留记录供重试）"), err)
 		}
 		return nil
 	}))

@@ -15,6 +15,7 @@ import (
 
 	"autoadmin/internal/api/response"
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/batchwrite"
 
 	"github.com/gin-gonic/gin"
 )
@@ -214,30 +215,11 @@ func (handler *Handler) BatchDeleteAgentPackages(context *gin.Context) {
 	if !ok {
 		return
 	}
-	results, okCount := batchDeleteAgentResults(ids, func(id int64) error {
-		return handler.deleteAgentPackageByID(context, id)
-	})
-	response.Success(context, gin.H{"count": okCount, "results": results})
-}
-
-// batchDeleteAgentResults 逐 id 删除并汇总：不存在的 id（sql.ErrNoRows）记 "resource not found"，
-// 其余失败只记录 message，不中断批次（项目批删 API 约定，见 docs/architecture/CONVENTIONS.md）。
-func batchDeleteAgentResults(ids []int64, deleteOne func(id int64) error) ([]gin.H, int) {
-	results := make([]gin.H, 0, len(ids))
-	okCount := 0
+	results := make([]response.BatchResult, 0, len(ids))
 	for _, id := range ids {
-		if err := deleteOne(id); err != nil {
-			message := err.Error()
-			if errors.Is(err, sql.ErrNoRows) {
-				message = "resource not found"
-			}
-			results = append(results, gin.H{"id": id, "ok": false, "message": message})
-			continue
-		}
-		okCount++
-		results = append(results, gin.H{"id": id, "ok": true, "message": ""})
+		results = append(results, response.BatchItem(id, handler.deleteAgentPackageByID(context, id)))
 	}
-	return results, okCount
+	response.Batch(context, results)
 }
 
 func (handler *Handler) deleteAgentPackageByID(context *gin.Context, id int64) error {
@@ -249,7 +231,7 @@ func (handler *Handler) deleteAgentPackageByID(context *gin.Context, id int64) e
 	if err = handler.deleteAgentPackageFile(item.File); err != nil {
 		return err
 	}
-	return queries.DeleteAgentPackage(context, uint64(id))
+	return batchwrite.RequireRow(queries.DeleteAgentPackage(context, uint64(id)))
 }
 
 // deleteAgentPackageFile 只允许删除 mediaRoot 内的相对路径，防目录穿越。

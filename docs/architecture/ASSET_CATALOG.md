@@ -674,7 +674,7 @@ assets 域的内联 SQL 正在按 [SQL_DESIGN.md](SQL_DESIGN.md) 的约定收敛
 新增、编辑、删除分别复用 `assets:applications:create/update/delete`，
 不新增单删接口，不改变现有服务树权限范围。
 成功 HTTP 200、`code=200`；分页沿用统一契约。
-批删最多 500 个不同的正整数 ID，返回 `{count,results:[{id,ok,message}]}`；
+批删最多 500 个不同的正整数 ID，返回 `{count,results:[{id,code,ok,message}]}`；
 不存在或受引用保护的项明确失败，其他项仍可成功。
 
 类型列表支持 `search`、`enabled=true|false`。关系列表支持 `project`、`environment`、

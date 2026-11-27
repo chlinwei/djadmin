@@ -332,7 +332,7 @@ agent 二进制自身内嵌版本元数据（`dj_agent/internal/buildinfo`，源
   - `GET /api/agent/packages/`：查询当前包，响应直接是包对象 `{id,file,sha256,size_bytes,is_active,create_time}`，无包时为空对象（非列表）。
   - `GET /api/agent/packages/download/`：下载当前包二进制（`Content-Disposition: attachment; filename="dj-agent"`）；未上传或文件缺失返回 404 业务错误；路径限制在 mediaRoot 内防目录穿越。
   - `POST /api/agent/packages/upload/`：multipart 上传，字段仅 `file`（二进制）。校验 ≤200MiB 与双字节标记；`sha256` 服务端计算；重复上传覆盖文件并更新记录；上传成功即在事务内独占激活。
-  - `POST /api/agent/packages/batch-delete/`：body `{"ids":[...]}`，响应 `{"count":n,"results":[{"id","ok","message"}]}`（项目批删约定，删除当前包传 `ids:[id]`）；删除记录时同步删除磁盘文件（路径限制在 mediaRoot 内，防目录穿越）。
+  - `POST /api/agent/packages/batch-delete/`：body `{"ids":[...]}`，响应 `{"count":n,"results":[{"id","code","ok","message"}]}`；存在失败时顶层业务码非 200（删除当前包传 `ids:[id]`）；删除记录时同步删除磁盘文件（路径限制在 mediaRoot 内，防目录穿越）。
   - `POST /api/agent/packages/:id/activate/`：历史保留接口；单包语义下上传即激活，前端不再使用。
 - 上传/激活包的校验标记与构建产物完全一致（`validateAgentBinary` 共用）。
 

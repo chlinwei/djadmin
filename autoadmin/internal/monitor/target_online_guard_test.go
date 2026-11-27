@@ -63,21 +63,27 @@ func TestBatchCreateTargetsInstallNowOfflineGuard(t *testing.T) {
 		t.Fatal("install_message should explain why dispatch failed")
 	}
 	var payload struct {
+		Code int
 		Data struct {
 			Results []struct {
 				OK      bool   `json:"ok"`
 				Message string `json:"message"`
+				HostID  int64  `json:"host_id"`
+				Detail  struct {
+					Created  bool
+					TargetID int64 `json:"target_id"`
+				}
 			} `json:"results"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("invalid response: %v", err)
 	}
-	if len(payload.Data.Results) != 1 || payload.Data.Results[0].OK {
+	if payload.Code != 400 || len(payload.Data.Results) != 1 || payload.Data.Results[0].OK {
 		t.Fatalf("offline host should report ok=false with reason, body=%s", recorder.Body.String())
 	}
-	if payload.Data.Results[0].Message == "" {
-		t.Fatal("result message should explain the offline failure")
+	if item := payload.Data.Results[0]; item.Message != installMessage || !item.Detail.Created || item.Detail.TargetID != targetID || item.HostID != hostID {
+		t.Fatalf("result must identify committed target and dispatch failure: %s", recorder.Body.String())
 	}
 }
 

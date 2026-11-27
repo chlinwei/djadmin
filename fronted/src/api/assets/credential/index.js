@@ -26,8 +26,7 @@ export function batchDeleteCredential(ids) {
 
 // 批量导入
 export function batchUpload(file) {
-    var header = {
-      header: { 'Content-Type': 'multipart/form-data' }
-    }
-    return requestUtil.fileUpload("assets/credentials/batch-create/",file,header)
+    const form = new FormData()
+    form.append('file', file)
+    return requestUtil.fileUpload("assets/credentials/batch-create/", form)
 }

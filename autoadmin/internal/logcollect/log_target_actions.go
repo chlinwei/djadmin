@@ -1,12 +1,14 @@
 package logcollect
 
 import (
+	"autoadmin/internal/platform/database"
 	generated "autoadmin/internal/platform/database/generated"
 
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"path/filepath"
 	"sort"
@@ -15,7 +17,10 @@ import (
 
 	"autoadmin/internal/agent/pb"
 	"autoadmin/internal/api/response"
+	"autoadmin/internal/api/targetbatch"
+	"autoadmin/internal/shared/apperror"
 	"autoadmin/internal/shared/filebeat"
+	"autoadmin/internal/shared/installhistory"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -343,16 +348,24 @@ func (handler *Handler) runLogTargetInstall(ctx context.Context, dispatch logTar
 	case "uninstalled":
 		agentInstalled = sql.NullBool{Bool: false, Valid: true}
 	}
-	_, _ = asyncQueries.FinishLogTargetInstallState(background, generated.FinishLogTargetInstallStateParams{
-		InstallStatus: finalStatus, InstallMessage: message, InstallSucceeded: succeeded,
-		AgentInstalled: agentInstalled, UpdateTime: finishedAt, ID: row.ID,
-	})
-	_, _ = asyncQueries.FinishLogTargetInstallHistory(background, generated.FinishLogTargetInstallHistoryParams{
+	committed, err := installhistory.Finish(background, handler.db, generated.FinishTargetInstallHistoryParams{
 		Status: finalStatus, SummaryMessage: message,
 		EndTime:         sql.NullTime{Time: finishedAt, Valid: true},
 		DurationSeconds: sql.NullFloat64{Float64: finishedAt.Sub(dispatch.dispatchedAt).Seconds(), Valid: true},
 		UpdateTime:      finishedAt, ID: historyID,
+	}, func(q *generated.Queries) (int64, error) {
+		return q.FinishLogTargetInstallState(background, generated.FinishLogTargetInstallStateParams{
+			InstallStatus: finalStatus, InstallMessage: message, InstallSucceeded: succeeded,
+			AgentInstalled: agentInstalled, UpdateTime: finishedAt, ID: row.ID,
+		})
 	})
+	if err != nil {
+		log.Printf("finish Filebeat installation history %d: %v", historyID, err)
+		return "failed", "无法保存 Filebeat 安装结果"
+	}
+	if !committed {
+		return "failed", "任务已结束，忽略迟到的安装结果"
+	}
 	// 安装成功后自动下发一次采集配置（写 /etc/filebeat/filebeat.yml + inputs.d 并启动），
 	// 这样"安装"即可用，不用再手动点「下发配置」；失败不影响安装结论，但把原因写进
 	// last_error 供前端展示（常见：agent 版本落后不认新动作、没有默认 ES 集群、没有可下发片段）。
@@ -439,21 +452,28 @@ func (handler *Handler) controlLogTargetService(context *gin.Context, action str
 // 而 *gin.Context 一离开请求生命周期就被取消，会把已在主机上执行的 systemctl 结果一起丢掉。
 func (handler *Handler) dispatchLogTargetServiceControl(context context.Context, id int64, action string) (gin.H, error) {
 	instanceName, err := generated.New(handler.db).GetLogTargetHostName(context, id)
-	if err != nil {
-		return nil, fmt.Errorf("log collection target not found")
+	if err == sql.ErrNoRows {
+		return nil, apperror.New(apperror.CodeNotFound, "log collection target not found")
 	}
+	if err != nil {
+		return nil, apperror.WithCause(apperror.ErrInternal, err)
+	}
+	return handler.controlLogServiceOnHost(context, id, instanceName, action)
+}
+
+func (handler *Handler) controlLogServiceOnHost(context context.Context, id int64, instanceName, action string) (gin.H, error) {
 	if handler.gateway == nil || !handler.gateway.IsOnline(instanceName) {
-		return nil, fmt.Errorf("host agent is offline")
+		return nil, apperror.New(apperror.CodeInvalidArgument, "host agent is offline")
 	}
 	// agent 通用命令通道：agent 以 root 运行，直接 systemctl，无需 sudo。
 	params, _ := json.Marshal(gin.H{"command": "systemctl", "args": []string{action, filebeatServiceName + ".service"}})
 	result, err := handler.gateway.Execute(context, instanceName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("filebeat-service-%d", time.Now().UnixNano()), Type: "command", Action: "filebeat_service_control", ParamsJson: string(params), TimeoutSeconds: 30})
 	if err != nil {
-		return nil, err
+		return nil, targetbatch.ServiceDispatchError(err)
 	}
-	detail, err := serviceControlResult(result, action, filebeatServiceName)
+	detail, err := targetbatch.ServiceResult(result, action, filebeatServiceName)
 	if err != nil {
-		return nil, err
+		return detail, err
 	}
 	handler.persistLogTargetRuntimeStatus(context, id, action, result.ExitCode)
 	return detail, nil
@@ -567,62 +587,38 @@ func filebeatOutputIdentity(clusterHosts, username string, verifyTLS bool) (stri
 
 func (handler *Handler) CancelLogTarget(context *gin.Context) {
 	id := parseID(context.Param("id"))
-	pending, history, err := logTargetPending(context, handler.db, id)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	if !pending {
-		response.BusinessError(context, 400, "current task has ended and does not need cancellation", nil)
-		return
-	}
-	now := time.Now().UTC()
-	queries := generated.New(handler.db)
-	// 时长由应用层算：该流程的历史行 start_time 为 NULL，create_time 就是派发时刻
-	//（原实现用 TIMESTAMPDIFF(MICROSECOND,create_time,?)/1000000）。
-	if err = queries.CancelInstallHistory(context, generated.CancelInstallHistoryParams{
-		EndTime:         sql.NullTime{Time: now, Valid: true},
-		DurationSeconds: sql.NullFloat64{Float64: now.Sub(history.CreateTime).Seconds(), Valid: true},
-		UpdateTime:      now, ID: history.ID,
-	}); err != nil {
-		response.Error(context, err)
-		return
-	}
-	if err = queries.MarkLogTargetInstallCancelled(context, generated.MarkLogTargetInstallCancelledParams{
-		UpdateTime: now, ID: id,
-	}); err != nil {
+	if err := installhistory.Cancel(context.Request.Context(), handler.db, installhistory.Filebeat, id); err != nil {
 		response.Error(context, err)
 		return
 	}
 	response.Success(context, gin.H{"id": id})
 }
 
-func (handler *Handler) batchLogTargets(context *gin.Context, label string, run func(logTargetRow) (gin.H, error)) {
+func (handler *Handler) batchLogTargets(context *gin.Context, run func(logTargetRow) (gin.H, error)) {
 	ids, ok := ids(context)
 	if !ok {
 		return
 	}
-	results := make([]gin.H, 0, len(ids))
-	success := 0
+	results := make([]response.BatchResult, 0, len(ids))
 	for _, id := range ids {
 		row, err := loadLogTarget(context, handler.db, id)
-		if err == sql.ErrNoRows {
-			results = append(results, gin.H{"id": id, "host": fmt.Sprintf("log-target-%d", id), "ok": false, "message": "log collection target not found"})
-			continue
+		var detail gin.H
+		if err == nil {
+			detail, err = run(row)
+		} else {
+			row.ID = id
+			if err == sql.ErrNoRows {
+				err = apperror.New(apperror.CodeNotFound, "log collection target not found")
+			}
 		}
-		if err != nil {
-			results = append(results, gin.H{"id": id, "host": row.label(), "ok": false, "message": err.Error()})
-			continue
+		item := response.BatchItem(id, err)
+		item.Host, item.HostID = row.label(), row.HostID
+		if detail != nil {
+			item.Detail = detail
 		}
-		detail, err := run(row)
-		if err != nil {
-			results = append(results, gin.H{"id": id, "host": row.label(), "ok": false, "message": err.Error()})
-			continue
-		}
-		success++
-		results = append(results, gin.H{"id": id, "host": row.label(), "ok": true, "message": "", "detail": detail})
+		results = append(results, item)
 	}
-	response.Success(context, gin.H{"total": len(results), "success": success, "failed": len(results) - success, "results": results})
+	targetbatch.Report(context, results, nil)
 }
 
 // BatchStartLogTargets / BatchStopLogTargets 仍是同步批量：单台只是一次 30 秒超时的
@@ -637,31 +633,38 @@ func (handler *Handler) BatchStopLogTargets(context *gin.Context) {
 }
 
 func (handler *Handler) BatchDeleteLogTargets(context *gin.Context) {
-	handler.batchLogTargets(context, "delete", func(row logTargetRow) (gin.H, error) {
-		if row.ManagedEnabled {
-			return nil, fmt.Errorf("disable the monitor target before deleting it")
-		}
-		pending, _, err := logTargetPending(context, handler.db, row.ID)
-		if err != nil {
-			return nil, err
-		}
-		if pending {
-			return nil, fmt.Errorf("wait for the uninstall task to finish before deleting")
-		}
-		queries := generated.New(handler.db)
-		if err = queries.DetachInstallHistoryFromLogTarget(context, sql.NullInt64{Int64: row.ID, Valid: true}); err != nil {
-			return nil, err
-		}
-		if err = deleteRowsAffected(queries.DeleteLogCollectionTarget(context, row.ID)); err != nil {
+	handler.batchLogTargets(context, func(row logTargetRow) (gin.H, error) {
+		if err := handler.deleteLogTarget(context, row); err != nil {
 			return nil, err
 		}
 		return gin.H{"id": row.ID}, nil
 	})
 }
 
+func (handler *Handler) deleteLogTarget(context *gin.Context, row logTargetRow) error {
+	if row.ManagedEnabled {
+		return apperror.New(apperror.CodeInvalidArgument, "disable the monitor target before deleting it")
+	}
+	pending, _, err := logTargetPending(context, handler.db, row.ID)
+	if err != nil {
+		return err
+	}
+	if pending {
+		return apperror.New(apperror.CodeInvalidArgument, "wait for the uninstall task to finish before deleting")
+	}
+	queries := generated.New(handler.db)
+	if err = queries.DetachInstallHistoryFromLogTarget(context, sql.NullInt64{Int64: row.ID, Valid: true}); err != nil {
+		return err
+	}
+	if err = deleteRowsAffected(queries.DeleteLogCollectionTarget(context, row.ID)); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (handler *Handler) batchServiceControl(context *gin.Context, action string) {
-	handler.batchLogTargets(context, action, func(row logTargetRow) (gin.H, error) {
-		return handler.dispatchLogTargetServiceControl(context, row.ID, action)
+	handler.batchLogTargets(context, func(row logTargetRow) (gin.H, error) {
+		return handler.controlLogServiceOnHost(context, row.ID, row.HostName, action)
 	})
 }
 
@@ -790,49 +793,41 @@ func (handler *Handler) BatchCreateLogTargets(context *gin.Context) {
 		return
 	}
 	queries := generated.New(handler.db)
-	results := make([]gin.H, 0, len(input.HostIDs))
+	results := make([]response.BatchResult, 0, len(input.HostIDs))
 	installTargetIDs := make([]int64, 0, len(input.HostIDs))
-	success := 0
+	var installIndexes []int
 	for _, hostID := range input.HostIDs {
 		// 主机读取复用监控目标域的 GetHostTargetIdentity（列集一致：实例名、IP、是否已下线）。
 		host, err := queries.GetHostTargetIdentity(context, hostID)
-		if err != nil || host.IsDeletedInCloud {
-			results = append(results, gin.H{"host_id": hostID, "host": host.InstanceName, "ok": false, "message": "host not found"})
-			continue
-		}
-		name, ip := host.InstanceName, host.Ip
-		label := name
-		if label == "" {
-			label = ip
-		}
-		now := time.Now().UTC()
-		targetID, created, err := createLogCollectionTargetIfAbsent(context, queries, generated.CreateLogCollectionTargetIfAbsentParams{
-			CreateTime: now, UpdateTime: now, HostID: hostID,
+		item, targetID := targetbatch.Create(hostID, host.InstanceName, host.Ip, host.IsDeletedInCloud, err, func() (int64, bool, error) {
+			now := time.Now().UTC()
+			return database.InsertIfAbsentResult(queries.CreateLogCollectionTargetIfAbsent(context, generated.CreateLogCollectionTargetIfAbsentParams{
+				CreateTime: now, UpdateTime: now, HostID: hostID,
+			}))
 		})
-		if err != nil {
-			results = append(results, gin.H{"host_id": hostID, "host": label, "ok": false, "message": err.Error()})
-			continue
-		}
-		if !created {
-			results = append(results, gin.H{"host_id": hostID, "host": label, "ok": false, "message": "target already managed"})
-			continue
-		}
-		success++
-		results = append(results, gin.H{"host_id": hostID, "host": label, "ok": true, "message": ""})
-		if input.InstallNow {
+		if item.OK && input.InstallNow {
+			installIndexes = append(installIndexes, len(results))
 			installTargetIDs = append(installTargetIDs, targetID)
 		}
+		results = append(results, item)
 	}
-	result := gin.H{"total": len(results), "success": success, "failed": len(results) - success, "results": results}
+	extra := gin.H{}
 	// 「纳管并立即安装」不再逐台起无上限的 goroutine（1000 台会把 agent 侧打满），
 	// 而是把新建的目标交给一个批量作业：入队 + 有界并发 + 进度可在作业详情里查。
 	if len(installTargetIDs) > 0 {
 		batch, err := handler.createLogBatchJob(context, LogBatchActionInstall, installTargetIDs, requestedUsername(context))
+		jobID, _ := batch["id"].(int64)
 		if err != nil {
-			result["install_error"] = err.Error()
+			if _, known := apperror.As(err); !known {
+				err = apperror.WithCause(apperror.New(apperror.CodeInternal, "安装作业创建失败"), err)
+			}
+			extra["install_error"] = err.Error()
 		} else {
-			result["install_batch"] = batch
+			extra["install_batch"] = batch
+		}
+		for i, index := range installIndexes {
+			targetbatch.Install(&results[index], installTargetIDs[i], jobID, err)
 		}
 	}
-	response.Success(context, result)
+	targetbatch.Report(context, results, extra)
 }

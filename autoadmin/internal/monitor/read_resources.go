@@ -4,12 +4,12 @@ import (
 	"database/sql"
 	"strconv"
 	"strings"
-	"time"
 
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/logcollect"
 	db "autoadmin/internal/platform/database/generated"
 	"autoadmin/internal/shared/binding"
+	"autoadmin/internal/shared/installhistory"
 
 	"github.com/gin-gonic/gin"
 )
@@ -301,58 +301,7 @@ func (handler *Handler) evaluateConfigStates(context *gin.Context, refs []logcol
 
 func (handler *Handler) CancelInstallHistory(context *gin.Context) {
 	id := parseID(context.Param("id"))
-	if id == 0 {
-		response.BusinessError(context, 400, "invalid id", nil)
-		return
-	}
-	tx, err := handler.db.BeginTx(context, nil)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	defer tx.Rollback()
-	txQueries := db.New(tx)
-	history, err := txQueries.GetInstallHistoryForUpdate(context, id)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	status, targetID, logTargetID, start := history.Status, history.TargetID, history.LogCollectionTargetID, history.StartTime
-	if status != "pending" && status != "running" {
-		response.BusinessError(context, 400, "current task has ended and cannot be cancelled", nil)
-		return
-	}
-	now := time.Now().UTC()
-	duration := sql.NullFloat64{}
-	if start.Valid {
-		duration = sql.NullFloat64{Float64: now.Sub(start.Time).Seconds(), Valid: true}
-	}
-	if err = txQueries.CancelInstallHistory(context, db.CancelInstallHistoryParams{
-		EndTime: sql.NullTime{Time: now, Valid: true}, DurationSeconds: duration,
-		UpdateTime: now, ID: id,
-	}); err != nil {
-		response.Error(context, err)
-		return
-	}
-	// 取消的是监控目标还是日志采集目标，决定更新哪张表（原实现拼表名，这里按类型分派）。
-	switch {
-	case targetID.Valid:
-		err = txQueries.CancelMonitorTargetInstallState(context, db.CancelMonitorTargetInstallStateParams{
-			UpdateTime: now, ID: targetID.Int64,
-		})
-	case logTargetID.Valid:
-		err = txQueries.CancelLogTargetInstallState(context, db.CancelLogTargetInstallStateParams{
-			UpdateTime: now, ID: logTargetID.Int64,
-		})
-	default:
-		response.BusinessError(context, 400, "task has no managed target", nil)
-		return
-	}
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	if err = tx.Commit(); err != nil {
+	if err := installhistory.Cancel(context.Request.Context(), handler.db, installhistory.History, id); err != nil {
 		response.Error(context, err)
 		return
 	}

@@ -239,11 +239,6 @@ async function loadRules() {
   try {
     const res = await getPrometheusAlertRules()
     const data = parseApiData(res)
-    if (data.status === 'error') {
-      loadError.value = data.error || '查询 Prometheus 规则失败'
-      groups.value = []
-      return
-    }
     groups.value = Array.isArray(data.groups) ? data.groups : []
   } catch (error) {
     loadError.value = error?.response?.data?.msg || error?.message || '加载告警规则失败'

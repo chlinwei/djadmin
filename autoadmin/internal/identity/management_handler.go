@@ -7,8 +7,10 @@ import (
 	"strconv"
 	"strings"
 
+	"autoadmin/internal/api/batchcrud"
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/shared/apperror"
+	"autoadmin/internal/shared/batchwrite"
 	"autoadmin/internal/shared/binding"
 
 	"github.com/gin-gonic/gin"
@@ -99,11 +101,13 @@ func (handler *Handler) BatchDeleteUsers(context *gin.Context) {
 		response.Error(context, ErrUserIDsEmpty)
 		return
 	}
-	if err := handler.service.DeleteUsers(context.Request.Context(), request.UserIDs); err != nil {
-		response.Error(context, apperror.WithCause(ErrUserDeleteInternal, err))
-		return
+	ids := batchwrite.UniqueIDs(request.UserIDs)
+	roles, err := handler.service.DeleteUsers(context.Request.Context(), ids)
+	deleted := 0
+	if err == nil {
+		deleted = len(ids)
 	}
-	response.Success(context, gin.H{"user_role_deleted_count": len(request.UserIDs), "user_deleted_count": len(request.UserIDs)})
+	response.BatchWith(context, batchcrud.AtomicResults(ids, err), gin.H{"user_role_deleted_count": roles, "user_deleted_count": deleted})
 }
 
 func (handler *Handler) ResetPassword(context *gin.Context) {

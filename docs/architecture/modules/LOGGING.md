@@ -30,6 +30,14 @@ flowchart LR
 日志批量动作经 RabbitMQ 由 **api 角色**消费，因为 Agent 会话在该进程。
 不能把这些动作转给没有实时会话的 scheduler 或 worker。
 
+`log-targets/batch-create/` 逐台创建目标，仅为新建目标投递安装作业。指定 `install_now` 时，
+`ok` 是创建且安装作业已受理，不是安装完成；后续通过 `install_batch.id` 查看逐台执行进度。
+即使返回部分失败业务码，仍可能包含可跟踪的 `install_batch`。入队失败时保留已创建目标：
+对应项 `detail.created=true`、`detail.target_id`、`detail.install_accepted=false`，已建作业则保留
+`detail.job_id`，失败原因见 `message` 与 `install_error`。页面刷新后应对已有目标重试安装，不能重复纳管。
+`log-targets/batch-start-service/`、`log-targets/batch-stop-service/` 的成功表示同步执行成功；
+结果以目标 ID 标识，保留主机标签、Agent 作业号与执行失败原因。批量请求的 `count` 只计完整成功项。
+
 ### 防止重复采集
 
 同一主机上宏展开后的相同路径只能有一个启用的采集输入。

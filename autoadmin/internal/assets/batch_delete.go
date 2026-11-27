@@ -1,9 +1,6 @@
 package assets
 
 import (
-	"database/sql"
-	"errors"
-
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/shared/apperror"
 
@@ -22,24 +19,13 @@ func batchDeleteIDs(c *gin.Context) ([]int64, bool) {
 	return input.IDs, true
 }
 
-// respondBatchDelete 逐 id 执行删除并汇总：不存在的 id（sql.ErrNoRows）记 ok:false，
-// 其余失败也只记录 message，不中断整个批次（与 BatchDeleteLogTargets 范式一致）。
+// respondBatchDelete 逐 id 独立删除，汇总已提交的结果，任何失败都不能返回成功业务码。
 func respondBatchDelete(c *gin.Context, ids []int64, deleteOne func(id int64) error) {
-	results := make([]gin.H, 0, len(ids))
-	okCount := 0
+	results := make([]response.BatchResult, 0, len(ids))
 	for _, id := range ids {
-		if err := deleteOne(id); err != nil {
-			message := err.Error()
-			if errors.Is(err, sql.ErrNoRows) {
-				message = "resource not found"
-			}
-			results = append(results, gin.H{"id": id, "ok": false, "message": message})
-			continue
-		}
-		okCount++
-		results = append(results, gin.H{"id": id, "ok": true, "message": ""})
+		results = append(results, response.BatchItem(id, deleteOne(id)))
 	}
-	response.Success(c, gin.H{"count": okCount, "results": results})
+	response.Batch(c, results)
 }
 
 func (h *Handler) BatchDeleteProjects(c *gin.Context) {

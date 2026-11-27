@@ -2,7 +2,6 @@ package assets
 
 import (
 	"autoadmin/internal/api/response"
-	"autoadmin/internal/shared/apperror"
 
 	"github.com/gin-gonic/gin"
 )
@@ -52,20 +51,13 @@ func (h *Handler) UpdateApplication(c *gin.Context) {
 	respond(c, item, err)
 }
 func (h *Handler) DeleteApplications(c *gin.Context) {
-	var input struct {
-		IDs []int64 `json:"ids"`
-	}
-	if c.ShouldBindJSON(&input) != nil || len(input.IDs) == 0 {
-		response.Error(c, apperror.ErrInvalidRequest)
+	ids, ok := batchDeleteIDs(c)
+	if !ok {
 		return
 	}
-	for _, id := range input.IDs {
-		if err := h.service.DeleteApplication(c.Request.Context(), id); err != nil {
-			respond(c, nil, err)
-			return
-		}
-	}
-	response.Success(c, nil)
+	respondBatchDelete(c, ids, func(id int64) error {
+		return h.service.DeleteApplication(c.Request.Context(), id)
+	})
 }
 func (h *Handler) ListVersions(c *gin.Context) {
 	p, err := page(c)

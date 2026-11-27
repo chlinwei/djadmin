@@ -8,6 +8,7 @@ import (
 
 	"autoadmin/internal/api/response"
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/apperror"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-sql-driver/mysql"
@@ -25,23 +26,13 @@ func batchIDs(context *gin.Context) ([]int64, bool) {
 	return input.IDs, true
 }
 
-// respondBatchDelete 逐 id 执行删除并汇总：ok:false 表示不存在或校验未通过，不中断其余 id。
+// respondBatchDelete 逐 id 独立删除，保留已提交的结果和每项错误码。
 func respondBatchDelete(context *gin.Context, ids []int64, deleteOne func(int64) error) {
-	results := make([]gin.H, 0, len(ids))
-	okCount := 0
+	results := make([]response.BatchResult, 0, len(ids))
 	for _, id := range ids {
-		if err := deleteOne(id); err != nil {
-			message := err.Error()
-			if errors.Is(err, sql.ErrNoRows) {
-				message = "resource not found"
-			}
-			results = append(results, gin.H{"id": id, "ok": false, "message": message})
-			continue
-		}
-		okCount++
-		results = append(results, gin.H{"id": id, "ok": true, "message": ""})
+		results = append(results, response.BatchItem(id, deleteOne(id)))
 	}
-	response.Success(context, gin.H{"count": okCount, "results": results})
+	response.Batch(context, results)
 }
 
 // BatchDeletePlaybooks 逐 id 复用原单删逻辑：Agent 安装/更新模板禁止删除。
@@ -56,7 +47,7 @@ func (handler *Handler) BatchDeletePlaybooks(context *gin.Context) {
 			return err
 		}
 		if playbook.Category == playbookCategoryAgent {
-			return fmt.Errorf("该模板是 Agent 安装/更新的唯一配置源，禁止删除")
+			return apperror.New(apperror.CodeInvalidArgument, "该模板是 Agent 安装/更新的唯一配置源，禁止删除")
 		}
 		affected, err := db.New(handler.db).DeleteAutomationPlaybook(context, id)
 		if err != nil {
@@ -102,7 +93,7 @@ func translateDeleteReference(err error, message string) error {
 	// 只在 DELETE 失败路径翻译引用约束，不把其他数据库故障伪装成业务限制。
 	if (errors.As(err, &mysqlError) && mysqlError.Number == 1451) ||
 		(errors.As(err, &stateError) && stateError.SQLState() == "23503") {
-		return errors.New(message)
+		return apperror.New(apperror.CodeInvalidArgument, message)
 	}
 	return err
 }
@@ -124,7 +115,7 @@ func (handler *Handler) deleteTask(ctx context.Context, id int64) error {
 	}
 	for _, job := range jobs {
 		if !isTerminalJobStatus(job.Status) {
-			return fmt.Errorf("任务存在未结束的作业 #%d（%s），请等待作业结束或取消后再删除", job.ID, job.Status)
+			return apperror.New(apperror.CodeInvalidArgument, fmt.Sprintf("任务存在未结束的作业 #%d（%s），请等待作业结束或取消后再删除", job.ID, job.Status))
 		}
 	}
 	// 作业内容、名称和运行参数已有快照，只解除关联，不删除历史和日志。

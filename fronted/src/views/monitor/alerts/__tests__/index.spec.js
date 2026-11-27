@@ -54,6 +54,52 @@ describe('告警页：当前告警与历史告警的「问题」列', () => {
     vi.clearAllMocks()
   })
 
+  describe('当前告警的通知操作', () => {
+    it('distinguishes missing history from missing notifications and opens the linked notification chain', async () => {
+      const { getPrometheusAlerts, getAlertNotificationChain } = await import('@/api/monitor')
+      const alert = { name: 'HighMemoryUsage', state: 'firing', active_at: '2026-09-20T10:00:00Z' }
+      getPrometheusAlerts.mockResolvedValueOnce({ data: { data: {
+        status: 'success',
+        results: [
+          { ...alert, instance: 'node-a', history_id: 42, notification_count: 2, notification_status: 'success' },
+          { ...alert, instance: 'node-b', history_id: 43, notification_count: 0 },
+          { ...alert, instance: 'node-c', history_id: null, notification_count: 0 },
+        ],
+      } } })
+      getAlertNotificationChain.mockResolvedValueOnce({ data: { data: { alert: { alertname: alert.name, state: 'firing' } } } })
+      const wrapper = await mountPage()
+      try {
+        const current = wrapper.findAll('table')[0]
+        expect(current.text()).toContain('暂无通知记录')
+        expect(current.text()).toContain('未关联历史记录')
+        const action = current.get('button.notification-summary-action')
+        expect(action.text()).toContain('全部成功')
+        await action.trigger('click')
+        await flushPromises()
+        expect(getAlertNotificationChain).toHaveBeenLastCalledWith(42)
+      } finally {
+        wrapper.unmount()
+      }
+    })
+
+    it('keeps current alerts visible when notification summaries cannot be loaded', async () => {
+      const { getPrometheusAlerts } = await import('@/api/monitor')
+      getPrometheusAlerts.mockResolvedValueOnce({ data: { data: {
+        status: 'success', notification_lookup_failed: true,
+        results: [{ name: 'HighMemoryUsage', instance: 'node-a', state: 'firing', history_id: null }],
+      } } })
+      const wrapper = await mountPage()
+      try {
+        const current = wrapper.findAll('table')[0]
+        expect(current.text()).toContain('node-a')
+        expect(current.text()).toContain('通知状态查询失败')
+        expect(current.text()).not.toContain('未关联历史记录')
+      } finally {
+        wrapper.unmount()
+      }
+    })
+  })
+
   it('shows the 问题 column in both tabs, with the same text source', async () => {
     const wrapper = await mountPage()
 

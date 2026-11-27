@@ -89,12 +89,21 @@ WebSocket 必须使用执行权限；POST 校验不因方法是 POST 就被当�
 
 ## 一、删除类 API：只保留批量删除
 
+前端共享请求拦截器对业务错误抛出包含完整 `response` 和业务 `code` 的错误；
+调用方可读取错误响应中的 `data`，处理已执行的部分结果，不能仅凭异常推断全部操作均未生效。
+可独立执行的批量增删改和同步动作使用逐项业务码：
+每项为 `{id, code, ok, message}`，`count` 是成功数；全部成功顶层码为 200，
+全部失败且同码时顶层为该错误码，部分成功为 10001，全部失败且错误码不同时为 10002。
+HTTP 状态沿用项目约定；未知内部错误记录服务端日志，响应不暴露底层错误细节。
+请求级拒绝及事务整体失败不伪造逐项成功；异步提交的 200 只代表接受作业，
+作业查询的 200 只代表成功读到状态。普通增删改查、协议例外及完整响应示例见 [API 响应约定](../../.github/API_RULES.md)。
+
 列表型资源的删除接口**只允许一个批量删除 API**，不提供单条删除接口；删除单条即传 `ids: [id]`。
 
 - 路由：`POST <资源前缀>/batch-delete/`
 - 请求体：`{"ids": [<数字>...]}`
 - 权限点：沿用删除权限（如 `inspection:tasks:delete`）
-- 响应 data：`{"count": <成功条数>, "results": [{"id": 1, "ok": true, "message": ""}, ...]}`，不存在的 id 记 `ok:false`，不整体失败
+- 逐项删除的响应 data：`{"count": <成功条数>, "results": [{"id": 1, "code": 200, "ok": true, "message": ""}, ...]}`；失败不阻止其余项，并在顶层返回非 200 业务码
 - handler 范式：逐 id 复用单删的全部前置校验，参考 `autoadmin/internal/logcollect/log_target_actions.go` 的 `BatchDeleteLogTargets`
 - 前端：每个资源在 `src/api/**` 只保留一个 `batchDeleteXxx(ids)`；单删按钮传 `[record.id]`
 - 带 body 的删除统一用 POST（避免 DELETE+body 的网关兼容性问题）
@@ -111,9 +120,9 @@ WebSocket 必须使用执行权限；POST 校验不因方法是 POST 就被当�
 
 - 路由：`POST <资源前缀>/batch-update/` 或嵌在已有子路径下（如
   `/assets/application-services/:id/log-config/settings/batch/`，与单条 `…/settings/` 同级）
-- 响应 data：**与批量删除同一口径** —— `{"count": <成功条数>, "results": [{"id": …, "ok": true, "message": ""}, ...]}`，
+- 服务日志覆盖批量更新响应 data：`{"count": <成功条数>, "results": [{"id": …, "code": 200, "ok": true, "message": ""}, ...]}`，
   不适用/不存在的项记 `ok:false` 并写明原因
-- **可拆的改动逐条独立、不整体失败**（每个 id 的改法不同，败一条不该拖累其余）
+- **可拆的改动逐条独立**（每个 id 的改法不同，败一条不该拖累其余；顶层返回非 200 业务码）
 - **不可拆的改动（整批改的是同一列的同一个值）用一次事务写完**：要么都落库、要么都不落，
   失败即返回错误码，不返回"部分成功"——留半套配置比整体失败更难排查。
   范式：`autoadmin/internal/assets/log_setting.go` 的 `BatchSaveServiceLogOverrides`

@@ -3,6 +3,38 @@
 本文统一维护监控代理、目标在线守卫和 [Exporter 安装](#target-install)。
 告警摄取与通知见 [告警架构](ALERT_HISTORY_ARCHITECTURE.md)，Filebeat 见 [日志采集架构](LOG_COLLECTION_ARCHITECTURE.md)。
 
+## 监控目标与软件包操作细节
+
+`targets/batch-create/` 按输入主机顺序返回 `results`（`id`、`host_id` 均为输入主机 ID）。
+`detail.created`、`detail.target_id` 表示纳管已落库；指定 `install_now` 时，整项成功只表示安装已下发，
+不表示主机安装成功。`detail.install_accepted` 标明受理状态，有作业记录时保留 `detail.job_id`；
+下发失败不回滚已建目标，可在该目标上重试安装。
+`targets/batch-start-service/`、`targets/batch-stop-service/` 则按目标 ID 返回真实执行结果，
+保留主机标签、失败原因及 Agent 作业回执。批量接口以 `count`/`success` 计完整成功项，
+部分成功返回业务码 `10001`，全部失败返回同项错误码或 `10002`（多种错误码）。
+单目标服务操作与批量逐项使用相同业务码：目标不存在为 `404`，Agent 离线为 `400`。
+批量删除只在执行删除时目标已停用且安装状态不为 `pending` 的情况下生效；未删到行不计成功。
+编辑目标在同一事务中锁定当前行、合并提交的字段再写回；省略字段保留最新值，`remark: null` 清空备注。
+未提交任何可写字段时返回 `400`，不刷新更新时间；没有启用的软件包是配置错误（`400`），
+读取软件包或保存目标的内部数据库故障返回 `600`，根因仅写服务端日志。
+从 Exporter、Filebeat 或安装历史页取消，均在事务中锁定最新安装历史，只允许取消 `pending` 或 `running` 的当前任务；
+历史置 `cancelled`，目标安装状态置 `unknown`，不是断言主机执行失败。任一写入失败则回滚两项。
+对旧历史或已结束任务返回 `400`。取消的是管理记录，不证明主机进程已停止；
+迟到的作业结果不能改写已取消历史或新任务的目标状态，也不触发 Filebeat 安装后的自动配置下发。
+Filebeat 不在 Exporter 列表中维护，去「日志管理 → 日志采集」。
+软件仓库中的 Exporter 与 Filebeat 软件包下载使用 API 返回的 `download_url`，
+通过公共媒体地址解析工具将 `/media/...` 路径绑定到 `VITE_API_BASE_URL` 指定的后端，
+未配置时使用当前主机的 `9000` 端口，而不是前端开发端口。完整 HTTP(S) 下载地址保持原样；
+未同步或没有下载地址的软件包不提供可点击的下载链接。查看用户保留软件下载能力，不要求管理或执行权限。
+软件仓库 tab 的 Exporter、Filebeat 列表不展示内部 ID 列；ID 仅用于表格行标识和操作请求，
+不影响类型筛选、分页、编辑、上传、同步、下载及删除。
+软件包与通知策略的批删按 ID 独立处理；仅实际删除的记录计入 `count`，
+查询后被其他请求删除的项同样返回 404，不能据前置查询记作成功。
+软件包状态采用统一的「启用 / 停用」文字开关，`monitor:update` 可在列表直接切换。
+仅更新包的可用状态与更新时间，不改包文件、平台、模板和运行参数，也不触发目标主机安装/卸载；
+安装目标的执行型启停仍要求 `monitor:execute`。查看用户只读展示状态。
+
+
 ## 入口
 
 - 前端 Explore 页（`fronted/src/views/monitor/explore/index.vue`）使用 codemirror-promql 编辑器，自动补全请求 `<后端>/monitor/targets/prometheus/proxy/api/v1/*`（同域代理，避免跨域/鉴权问题）。补全会用到 `/api/v1/label/__name__/values`、`/api/v1/labels`、`/api/v1/series`、`/api/v1/metadata` 等端点；SDK 显式配置 `httpMethod: 'GET'`，所有筛选条件放在查询参数中。
